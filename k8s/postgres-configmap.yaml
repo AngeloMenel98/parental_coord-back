@@ -1,0 +1,20 @@
+# Postgres initdb hook (dev-only).
+#
+# Files under /docker-entrypoint-initdb.d/ run ONCE, on the first database
+# initialisation (when the data volume is empty), as the superuser. This is
+# the image-native, idempotent way to create the e2e test database
+# `parental_coordination_test` — an initContainer cannot do it (the server
+# is not up yet at that point).
+#
+# The e2e suite targets parental_coordination_test; the dev database
+# parental_coordination is created by the postgres image from the Secret's
+# POSTGRES_DB env var.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: postgres-initdb
+  labels:
+    app: postgres
+data:
+  "10-create-test-db.sql": |
+    CREATE DATABASE parental_coordination_test;

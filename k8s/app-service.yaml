@@ -1,0 +1,20 @@
+# App Service (dev-only).
+#
+# NodePort 30001 allows `minikube service parental-coordination-back` or
+# `kubectl port-forward svc/parental-coordination-back 3000:3000` for local
+# dev access. The app internally listens on PORT=3000 (from app-config ConfigMap).
+apiVersion: v1
+kind: Service
+metadata:
+  name: parental-coordination-back
+  labels:
+    app: parental-coordination-back
+spec:
+  type: NodePort
+  selector:
+    app: parental-coordination-back
+  ports:
+    - port: 3000
+      targetPort: 3000
+      nodePort: 30001
+      name: http

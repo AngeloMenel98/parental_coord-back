@@ -1,0 +1,20 @@
+# App environment ConfigMap (non-secret values).
+#
+# Referenced by the app Deployment via envFrom. Secrets (JWT_SECRET, DB creds)
+# live in separate Secret resources and are referenced via envFrom secretRef.
+#
+# DB_HOST=postgres resolves to the headless Service in-cluster (k8s/postgres-service.yaml).
+# The app listens on PORT=3000 internally; the Service exposes it.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: app-config
+  labels:
+    app: parental-coordination-back
+data:
+  NODE_ENV: "development"
+  DB_HOST: "postgres"
+  DB_PORT: "5432"
+  DB_NAME: "parental_coordination"
+  JWT_EXPIRES_IN: "24h"
+  PORT: "3000"

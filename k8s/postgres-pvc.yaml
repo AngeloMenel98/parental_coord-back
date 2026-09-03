@@ -1,0 +1,20 @@
+# Postgres data volume (dev-only).
+#
+# Static PVC referenced by the StatefulSet's `data` volume. minikube provides
+# a `standard` StorageClass backed by the hostpath provisioner, so the volume
+# is node-local: `minikube delete` wipes the data (accepted for dev — see
+# k8s/README.md caveats). Deleting only the StatefulSet keeps this PVC, so
+# data survives a pod/StatefulSet redeploy.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: postgres-data
+  labels:
+    app: postgres
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: standard
+  resources:
+    requests:
+      storage: 5Gi

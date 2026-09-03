@@ -1,0 +1,62 @@
+# Postgres StatefulSet (dev-only).
+#
+# - postgres:16-alpine (PG16 core — gen_random_uuid() needs no extension).
+# - Credentials come from the postgres-secret Secret via envFrom
+#   (POSTGRES_USER / POSTGRES_PASSWORD / POSTGRES_DB are read by the official
+#   image entrypoint on first init).
+# - The initdb ConfigMap is mounted at /docker-entrypoint-initdb.d so the e2e
+#   database parental_coordination_test is created on first initialisation.
+# - Data lives on the static PVC postgres-data (k8s/postgres-pvc.yaml) at
+#   /var/lib/postgresql/data.
+# - The readiness probe (pg_isready) makes `kubectl rollout status` wait for a
+#   server that actually accepts connections.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgres
+  labels:
+    app: postgres
+spec:
+  serviceName: postgres
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgres
+  template:
+    metadata:
+      labels:
+        app: postgres
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:16-alpine
+          ports:
+            - containerPort: 5432
+              name: postgres
+          envFrom:
+            - secretRef:
+                name: postgres-secret
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "parental"]
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          volumeMounts:
+            - name: initdb
+              mountPath: /docker-entrypoint-initdb.d
+            - name: data
+              mountPath: /var/lib/postgresql/data
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+      volumes:
+        - name: initdb
+          configMap:
+            name: postgres-initdb
+        - name: data
+          persistentVolumeClaim:
+            claimName: postgres-data

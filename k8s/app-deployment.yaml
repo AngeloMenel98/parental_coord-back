@@ -1,0 +1,61 @@
+# App Deployment for parental_coordination_back (dev-only).
+#
+# - Image: parental-coordination-back:latest (build locally with
+#   `docker build -t parental-coordination-back:latest .` before applying).
+# - envFrom: app-config (ConfigMap) + app-secret (Secret) provide all env vars.
+#   The app reads DB_HOST=postgres, DB_PORT=5432, DB_NAME=parental_coordination,
+#   JWT_SECRET, etc. via @nestjs/config ConfigModule.
+# - Startup/readiness probe: GET /api/auth/me — a lightweight endpoint that
+#   confirms the app is up and can reach Postgres (returns 401 without token,
+#   which is fine — the probe just needs a 2xx/3xx).
+# - imagePullPolicy: Never — the image is built locally for minikube.
+# - Postgres must be running and Ready before the app starts (see README.md).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: parental-coordination-back
+  labels:
+    app: parental-coordination-back
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: parental-coordination-back
+  template:
+    metadata:
+      labels:
+        app: parental-coordination-back
+    spec:
+      containers:
+        - name: app
+          image: parental-coordination-back:latest
+          imagePullPolicy: Never
+          ports:
+            - containerPort: 3000
+              name: http
+          envFrom:
+            - configMapRef:
+                name: app-config
+            - secretRef:
+                name: app-secret
+          readinessProbe:
+            httpGet:
+              path: /api/auth/me
+              port: 3000
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            timeoutSeconds: 3
+          startupProbe:
+            httpGet:
+              path: /api/auth/me
+              port: 3000
+            initialDelaySeconds: 5
+            periodSeconds: 3
+            failureThreshold: 10
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 300m
+              memory: 256Mi
