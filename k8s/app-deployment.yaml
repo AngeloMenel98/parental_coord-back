@@ -5,9 +5,10 @@
 # - envFrom: app-config (ConfigMap) + app-secret (Secret) provide all env vars.
 #   The app reads DB_HOST=postgres, DB_PORT=5432, DB_NAME=parental_coordination,
 #   JWT_SECRET, etc. via @nestjs/config ConfigModule.
-# - Startup/readiness probe: GET /api/auth/me — a lightweight endpoint that
-#   confirms the app is up and can reach Postgres (returns 401 without token,
-#   which is fine — the probe just needs a 2xx/3xx).
+# - Startup/readiness/liveness probe: GET /api/health — an unauthenticated
+#   endpoint that verifies the app is up and can reach Postgres. Returns 200
+#   with { "status": "ok", "db": "ok" } when the DB responds to SELECT 1, and
+#   503 with { "status": "error", "db": "unavailable" } when it cannot.
 # - imagePullPolicy: Never — the image is built locally for minikube.
 # - Postgres must be running and Ready before the app starts (see README.md).
 apiVersion: apps/v1
@@ -40,18 +41,25 @@ spec:
                 name: app-secret
           readinessProbe:
             httpGet:
-              path: /api/auth/me
+              path: /api/health
               port: 3000
             initialDelaySeconds: 10
             periodSeconds: 5
             timeoutSeconds: 3
           startupProbe:
             httpGet:
-              path: /api/auth/me
+              path: /api/health
               port: 3000
             initialDelaySeconds: 5
             periodSeconds: 3
             failureThreshold: 10
+          livenessProbe:
+            httpGet:
+              path: /api/health
+              port: 3000
+            initialDelaySeconds: 15
+            periodSeconds: 10
+            timeoutSeconds: 3
           resources:
             requests:
               cpu: 100m
