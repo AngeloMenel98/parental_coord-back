@@ -11,7 +11,7 @@ import { UserEntity } from '../../users/entities/user.entity';
 
 export enum BondMemberRole {
   PROGENITOR = 'progenitor',
-  COORDINADOR = 'coordinador',
+  COORDINATOR = 'coordinator',
 }
 
 /** Join table User↔Bond with a per-bond role (progenitor | coordinador). */

@@ -8,7 +8,7 @@ import {
 } from 'typeorm';
 
 export enum SystemRole {
-  PROGENITOR = 'progenitor',
+  USER = 'user',
   ADMIN = 'admin',
 }
 
@@ -27,7 +27,7 @@ export class UserEntity {
   @Column({
     type: 'enum',
     enum: SystemRole,
-    default: SystemRole.PROGENITOR,
+    default: SystemRole.USER,
     name: 'system_role',
   })
   systemRole!: SystemRole;

@@ -10,13 +10,12 @@ import { BondEntity } from '../../bonds/entities/bond.entity';
 import { UserEntity } from '../../users/entities/user.entity';
 
 export enum ReportStatus {
-  SOLICITADO = 'solicitado',
-  EN_PROCESO = 'en_proceso',
-  COMPLETADO = 'completado',
-  ENTREGADO = 'entregado',
+  REQUESTED = 'requested',
+  IN_PROGRESS = 'in_progress',
+  COMPLETED = 'completed',
+  DELIVERED = 'delivered',
 }
 
-/** Judicial reports — admin-only module. */
 @Entity('report')
 export class ReportEntity {
   @PrimaryGeneratedColumn('uuid')
@@ -52,7 +51,7 @@ export class ReportEntity {
   @Column({
     type: 'enum',
     enum: ReportStatus,
-    default: ReportStatus.SOLICITADO,
+    default: ReportStatus.REQUESTED,
     name: 'status',
   })
   status!: ReportStatus;

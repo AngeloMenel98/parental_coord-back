@@ -10,8 +10,8 @@ import {
 } from 'typeorm';
 import { BondEntity } from '../../bonds/entities/bond.entity';
 import { UserEntity } from '../../users/entities/user.entity';
-import { ChildEntity } from '../../children/entities/child.entity';
 import { ActivityChildEntity } from './activity-child.entity';
+import { CategoryEntity } from '../../categories/entities/category.entity';
 
 export enum ActivityType {
   EVENT = 'event',
@@ -25,8 +25,6 @@ export enum ActivityStatus {
   VERIFY = 'verify',
   DONE = 'done',
   OVERDUE = 'overdue',
-  OBJECTION = 'objection',
-  DISPUTE = 'dispute',
 }
 
 export enum Criticality {
@@ -34,14 +32,6 @@ export enum Criticality {
   HIGH = 'high',
   MEDIUM = 'medium',
   LOW = 'low',
-}
-
-export enum ActivityCategory {
-  SALUD = 'salud',
-  EDUCACION = 'educacion',
-  SOCIAL = 'social',
-  FAMILIAR = 'familiar',
-  RECREACION = 'recreacion',
 }
 
 @Entity('activity')
@@ -56,12 +46,12 @@ export class ActivityEntity {
   @JoinColumn({ name: 'bond_id' })
   bond!: BondEntity;
 
-  @Column({
-    type: 'enum',
-    enum: ActivityCategory,
-    name: 'category',
-  })
-  category!: ActivityCategory;
+  @Column({ type: 'uuid', name: 'category_id' })
+  categoryId!: string;
+
+  @ManyToOne(() => CategoryEntity, { onDelete: 'RESTRICT' })
+  @JoinColumn({ name: 'category_id' })
+  category!: CategoryEntity;
 
   @Column({
     type: 'enum',
