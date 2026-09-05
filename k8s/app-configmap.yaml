@@ -12,9 +12,12 @@ metadata:
   labels:
     app: parental-coordination-back
 data:
-  NODE_ENV: "development"
+  NODE_ENV: "production"
   DB_HOST: "postgres"
   DB_PORT: "5432"
   DB_NAME: "parental_coordination"
   JWT_EXPIRES_IN: "24h"
   PORT: "3000"
+  CORS_ORIGINS: "http://localhost:3000"
+  THROTTLE_TTL: "60000"
+  THROTTLE_LIMIT: "100"

@@ -27,9 +27,16 @@ spec:
       labels:
         app: postgres
     spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 999
+        fsGroup: 999
       containers:
         - name: postgres
           image: postgres:16-alpine
+          securityContext:
+            readOnlyRootFilesystem: false
+            allowPrivilegeEscalation: false
           ports:
             - containerPort: 5432
               name: postgres

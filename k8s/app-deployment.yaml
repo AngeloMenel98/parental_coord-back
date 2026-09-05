@@ -1,16 +1,10 @@
-# App Deployment for parental_coordination_back (dev-only).
+# App Deployment for parental_coordination_back.
 #
-# - Image: parental-coordination-back:latest (build locally with
-#   `docker build -t parental-coordination-back:latest .` before applying).
 # - envFrom: app-config (ConfigMap) + app-secret (Secret) provide all env vars.
-#   The app reads DB_HOST=postgres, DB_PORT=5432, DB_NAME=parental_coordination,
-#   JWT_SECRET, etc. via @nestjs/config ConfigModule.
-# - Startup/readiness/liveness probe: GET /api/health — an unauthenticated
-#   endpoint that verifies the app is up and can reach Postgres. Returns 200
-#   with { "status": "ok", "db": "ok" } when the DB responds to SELECT 1, and
-#   503 with { "status": "error", "db": "unavailable" } when it cannot.
-# - imagePullPolicy: Never — the image is built locally for minikube.
-# - Postgres must be running and Ready before the app starts (see README.md).
+# - Startup/readiness/liveness probe: GET /api/health.
+# - imagePullPolicy: IfNotPresent for production registries.
+# - initContainer runs TypeORM migrations before the app starts.
+# - Security context enforces non-root execution (UID 1000).
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -27,10 +21,36 @@ spec:
       labels:
         app: parental-coordination-back
     spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+      initContainers:
+        - name: migrations
+          image: parental-coordination-back:latest
+          imagePullPolicy: IfNotPresent
+          command:
+            - node
+            - dist/typeorm
+            - migration:run
+            - -d
+            - dist/database/data-source.js
+          envFrom:
+            - configMapRef:
+                name: app-config
+            - secretRef:
+                name: app-secret
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 200m
+              memory: 256Mi
       containers:
         - name: app
           image: parental-coordination-back:latest
-          imagePullPolicy: Never
+          imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 3000
               name: http
@@ -39,6 +59,12 @@ spec:
                 name: app-config
             - secretRef:
                 name: app-secret
+          securityContext:
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
           readinessProbe:
             httpGet:
               path: /api/health

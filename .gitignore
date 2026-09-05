@@ -3,3 +3,8 @@ dist/
 .env
 coverage/
 *.js.map
+
+# K8s real secrets — use SealedSecrets or external secret managers
+k8s/*-secret.yaml
+!k8s/secret-template.yaml
+!k8s/app-sealedsecret.yaml

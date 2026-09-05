@@ -1,0 +1,58 @@
+# NetworkPolicy — default deny all, allow only what's needed.
+#
+# Ingress: only the nginx ingress controller can reach the app (port 3000).
+# Egress:
+#   - app → postgres (port 5432)
+#   - app → kube-dns (port 53 TCP+UDP)
+# Everything else is denied by the default deny-all policy.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-all
+  labels:
+    app: parental-coordination-back
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: parental-coordination-back-allow
+  labels:
+    app: parental-coordination-back
+spec:
+  podSelector:
+    matchLabels:
+      app: parental-coordination-back
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # Allow traffic from ingress controller to app port 3000
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ingress-nginx
+      ports:
+        - protocol: TCP
+          port: 3000
+  egress:
+    # Allow app → postgres (port 5432)
+    - to:
+        - podSelector:
+            matchLabels:
+              app: postgres
+      ports:
+        - protocol: TCP
+          port: 5432
+    # Allow app → DNS (port 53 TCP and UDP)
+    - to:
+        - namespaceSelector: {}
+      ports:
+        - protocol: TCP
+          port: 53
+        - protocol: UDP
+          port: 53
