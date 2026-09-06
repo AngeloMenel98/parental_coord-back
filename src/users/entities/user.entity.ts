@@ -3,9 +3,11 @@ import {
   CreateDateColumn,
   Entity,
   Index,
+  OneToOne,
   PrimaryGeneratedColumn,
   UpdateDateColumn,
 } from 'typeorm';
+import { PersonalDataEntity } from './personal-data.entity';
 
 export enum SystemRole {
   USER = 'user',
@@ -40,4 +42,7 @@ export class UserEntity {
 
   @UpdateDateColumn({ type: 'timestamptz', name: 'updated_at' })
   updatedAt!: Date;
+
+  @OneToOne(() => PersonalDataEntity, (pd) => pd.user)
+  personalData?: PersonalDataEntity;
 }
