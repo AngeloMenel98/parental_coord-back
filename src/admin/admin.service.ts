@@ -8,6 +8,7 @@ import { PersonalDataEntity } from '../users/entities/personal-data.entity';
 import { BondEntity, AgreementType } from '../bonds/entities/bond.entity';
 import { BondMemberEntity, BondMemberRole } from '../bonds/entities/bond-member.entity';
 import { ChildEntity } from '../children/entities/child.entity';
+import { BondsRepository } from '../bonds/repositories/bonds.repository';
 import { CreateUserDto } from './dto/create-user.dto';
 import { CreateBondDto } from './dto/create-bond.dto';
 import { CreateChildDto } from './dto/create-child.dto';
@@ -25,6 +26,7 @@ export class AdminService {
     private readonly bondMemberRepo: Repository<BondMemberEntity>,
     @InjectRepository(ChildEntity)
     private readonly childRepo: Repository<ChildEntity>,
+    private readonly bondsRepo: BondsRepository,
   ) {}
 
   // ── Users ────────────────────────────────────────────────────────
@@ -63,26 +65,21 @@ export class AdminService {
   }
 
   async listUsers() {
-    const users = await this.userRepo.find({
-      order: { createdAt: 'DESC' },
-    });
+    const users = await this.userRepo
+      .createQueryBuilder('user')
+      .leftJoinAndSelect('user.personalData', 'pd')
+      .orderBy('user.createdAt', 'DESC')
+      .getMany();
 
-    const result = await Promise.all(
-      users.map(async (u) => {
-        const pd = await this.personalDataRepo.findOneBy({ userId: u.id });
-        return {
-          id: u.id,
-          email: u.email,
-          systemRole: u.systemRole,
-          firstName: pd?.firstName ?? null,
-          lastName: pd?.lastName ?? null,
-          isActive: u.isActive,
-          createdAt: u.createdAt,
-        };
-      }),
-    );
-
-    return result;
+    return users.map((u) => ({
+      id: u.id,
+      email: u.email,
+      systemRole: u.systemRole,
+      firstName: u.personalData?.firstName ?? null,
+      lastName: u.personalData?.lastName ?? null,
+      isActive: u.isActive,
+      createdAt: u.createdAt,
+    }));
   }
 
   // ── Bonds ────────────────────────────────────────────────────────
@@ -127,36 +124,21 @@ export class AdminService {
   }
 
   async listBonds() {
-    const bonds = await this.bondRepo.find({
-      order: { createdAt: 'DESC' },
-    });
+    const enrichedBonds = await this.bondsRepo.findAllBondsEnriched();
 
-    const result = await Promise.all(
-      bonds.map(async (b) => {
-        const members = await this.bondMemberRepo.find({
-          where: { bondId: b.id },
-          relations: ['user'],
-        });
-        const children = await this.childRepo.find({
-          where: { bondId: b.id },
-        });
-        return {
-          id: b.id,
-          title: b.title,
-          agreementType: b.agreementType,
-          isActive: b.isActive,
-          members: members.map((m) => ({
-            id: m.userId,
-            email: m.user?.email,
-            role: m.role,
-          })),
-          childrenCount: children.length,
-          createdAt: b.createdAt,
-        };
-      }),
-    );
-
-    return result;
+    return enrichedBonds.map((b) => ({
+      id: b.id,
+      title: b.title,
+      agreementType: b.agreementType,
+      isActive: b.isActive,
+      members: (b.members ?? []).map((m) => ({
+        id: m.userId,
+        email: m.user?.email,
+        role: m.role,
+      })),
+      childrenCount: b.children?.length ?? 0,
+      createdAt: b.createdAt,
+    }));
   }
 
   // ── Bond Members ─────────────────────────────────────────────────

@@ -6,6 +6,7 @@ import { PersonalDataEntity } from '../users/entities/personal-data.entity';
 import { BondEntity } from '../bonds/entities/bond.entity';
 import { BondMemberEntity } from '../bonds/entities/bond-member.entity';
 import { ChildEntity } from '../children/entities/child.entity';
+import { BondsModule } from '../bonds/bonds.module';
 import { AdminController } from './admin.controller';
 import { AdminService } from './admin.service';
 
@@ -18,6 +19,7 @@ import { AdminService } from './admin.service';
       BondMemberEntity,
       ChildEntity,
     ]),
+    BondsModule,
   ],
   controllers: [AdminController],
   providers: [AdminService],

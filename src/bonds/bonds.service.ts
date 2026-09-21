@@ -1,65 +1,32 @@
 import { Injectable } from '@nestjs/common';
-import { InjectRepository } from '@nestjs/typeorm';
-import { IsNull, Repository } from 'typeorm';
+import { plainToInstance } from 'class-transformer';
 
-import { BondEntity } from './entities/bond.entity';
-import { BondMemberEntity } from './entities/bond-member.entity';
-import { ChildEntity } from '../children/entities/child.entity';
+import { BondsRepository } from './repositories/bonds.repository';
+import { BondResponseDto } from './dto/bond-response.dto';
 
 @Injectable()
 export class BondsService {
-  constructor(
-    @InjectRepository(BondEntity)
-    private readonly bondRepo: Repository<BondEntity>,
-    @InjectRepository(BondMemberEntity)
-    private readonly bondMemberRepo: Repository<BondMemberEntity>,
-    @InjectRepository(ChildEntity)
-    private readonly childRepo: Repository<ChildEntity>,
-  ) {}
+  constructor(private readonly bondRepo: BondsRepository) {}
 
-  async findByUserId(userId: string) {
-    // Step 1: Find all bonds where user is an active member
-    const memberships = await this.bondMemberRepo.find({
-      where: { userId, leftAt: IsNull() },
-      relations: ['bond'],
+  async findByUserId(userId: string): Promise<BondResponseDto[]> {
+    const bonds = await this.bondRepo.findBondsByUserId(userId);
+
+    const flattened = bonds.map((bond) => ({
+      ...bond,
+      members: bond.members?.map((m) => ({
+        ...m,
+        user: m.user
+          ? {
+              id: m.user.id,
+              firstName: m.user.personalData?.firstName ?? '',
+              lastName: m.user.personalData?.lastName ?? '',
+            }
+          : undefined,
+      })),
+    }));
+
+    return plainToInstance(BondResponseDto, flattened, {
+      excludeExtraneousValues: true,
     });
-
-    // Filter to only active bonds (belt-and-suspenders with leftAt)
-    const activeMemberships = memberships.filter(m => m.bond?.isActive);
-
-    // Step 2: Enrich each bond with members and children count
-    const result = await Promise.all(
-      activeMemberships.map(async (membership) => {
-        const bond = membership.bond;
-
-        const members = await this.bondMemberRepo.find({
-          where: { bondId: bond.id },
-          relations: ['user', 'user.personalData'],
-        });
-
-        const children = await this.childRepo.find({
-          where: { bondId: bond.id },
-        });
-
-        return {
-          id: bond.id,
-          title: bond.title,
-          agreement_type: bond.agreementType,
-          status: bond.isActive ? 'ACTIVE' : 'INACTIVE',
-          members: members.map((m) => ({
-            user_id: m.userId,
-            email: m.user?.email,
-            first_name: m.user?.personalData?.firstName ?? null,
-            last_name: m.user?.personalData?.lastName ?? null,
-            role: m.role,
-          })),
-          children_count: children.length,
-          created_at: bond.createdAt,
-          updated_at: bond.updatedAt,
-        };
-      }),
-    );
-
-    return result;
   }
 }
