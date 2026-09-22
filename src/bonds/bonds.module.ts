@@ -10,7 +10,9 @@ import { BondsService } from './bonds.service';
 import { BondsController } from './bonds.controller';
 
 @Module({
-  imports: [TypeOrmModule.forFeature([BondEntity, BondMemberEntity, ChildEntity, PersonalDataEntity])],
+  imports: [
+    TypeOrmModule.forFeature([BondEntity, BondMemberEntity, ChildEntity, PersonalDataEntity]),
+  ],
   controllers: [BondsController],
   providers: [BondsRepository, BondsService],
   exports: [TypeOrmModule, BondsRepository],

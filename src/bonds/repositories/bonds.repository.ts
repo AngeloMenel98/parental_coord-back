@@ -2,15 +2,16 @@ import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 
+import { BaseRepository } from '../../common/repositories/base.repository';
 import { BondEntity } from '../entities/bond.entity';
 
 @Injectable()
-export class BondsRepository extends Repository<BondEntity> {
+export class BondsRepository extends BaseRepository<BondEntity> {
   constructor(
     @InjectRepository(BondEntity)
     private readonly bondRepo: Repository<BondEntity>,
   ) {
-    super(bondRepo.target, bondRepo.manager);
+    super(bondRepo);
   }
 
   async findBondsByUserId(userId: string): Promise<BondEntity[]> {
