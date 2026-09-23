@@ -68,4 +68,24 @@ export class ActivitiesRepository extends BaseRepository<ActivityEntity> {
       .groupBy('a.assigned_to')
       .getRawMany<ComplianceRow>();
   }
+
+  /**
+   * Returns all activities of a bond ordered by scheduled_start (nulls last)
+   * asc → deadline (nulls last) asc → created_at asc.
+   */
+  async findByBondIdOrdered(bondId: string): Promise<ActivityEntity[]> {
+    return this.activityRepo
+      .createQueryBuilder('a')
+      .where('a.bond_id = :bondId', { bondId })
+      .addOrderBy('a.scheduled_start IS NULL', 'ASC')
+      .addOrderBy('a.scheduled_start', 'ASC', 'NULLS LAST')
+      .addOrderBy('a.deadline IS NULL', 'ASC')
+      .addOrderBy('a.deadline', 'ASC', 'NULLS LAST')
+      .addOrderBy('a.created_at', 'ASC')
+      .getMany();
+  }
+
+  async findById(id: string): Promise<ActivityEntity | null> {
+    return this.activityRepo.findOne({ where: { id } });
+  }
 }

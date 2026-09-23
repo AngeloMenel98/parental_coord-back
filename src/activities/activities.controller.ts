@@ -46,6 +46,43 @@ export class ActivitiesController {
     return this.activitiesService.create(bondId, dto, user.id);
   }
 
+  @Post(':id/confirm')
+  @HttpCode(HttpStatus.OK)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Confirm activity assignment (idempotent)' })
+  confirmAssignment(
+    @Param('id', ParseUUIDPipe) id: string,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.activitiesService.confirmAssignment(id, user.id);
+  }
+
+  @Get('bond/:bondId')
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'List activities for a bond (ordered, summary shape)' })
+  async listByBond(
+    @Param('bondId', ParseUUIDPipe) bondId: string,
+    @CurrentUser() user: AuthUser,
+  ) {
+    const bond = await this.bondsRepo.findActiveBondForMember(bondId, user.id);
+
+    if (!bond) {
+      throw new NotFoundException('Bond not found or you are not a member');
+    }
+
+    return this.activitiesService.listByBond(bondId);
+  }
+
+  @Get(':id')
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Get activity detail by id' })
+  getActivityDetail(
+    @Param('id', ParseUUIDPipe) id: string,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.activitiesService.getDetail(id, user.id);
+  }
+
   @Get(':bondId/compliance')
   @ApiOperation({ summary: 'Get bond compliance data' })
   async getBondCompliance(
