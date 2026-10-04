@@ -10,11 +10,7 @@ import {
   Post,
   UseGuards,
 } from '@nestjs/common';
-import {
-  ApiBearerAuth,
-  ApiOperation,
-  ApiTags,
-} from '@nestjs/swagger';
+import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { plainToInstance } from 'class-transformer';
 
 import { ActivitiesService } from './activities.service';
@@ -50,20 +46,26 @@ export class ActivitiesController {
   @HttpCode(HttpStatus.OK)
   @ApiBearerAuth()
   @ApiOperation({ summary: 'Confirm activity assignment (idempotent)' })
-  confirmAssignment(
+  confirmAssignment(@Param('id', ParseUUIDPipe) id: string, @CurrentUser() user: AuthUser) {
+    return this.activitiesService.confirmAssignment(id, user.id);
+  }
+
+  @Post(':id/decline')
+  @HttpCode(HttpStatus.OK)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Decline activity assignment' })
+  declineAssignment(
     @Param('id', ParseUUIDPipe) id: string,
     @CurrentUser() user: AuthUser,
+    @Body() body?: { reason?: string },
   ) {
-    return this.activitiesService.confirmAssignment(id, user.id);
+    return this.activitiesService.declineAssignment(id, user.id, body?.reason);
   }
 
   @Get('bond/:bondId')
   @ApiBearerAuth()
   @ApiOperation({ summary: 'List activities for a bond (ordered, summary shape)' })
-  async listByBond(
-    @Param('bondId', ParseUUIDPipe) bondId: string,
-    @CurrentUser() user: AuthUser,
-  ) {
+  async listByBond(@Param('bondId', ParseUUIDPipe) bondId: string, @CurrentUser() user: AuthUser) {
     const bond = await this.bondsRepo.findActiveBondForMember(bondId, user.id);
 
     if (!bond) {
@@ -76,10 +78,7 @@ export class ActivitiesController {
   @Get(':id')
   @ApiBearerAuth()
   @ApiOperation({ summary: 'Get activity detail by id' })
-  getActivityDetail(
-    @Param('id', ParseUUIDPipe) id: string,
-    @CurrentUser() user: AuthUser,
-  ) {
+  getActivityDetail(@Param('id', ParseUUIDPipe) id: string, @CurrentUser() user: AuthUser) {
     return this.activitiesService.getDetail(id, user.id);
   }
 
@@ -110,5 +109,13 @@ export class ActivitiesController {
       },
       { excludeExtraneousValues: true },
     );
+  }
+
+  @Post(':id/complete')
+  @HttpCode(HttpStatus.CREATED)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Mark an activity as done (idempotent)' })
+  complete(@Param('id', ParseUUIDPipe) id: string, @CurrentUser() user: AuthUser) {
+    return this.activitiesService.complete(id, user.id);
   }
 }

@@ -22,9 +22,7 @@ export abstract class BaseRepository<T extends { id: string }> extends Repositor
   async findByIdOrThrow(id: string, options?: FindOneOptions<T>): Promise<T> {
     const entity = await this.findById(id, options);
     if (!entity)
-      throw new NotFoundException(
-        `${this.repo.metadata.name} with id "${id}" not found`,
-      );
+      throw new NotFoundException(`${this.repo.metadata.name} with id "${id}" not found`);
     return entity;
   }
 

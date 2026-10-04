@@ -8,10 +8,7 @@ import { ChildrenService } from './children.service';
 import { BondsModule } from '../bonds/bonds.module';
 
 @Module({
-  imports: [
-    TypeOrmModule.forFeature([ChildEntity]),
-    forwardRef(() => BondsModule),
-  ],
+  imports: [TypeOrmModule.forFeature([ChildEntity]), forwardRef(() => BondsModule)],
   controllers: [ChildrenController, ChildController],
   providers: [ChildrenService],
   exports: [ChildrenService],

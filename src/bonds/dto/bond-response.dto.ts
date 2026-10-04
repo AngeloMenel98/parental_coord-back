@@ -14,7 +14,8 @@ export class BondMemberResponseDto {
   @Expose() joinedAt!: Date | null;
 
   @Type(() => BondMemberUserDto)
-  @Expose() user!: BondMemberUserDto;
+  @Expose()
+  user!: BondMemberUserDto;
 }
 
 @Exclude()
@@ -35,8 +36,10 @@ export class BondResponseDto {
   @Expose() isActive!: boolean;
 
   @Type(() => BondMemberResponseDto)
-  @Expose() members!: BondMemberResponseDto[];
+  @Expose()
+  members!: BondMemberResponseDto[];
 
   @Type(() => BondChildResponseDto)
-  @Expose() children!: BondChildResponseDto[];
+  @Expose()
+  children!: BondChildResponseDto[];
 }

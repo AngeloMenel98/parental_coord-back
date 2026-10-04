@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 
@@ -87,5 +87,38 @@ export class ActivitiesRepository extends BaseRepository<ActivityEntity> {
 
   async findById(id: string): Promise<ActivityEntity | null> {
     return this.activityRepo.findOne({ where: { id } });
+  }
+
+  async markCompleted(id: string, now: Date): Promise<{ status: string; completedAt: string }> {
+    const res = await this.activityRepo
+      .createQueryBuilder()
+      .update(ActivityEntity)
+      .set({
+        status: ActivityStatus.DONE,
+        completedAt: () => 'COALESCE(completed_at, :now)',
+        updatedAt: () => 'now()',
+      })
+      .where('id = :id', { id })
+      .setParameters({ now })
+      .returning(['status', 'completedAt'])
+      .execute();
+    const row = res.raw?.[0] as { status: string; completed_at: Date | string } | undefined;
+    if (!row) {
+      throw new NotFoundException('Activity not found');
+    }
+    return { status: row.status, completedAt: new Date(row.completed_at).toISOString() };
+  }
+
+  async markOverdue(): Promise<number> {
+    const result = await this.activityRepo
+      .createQueryBuilder()
+      .update(ActivityEntity)
+      .set({ status: ActivityStatus.OVERDUE })
+      .where('assigned_to IS NOT NULL')
+      .andWhere('completed_at IS NULL')
+      .andWhere("status NOT IN ('done', 'overdue')")
+      .andWhere('scheduled_start + notif_after <= now()')
+      .execute();
+    return result.affected ?? 0;
   }
 }

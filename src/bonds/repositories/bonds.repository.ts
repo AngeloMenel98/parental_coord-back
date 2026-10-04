@@ -22,11 +22,7 @@ export class BondsRepository extends BaseRepository<BondEntity> {
         'activeMember.userId = :userId AND activeMember.leftAt IS NULL',
         { userId },
       )
-      .leftJoinAndSelect(
-        'bond.members',
-        'allMembers',
-        'allMembers.leftAt IS NULL',
-      )
+      .leftJoinAndSelect('bond.members', 'allMembers', 'allMembers.leftAt IS NULL')
       .leftJoinAndSelect('allMembers.user', 'memberUser')
       .leftJoinAndSelect('memberUser.personalData', 'memberPD')
       .leftJoinAndSelect('bond.children', 'child')

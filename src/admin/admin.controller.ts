@@ -1,12 +1,4 @@
-import {
-  Body,
-  Controller,
-  Get,
-  Param,
-  ParseUUIDPipe,
-  Post,
-  UseGuards,
-} from '@nestjs/common';
+import { Body, Controller, Get, Param, ParseUUIDPipe, Post, UseGuards } from '@nestjs/common';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/roles.guard';
 import { Roles } from '../auth/roles.decorator';
@@ -64,10 +56,7 @@ export class AdminController {
   }
 
   @Post('bonds/:id/children')
-  addChildToBond(
-    @Param('id', ParseUUIDPipe) bondId: string,
-    @Body() dto: CreateChildDto,
-  ) {
+  addChildToBond(@Param('id', ParseUUIDPipe) bondId: string, @Body() dto: CreateChildDto) {
     return this.adminService.addChildToBond(bondId, dto);
   }
 }

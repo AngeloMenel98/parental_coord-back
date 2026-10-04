@@ -3,9 +3,7 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 
 @Global()
 @Module({
-  imports: [
-    TypeOrmModule.forFeature([]),
-  ],
+  imports: [TypeOrmModule.forFeature([])],
   exports: [TypeOrmModule],
 })
 export class CommonRepositoryModule {}

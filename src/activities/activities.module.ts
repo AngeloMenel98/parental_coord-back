@@ -10,6 +10,11 @@ import { ActivitiesController } from './activities.controller';
 import { NotificationEntity } from '../notifications/entities/notification.entity';
 import { BondsModule } from '../bonds/bonds.module';
 import { NotificationsModule } from '../notifications/notifications.module';
+import { CategoryEntity } from '../categories/entities/category.entity';
+import { ChildEntity } from '../children/entities/child.entity';
+import { SystemClock } from '../common/clock/system-clock';
+import { ActivitiesScheduler } from './activities.scheduler';
+import { Clock } from '../common/clock/clock';
 
 @Module({
   imports: [
@@ -18,12 +23,20 @@ import { NotificationsModule } from '../notifications/notifications.module';
       ActivityChildEntity,
       ActAttachmentEntity,
       NotificationEntity,
+      CategoryEntity,
+      ChildEntity,
     ]),
     forwardRef(() => BondsModule),
     NotificationsModule,
   ],
   controllers: [ActivitiesController],
-  providers: [ActivitiesRepository, ActivitiesService],
+  providers: [
+    ActivitiesRepository,
+    ActivitiesService,
+    ActivitiesScheduler,
+    SystemClock,
+    { provide: Clock, useExisting: SystemClock },
+  ],
   exports: [ActivitiesService],
 })
 export class ActivitiesModule {}

@@ -11,6 +11,8 @@ export class ActivitySummaryDto {
   @Expose() deadline!: string | null;
   @Expose() assignedTo!: string | null;
   @Expose() criticality!: string;
+  @Expose() scheduledEnd!: string | null;
+  @Expose() completedAt!: string | null;
   @Expose() assignedConfirmed!: boolean;
   @Expose() confirmedAt!: string | null;
 }
@@ -29,6 +31,8 @@ export class ActivityDetailDto {
   @Expose() assignedTo!: string | null;
   @Expose() createdBy!: string;
   @Expose() createdAt!: string;
+  @Expose() scheduledEnd!: string | null;
+  @Expose() completedAt!: string | null;
   @Expose() assignedConfirmed!: boolean;
   @Expose() confirmedAt!: string | null;
 }

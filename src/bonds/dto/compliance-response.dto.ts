@@ -17,5 +17,6 @@ export class ComplianceResponseDto {
   @Expose() bondActive!: boolean;
 
   @Type(() => ComplianceMemberDto)
-  @Expose() members!: ComplianceMemberDto[];
+  @Expose()
+  members!: ComplianceMemberDto[];
 }

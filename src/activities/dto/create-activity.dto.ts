@@ -1,70 +1,68 @@
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import {
+  ArrayNotEmpty,
+  ArrayUnique,
   IsArray,
-  IsDateString,
   IsEnum,
-  IsNotEmpty,
   IsOptional,
   IsString,
   IsUUID,
-  ArrayNotEmpty,
+  Length,
+  MaxLength,
 } from 'class-validator';
-import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-
-import { ActivityType, Criticality } from '../entities/activity.entity';
+import { ActivityType } from '../entities/activity.entity';
+import { IsIso8601WithOffset } from '../../common/validators/is-iso-8601-with-offset.validator';
 
 export class CreateActivityDto {
-  @ApiProperty({ example: 'Reunión de padres', description: 'Título de la actividad' })
+  @ApiProperty({ minLength: 3, maxLength: 80, example: 'Ir al pediatra' })
   @IsString()
-  @IsNotEmpty()
+  @Length(3, 80)
   title!: string;
 
-  @ApiProperty({ enum: ActivityType, example: ActivityType.EVENT, description: 'Tipo de actividad' })
-  @IsEnum(ActivityType)
-  type!: ActivityType;
+  @ApiPropertyOptional({ maxLength: 500, example: 'Turno a las 10:00 con Dr. Pérez' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(500)
+  description?: string;
 
-  @ApiProperty({ example: 'a1b2c3d4-e5f6-7890-abcd-ef1234567890', description: 'ID de la categoría' })
+  @ApiPropertyOptional({ enum: ActivityType, default: ActivityType.EVENT })
+  @IsOptional()
+  @IsEnum(ActivityType)
+  type?: ActivityType;
+
+  @ApiProperty({ format: 'uuid' })
   @IsUUID()
   categoryId!: string;
 
-  @ApiProperty({ example: 'a1b2c3d4-e5f6-7890-abcd-ef1234567890', description: 'ID del usuario asignado' })
+  @ApiPropertyOptional({ format: 'uuid' })
+  @IsOptional()
   @IsUUID()
-  assignedTo!: string;
+  assignedTo?: string;
 
   @ApiProperty({
-    enum: Criticality,
-    example: Criticality.MEDIUM,
-    description: 'Nivel de criticidad',
+    example: '2026-10-05T10:00:00-03:00',
+    format: 'date-time',
+    description:
+      'Instante ISO-8601 con offset explícito obligatorio (Z o ±HH:MM). Sin offset ⇒ 400.',
   })
-  @IsEnum(Criticality)
-  criticality!: Criticality;
-
-  @ApiPropertyOptional({ description: 'Descripción de la actividad' })
-  @IsOptional()
   @IsString()
-  description?: string;
-
-  @ApiPropertyOptional({ example: '2026-10-01T10:00:00Z', description: 'Fecha/hora de inicio programada (ISO 8601)' })
-  @IsOptional()
-  @IsDateString()
-  scheduledStart?: string;
-
-  @ApiPropertyOptional({ example: '2026-10-01T12:00:00Z', description: 'Fecha/hora de fin programada (ISO 8601)' })
-  @IsOptional()
-  @IsDateString()
-  scheduledEnd?: string;
-
-  @ApiPropertyOptional({ example: '2026-10-01T12:00:00Z', description: 'Fecha límite (ISO 8601)' })
-  @IsOptional()
-  @IsDateString()
-  deadline?: string;
+  @IsIso8601WithOffset()
+  scheduledStart!: string;
 
   @ApiPropertyOptional({
-    example: ['a1b2c3d4-e5f6-7890-abcd-ef1234567890'],
-    description: 'IDs de los hijos involucrados en la actividad',
+    example: '2026-10-05T11:00:00-03:00',
+    format: 'date-time',
+    description: 'Instante ISO-8601 con offset explícito obligatorio si se proporciona.',
   })
   @IsOptional()
+  @IsString()
+  @IsIso8601WithOffset()
+  scheduledEnd?: string;
+
+  @ApiProperty({ type: [String], format: 'uuid', minItems: 1, uniqueItems: true })
   @IsArray()
   @ArrayNotEmpty()
+  @ArrayUnique()
   @IsUUID('4', { each: true })
-  childrenIds?: string[];
+  childrenIds!: string[];
 }

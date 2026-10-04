@@ -12,6 +12,7 @@ import { BondEntity } from '../../bonds/entities/bond.entity';
 import { UserEntity } from '../../users/entities/user.entity';
 import { ActivityChildEntity } from './activity-child.entity';
 import { CategoryEntity } from '../../categories/entities/category.entity';
+import { Criticality } from '../../common/enums/criticality.enum';
 
 export enum ActivityType {
   EVENT = 'event',
@@ -21,17 +22,12 @@ export enum ActivityType {
 export enum ActivityStatus {
   CREATED = 'created',
   ASSIGNED = 'assigned',
+  ASSISTING = 'assisting',
   IN_PROGRESS = 'in_progress',
   VERIFY = 'verify',
   DONE = 'done',
   OVERDUE = 'overdue',
-}
-
-export enum Criticality {
-  CRITICAL = 'critical',
-  HIGH = 'high',
-  MEDIUM = 'medium',
-  LOW = 'low',
+  NOT_ASSISTING = 'not_assisting',
 }
 
 @Entity('activity')
@@ -138,3 +134,4 @@ export class ActivityEntity {
   @OneToMany(() => ActivityChildEntity, (ac) => ac.activity)
   activityChildren!: ActivityChildEntity[];
 }
+export { Criticality };
