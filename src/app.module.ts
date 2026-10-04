@@ -51,6 +51,11 @@ import { validateConfig } from './config/app-config';
         synchronize: false,
       }),
     }),
+    // Sin esto los `@Cron` no se registran: `ActivitiesScheduler.markOverdueActivities`
+    // estaba declarado y NEVER se ejecutaba, así que ninguna actividad pasaba a
+    // `overdue` por sí sola. `ScheduleModule` ya estaba importado y `@nestjs/schedule`
+    // ya era dependencia; faltaba la llamada. Detectado por sdd-verify (#1333).
+    ScheduleModule.forRoot(),
     UsersModule,
     AuthModule,
     HealthModule,
