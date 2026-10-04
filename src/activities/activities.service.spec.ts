@@ -3,6 +3,8 @@ import { getDataSourceToken, getRepositoryToken } from '@nestjs/typeorm';
 import { BadRequestException } from '@nestjs/common';
 import { ActivitiesService } from './activities.service';
 import { ActivitiesRepository } from './repositories/activities.repository';
+import { ActivitiesAuditRepository } from './repositories/activities-audit.repository';
+import { ActivityPolicyService } from './activity-policy.service';
 import { CategoryEntity } from '../categories/entities/category.entity';
 import { ChildEntity } from '../children/entities/child.entity';
 import { NotificationEntity } from '../notifications/entities/notification.entity';
@@ -10,6 +12,7 @@ import { ActivityEntity, ActivityStatus } from './entities/activity.entity';
 import { ActivityChildEntity } from './entities/activity-child.entity';
 import { BondsRepository } from '../bonds/repositories/bonds.repository';
 import { Clock } from '../common/clock/clock';
+import { CodedException } from '../common/errors/coded.exception';
 
 describe('ActivitiesService', () => {
   let service: ActivitiesService;
@@ -19,6 +22,7 @@ describe('ActivitiesService', () => {
   let notifRepo: any;
   let activityChildRepo: any;
   let bondsRepo: any;
+  let auditRepo: any;
   let clock: Clock;
   const bondId = 'b1';
   const userId = 'u1';
@@ -29,7 +33,10 @@ describe('ActivitiesService', () => {
     activityRepo = {
       findOne: jest.fn(),
       findById: jest.fn(),
+      findByIdIncludingDeleted: jest.fn(),
+      findByBondIdOrdered: jest.fn().mockResolvedValue([]),
       markCompleted: jest.fn(),
+      update: jest.fn().mockResolvedValue({ affected: 1 }),
       save: jest.fn(),
       create: jest.fn(),
       findOneBy: jest.fn(),
@@ -41,7 +48,7 @@ describe('ActivitiesService', () => {
       find: jest.fn(),
     } as any;
     notifRepo = {
-      create: jest.fn(),
+      create: jest.fn((x: any) => x),
       save: jest.fn(),
     } as any;
     activityChildRepo = {
@@ -51,8 +58,16 @@ describe('ActivitiesService', () => {
     bondsRepo = {
       findActiveBondForMember: jest.fn().mockResolvedValue({ id: bondId } as any),
     } as any;
+    auditRepo = {
+      record: jest.fn(),
+      findLatestOldValue: jest.fn().mockResolvedValue(null),
+    } as any;
 
-    clock = { now: () => new Date('2026-10-01T12:00:00Z') } as any;
+    // `jest.fn` y no una flecha suelta: los tests de la guarda de tiempo y de la
+    // ventana de deshacer necesitan PODER AVISAR de que se usó el reloj inyectado
+    // en lugar de `new Date()`, que es la diferencia entre una regla testeable y
+    // una que depende del reloj de pared.
+    clock = { now: jest.fn(() => new Date('2026-10-01T12:00:00Z')) } as any;
 
     const dataSourceMock: any = {
       transaction: jest.fn(async (fn) => fn(dataSourceMock as any)),
@@ -75,6 +90,8 @@ describe('ActivitiesService', () => {
         { provide: getDataSourceToken(), useValue: dataSourceMock },
         { provide: BondsRepository, useValue: bondsRepo },
         { provide: Clock, useValue: clock },
+        ActivityPolicyService,
+        { provide: ActivitiesAuditRepository, useValue: auditRepo },
       ],
     }).compile();
 
@@ -292,6 +309,444 @@ describe('ActivitiesService', () => {
       (notifRepo as any).create = jest.fn();
       (notifRepo as any).save = jest.fn().mockRejectedValue(new Error('fail'));
       await expect(service.complete('a1', userId)).rejects.toThrow();
+    });
+  });
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // Acciones de swipe (R2, R4–R8, R11)
+  // ══════════════════════════════════════════════════════════════════════════
+  describe('swipe actions', () => {
+    const creator = 'u-creator';
+    const assignee = 'u-assignee';
+    const stranger = 'u-stranger';
+
+    /** Actividad futura y en curso (10:00–14:00, ahora 12:00). */
+    function futureActivity(overrides: Record<string, unknown> = {}) {
+      return {
+        id: 'a1',
+        bondId,
+        createdBy: creator,
+        assignedTo: assignee,
+        status: ActivityStatus.ASSIGNED,
+        scheduledStart: new Date('2026-10-01T10:00:00Z'),
+        scheduledEnd: new Date('2026-10-01T14:00:00Z'),
+        deletedAt: null,
+        declinedAt: null,
+        declinedReason: null,
+        cancelledAt: null,
+        cancelledBy: null,
+        ...overrides,
+      } as any;
+    }
+
+    /** Actividad ya terminada (12:00–13:00, ahora 12:00 ⇒ end alcanzada). */
+    function pastActivity(overrides: Record<string, unknown> = {}) {
+      return futureActivity({
+        scheduledStart: new Date('2026-10-01T11:00:00Z'),
+        scheduledEnd: new Date('2026-10-01T12:00:00Z'),
+        ...overrides,
+      });
+    }
+
+    const expectCode = async (p: Promise<unknown>, code: string, status: number) => {
+      // Se captura UNA vez y se inspecciona el resultado: encadenar dos `await` sobre
+      // la misma promesa re-lanza la excepción en vez de devolverla.
+      const err = await p.then(
+        () => null,
+        (e: unknown) => e,
+      );
+      expect(err).toBeInstanceOf(CodedException);
+      const coded = err as CodedException;
+      expect(coded.code).toBe(code);
+      expect(coded.getStatus()).toBe(status);
+    };
+
+    describe('delete (Eliminar) — A4: deleted_at and nothing else', () => {
+      it('sets deleted_at to the CLOCK time and writes an audit row', async () => {
+        (activityRepo as any).findById.mockResolvedValue(futureActivity());
+        const res = await service.delete('a1', creator);
+
+        expect(res.deletedAt).toBe('2026-10-01T12:00:00.000Z');
+        expect(activityRepo.update).toHaveBeenCalledWith(
+          'a1',
+          expect.objectContaining({ deletedAt: new Date('2026-10-01T12:00:00Z') }),
+        );
+        expect(auditRepo.record).toHaveBeenCalledWith(
+          expect.objectContaining({ action: 'activity_delete', userId: creator }),
+          expect.anything(),
+        );
+      });
+
+      it('touches NOTHING else — no status change, no child-table cascade', async () => {
+        (activityRepo as any).findById.mockResolvedValue(futureActivity());
+        await service.delete('a1', creator);
+        const patch = activityRepo.update.mock.calls[0][1];
+        expect(Object.keys(patch)).toEqual(['deletedAt']);
+      });
+
+      it('403 for a bond member who is not the creator', async () => {
+        (activityRepo as any).findById.mockResolvedValue(futureActivity());
+        await expectCode(service.delete('a1', assignee), 'ACTIVITY_FORBIDDEN', 403);
+      });
+
+      it('404 (NOT 403) for a non-member — existence is not revealed', async () => {
+        (activityRepo as any).findById.mockResolvedValue(futureActivity());
+        bondsRepo.findActiveBondForMember.mockResolvedValue(null);
+        await expectCode(service.delete('a1', stranger), 'ACTIVITY_NOT_FOUND', 404);
+      });
+
+      it('409 ACTIVITY_ALREADY_PAST once the activity has ended', async () => {
+        (activityRepo as any).findById.mockResolvedValue(pastActivity());
+        await expectCode(service.delete('a1', creator), 'ACTIVITY_ALREADY_PAST', 409);
+        expect(activityRepo.update).not.toHaveBeenCalled();
+      });
+
+      it('404 when the activity does not exist at all', async () => {
+        (activityRepo as any).findById.mockResolvedValue(null);
+        await expectCode(service.delete('a1', creator), 'ACTIVITY_NOT_FOUND', 404);
+      });
+    });
+
+    describe('restore (undo delete) — server-owned 5000 ms window', () => {
+      it('clears deleted_at 3000 ms after the delete', async () => {
+        (activityRepo as any).findByIdIncludingDeleted.mockResolvedValue(
+          futureActivity({ deletedAt: new Date('2026-10-01T11:59:57Z') }),
+        );
+        const res = await service.restore('a1', creator);
+        expect(res.deletedAt).toBeNull();
+        expect(activityRepo.update).toHaveBeenCalledWith('a1', { deletedAt: null });
+        expect(auditRepo.record).toHaveBeenCalledWith(
+          expect.objectContaining({ action: 'activity_restore' }),
+          expect.anything(),
+        );
+      });
+
+      it('is open at EXACTLY 5000 ms and closed at 5001 ms', async () => {
+        (activityRepo as any).findByIdIncludingDeleted.mockResolvedValue(
+          futureActivity({ deletedAt: new Date('2026-10-01T11:59:55Z') }),
+        );
+        await expect(service.restore('a1', creator)).resolves.toEqual({
+          id: 'a1',
+          deletedAt: null,
+        });
+
+        (activityRepo as any).findByIdIncludingDeleted.mockResolvedValue(
+          futureActivity({ deletedAt: new Date('2026-10-01T11:59:54.999Z') }),
+        );
+        await expectCode(service.restore('a1', creator), 'ACTIVITY_UNDO_WINDOW_EXPIRED', 409);
+      });
+
+      it('reads through findByIdIncludingDeleted — the row is already hidden', async () => {
+        (activityRepo as any).findByIdIncludingDeleted.mockResolvedValue(
+          futureActivity({ deletedAt: new Date('2026-10-01T11:59:59Z') }),
+        );
+        await service.restore('a1', creator);
+        expect(activityRepo.findByIdIncludingDeleted).toHaveBeenCalledWith('a1');
+      });
+
+      it('is idempotent when nothing was deleted — 200, no write, no audit noise', async () => {
+        (activityRepo as any).findByIdIncludingDeleted.mockResolvedValue(
+          futureActivity({ deletedAt: null }),
+        );
+        await expect(service.restore('a1', creator)).resolves.toEqual({
+          id: 'a1',
+          deletedAt: null,
+        });
+        expect(activityRepo.update).not.toHaveBeenCalled();
+        expect(auditRepo.record).not.toHaveBeenCalled();
+      });
+
+      it('403 for a non-creator even inside the window', async () => {
+        (activityRepo as any).findByIdIncludingDeleted.mockResolvedValue(
+          futureActivity({ deletedAt: new Date('2026-10-01T11:59:59Z') }),
+        );
+        await expectCode(service.restore('a1', assignee), 'ACTIVITY_FORBIDDEN', 403);
+      });
+    });
+
+    describe('cancel (Cancelar) — A1: reason REQUIRED, 3–200', () => {
+      it('sets CANCELLED + cancelled_at + cancelled_by and audits the reason', async () => {
+        (activityRepo as any).findById.mockResolvedValue(futureActivity());
+        const res = await service.cancel('a1', creator, 'no podemos ese día');
+
+        expect(res.status).toBe(ActivityStatus.CANCELLED);
+        expect(res.cancelledAt).toBe('2026-10-01T12:00:00.000Z');
+        expect(activityRepo.update).toHaveBeenCalledWith(
+          'a1',
+          expect.objectContaining({
+            status: ActivityStatus.CANCELLED,
+            cancelledAt: new Date('2026-10-01T12:00:00Z'),
+            cancelledBy: creator,
+          }),
+        );
+        expect(auditRepo.record).toHaveBeenCalledWith(
+          expect.objectContaining({
+            action: 'activity_cancel',
+            detail: 'no podemos ese día',
+            oldValue: { status: ActivityStatus.ASSIGNED },
+          }),
+          expect.anything(),
+        );
+      });
+
+      it('emits `cancelled` LOWERCASE so the client uppercase() match fires', () => {
+        expect(ActivityStatus.CANCELLED).toBe('cancelled');
+      });
+
+      it('422 VALIDATION_FAILED when the reason is missing', async () => {
+        (activityRepo as any).findById.mockResolvedValue(futureActivity());
+        await expectCode(service.cancel('a1', creator, undefined), 'VALIDATION_FAILED', 422);
+      });
+
+      it('422 for a 2-char reason and for a 201-char reason', async () => {
+        (activityRepo as any).findById.mockResolvedValue(futureActivity());
+        await expectCode(service.cancel('a1', creator, 'ab'), 'VALIDATION_FAILED', 422);
+        await expectCode(service.cancel('a1', creator, 'a'.repeat(201)), 'VALIDATION_FAILED', 422);
+      });
+
+      it('accepts the 3 and 200 bounds', async () => {
+        (activityRepo as any).findById.mockResolvedValue(futureActivity());
+        await expect(service.cancel('a1', creator, 'abc')).resolves.toBeDefined();
+        await expect(service.cancel('a1', creator, 'a'.repeat(200))).resolves.toBeDefined();
+      });
+
+      it('403 for a non-creator', async () => {
+        (activityRepo as any).findById.mockResolvedValue(futureActivity());
+        await expectCode(
+          service.cancel('a1', assignee, 'un motivo válido'),
+          'ACTIVITY_FORBIDDEN',
+          403,
+        );
+      });
+
+      it('409 when already past', async () => {
+        (activityRepo as any).findById.mockResolvedValue(pastActivity());
+        await expectCode(
+          service.cancel('a1', creator, 'un motivo válido'),
+          'ACTIVITY_ALREADY_PAST',
+          409,
+        );
+      });
+
+      it('notifies the assignee WITH the reason', async () => {
+        (activityRepo as any).findById.mockResolvedValue(
+          futureActivity({ title: 'Visita al museo' }),
+        );
+        await service.cancel('a1', creator, 'llueve mucho');
+        expect(notifRepo.save).toHaveBeenCalledWith(
+          expect.objectContaining({
+            userId: assignee,
+            type: 'activity_cancelled',
+            body: expect.stringContaining('llueve mucho'),
+          }),
+        );
+      });
+
+      it('does NOT notify the creator — the actor already knows they cancelled it', async () => {
+        (activityRepo as any).findById.mockResolvedValue(futureActivity());
+        await service.cancel('a1', creator, 'llueve mucho');
+        const recipients = notifRepo.save.mock.calls.map((c: any[]) => c[0].userId);
+        expect(recipients).not.toContain(creator);
+        expect(recipients).toEqual([assignee]);
+      });
+    });
+
+    describe('decline (No asistir) — reason required and PERSISTED', () => {
+      it('persists declined_at AND declined_reason (the old endpoint dropped it)', async () => {
+        (activityRepo as any).findById.mockResolvedValue(futureActivity());
+        const res = await service.declineAssignment('a1', assignee, 'estoy de guardia');
+
+        expect(res.status).toBe(ActivityStatus.NOT_ASSISTING);
+        expect(activityRepo.update).toHaveBeenCalledWith(
+          'a1',
+          expect.objectContaining({
+            status: ActivityStatus.NOT_ASSISTING,
+            declinedAt: new Date('2026-10-01T12:00:00Z'),
+            declinedReason: 'estoy de guardia',
+          }),
+        );
+      });
+
+      it('422 when the reason is missing — previously it was optional', async () => {
+        (activityRepo as any).findById.mockResolvedValue(futureActivity());
+        await expectCode(
+          service.declineAssignment('a1', assignee, undefined),
+          'VALIDATION_FAILED',
+          422,
+        );
+      });
+
+      it('422 for a whitespace-only reason', async () => {
+        (activityRepo as any).findById.mockResolvedValue(futureActivity());
+        await expectCode(
+          service.declineAssignment('a1', assignee, '        '),
+          'VALIDATION_FAILED',
+          422,
+        );
+      });
+
+      it('403 for the creator when they are not the assignee', async () => {
+        (activityRepo as any).findById.mockResolvedValue(futureActivity());
+        await expectCode(
+          service.declineAssignment('a1', creator, 'no puedo'),
+          'ACTIVITY_FORBIDDEN',
+          403,
+        );
+      });
+
+      it('409 when already past', async () => {
+        (activityRepo as any).findById.mockResolvedValue(pastActivity());
+        await expectCode(
+          service.declineAssignment('a1', assignee, 'no puedo'),
+          'ACTIVITY_ALREADY_PAST',
+          409,
+        );
+      });
+
+      it('stores the PREVIOUS status in the audit so undo has something to restore', async () => {
+        (activityRepo as any).findById.mockResolvedValue(futureActivity());
+        await service.declineAssignment('a1', assignee, 'no puedo');
+        expect(auditRepo.record).toHaveBeenCalledWith(
+          expect.objectContaining({
+            action: 'activity_decline',
+            oldValue: { status: ActivityStatus.ASSIGNED },
+          }),
+          expect.anything(),
+        );
+      });
+
+      it('notifies the creator WITH the reason (A3 changed DTO visibility, not this audience)', async () => {
+        (activityRepo as any).findById.mockResolvedValue(futureActivity());
+        await service.declineAssignment('a1', assignee, 'cita médica');
+        expect(notifRepo.save).toHaveBeenCalledWith(
+          expect.objectContaining({
+            userId: creator,
+            type: 'activity_declined',
+            body: expect.stringContaining('cita médica'),
+          }),
+        );
+      });
+
+      it('uses the injected Clock, never `new Date()` — otherwise the guard is untestable', async () => {
+        (activityRepo as any).findById.mockResolvedValue(futureActivity());
+        await service.declineAssignment('a1', assignee, 'no puedo');
+        expect(clock.now).toHaveBeenCalled();
+      });
+    });
+
+    describe('undo-decline', () => {
+      it('restores the previous status from the audit and clears the reason', async () => {
+        (activityRepo as any).findById.mockResolvedValue(
+          futureActivity({
+            status: ActivityStatus.NOT_ASSISTING,
+            declinedAt: new Date('2026-10-01T11:59:57Z'),
+            declinedReason: 'no puedo',
+          }),
+        );
+        auditRepo.findLatestOldValue.mockResolvedValue({ status: ActivityStatus.ASSIGNED });
+
+        const res = await service.undoDecline('a1', assignee);
+        expect(res.status).toBe(ActivityStatus.ASSIGNED);
+        expect(activityRepo.update).toHaveBeenCalledWith(
+          'a1',
+          expect.objectContaining({
+            status: ActivityStatus.ASSIGNED,
+            declinedAt: null,
+            declinedReason: null,
+          }),
+        );
+      });
+
+      it('409 ACTIVITY_UNDO_WINDOW_EXPIRED past 5000 ms', async () => {
+        (activityRepo as any).findById.mockResolvedValue(
+          futureActivity({ declinedAt: new Date('2026-10-01T11:59:50Z') }),
+        );
+        await expectCode(service.undoDecline('a1', assignee), 'ACTIVITY_UNDO_WINDOW_EXPIRED', 409);
+      });
+
+      it('is idempotent when there is no decline to undo', async () => {
+        (activityRepo as any).findById.mockResolvedValue(
+          futureActivity({ status: ActivityStatus.ASSIGNED, declinedAt: null }),
+        );
+        await expect(service.undoDecline('a1', assignee)).resolves.toEqual({
+          id: 'a1',
+          status: ActivityStatus.ASSIGNED,
+        });
+        expect(activityRepo.update).not.toHaveBeenCalled();
+      });
+
+      it('403 for a non-assignee', async () => {
+        (activityRepo as any).findById.mockResolvedValue(
+          futureActivity({ declinedAt: new Date('2026-10-01T11:59:59Z') }),
+        );
+        await expectCode(service.undoDecline('a1', creator), 'ACTIVITY_FORBIDDEN', 403);
+      });
+    });
+
+    describe('viewer-aware DTOs (R1)', () => {
+      it('listByBond injects can_* for the viewer, not for the creator', async () => {
+        const rows = [futureActivity({ id: 'a1' })];
+        (activityRepo as any).findByBondIdOrdered.mockResolvedValue(rows);
+
+        const asCreator = await service.listByBond(bondId, creator);
+        expect(asCreator[0]).toMatchObject({
+          canDelete: true,
+          canCancel: true,
+          canDecline: false,
+        });
+
+        const asAssignee = await service.listByBond(bondId, assignee);
+        expect(asAssignee[0]).toMatchObject({
+          canDelete: false,
+          canCancel: false,
+          canDecline: true,
+        });
+      });
+
+      it('getDetail adds isPast and the three flags', async () => {
+        (activityRepo as any).findById.mockResolvedValue(futureActivity());
+        const detail = await service.getDetail('a1', creator);
+        expect(detail).toMatchObject({
+          canDelete: true,
+          canCancel: true,
+          canDecline: false,
+          isPast: false,
+        });
+      });
+
+      it('A3: declinedReason is exposed to ANY bond member, not only the creator', async () => {
+        (activityRepo as any).findById.mockResolvedValue(
+          futureActivity({ declinedReason: 'cita médica' }),
+        );
+        // El tercero es miembro del vínculo pero no es creador ni asignado.
+        const detail = await service.getDetail('a1', stranger);
+        expect(detail.declinedReason).toBe('cita médica');
+      });
+
+      it('A3: the creator also still sees it', async () => {
+        (activityRepo as any).findById.mockResolvedValue(
+          futureActivity({ declinedReason: 'cita médica' }),
+        );
+        const detail = await service.getDetail('a1', creator);
+        expect(detail.declinedReason).toBe('cita médica');
+      });
+
+      it('A3: NEVER leaks across bonds — a non-member gets 404, not the reason', async () => {
+        (activityRepo as any).findById.mockResolvedValue(
+          futureActivity({ declinedReason: 'cita médica' }),
+        );
+        bondsRepo.findActiveBondForMember.mockResolvedValue(null);
+        await expect(service.getDetail('a1', stranger)).rejects.toMatchObject({
+          code: 'ACTIVITY_NOT_FOUND',
+        });
+      });
+
+      it('declinedReason is null (present, not omitted) when nobody declined', async () => {
+        (activityRepo as any).findById.mockResolvedValue(futureActivity());
+        const detail = await service.getDetail('a1', creator);
+        expect(detail.declinedReason).toBeNull();
+        expect('declinedReason' in detail).toBe(true);
+      });
     });
   });
 });

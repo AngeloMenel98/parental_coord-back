@@ -1,6 +1,6 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { IsNull, Repository } from 'typeorm';
 
 import { BaseRepository } from '../../common/repositories/base.repository';
 import { ActivityEntity, ActivityStatus } from '../entities/activity.entity';
@@ -53,30 +53,40 @@ export class ActivitiesRepository extends BaseRepository<ActivityEntity> {
     startOfMonth: Date,
     endOfMonth: Date,
   ): Promise<ComplianceRow[]> {
-    return this.activityRepo
-      .createQueryBuilder('a')
-      .select('a.assigned_to', 'assignedTo')
-      .addSelect('COUNT(*)', 'total')
-      .addSelect(`COUNT(*) FILTER (WHERE a.status IN (:...doneStatuses))`, 'completed')
-      .where('a.bond_id = :bondId', { bondId })
-      .andWhere('a.scheduled_start >= :startOfMonth', { startOfMonth })
-      .andWhere('a.scheduled_start <= :endOfMonth', { endOfMonth })
-      .andWhere('a.assigned_to IS NOT NULL')
-      .setParameters({
-        doneStatuses: [ActivityStatus.DONE],
-      })
-      .groupBy('a.assigned_to')
-      .getRawMany<ComplianceRow>();
+    return (
+      this.activityRepo
+        .createQueryBuilder('a')
+        .select('a.assigned_to', 'assignedTo')
+        .addSelect('COUNT(*)', 'total')
+        .addSelect(`COUNT(*) FILTER (WHERE a.status IN (:...doneStatuses))`, 'completed')
+        .where('a.bond_id = :bondId', { bondId })
+        .andWhere('a.scheduled_start >= :startOfMonth', { startOfMonth })
+        .andWhere('a.scheduled_start <= :endOfMonth', { endOfMonth })
+        .andWhere('a.assigned_to IS NOT NULL')
+        // 🔴 Una actividad eliminada (`deleted_at`) no cuenta para el cumplimiento:
+        // el porcentaje es de lo que el usuario tiene PENDIENTE, no de lo que règles
+        // y luego escondiste.
+        .andWhere('a.deleted_at IS NULL')
+        .setParameters({
+          doneStatuses: [ActivityStatus.DONE],
+        })
+        .groupBy('a.assigned_to')
+        .getRawMany<ComplianceRow>()
+    );
   }
 
   /**
    * Returns all activities of a bond ordered by scheduled_start (nulls last)
    * asc → deadline (nulls last) asc → created_at asc.
+   *
+   * 🔴 Filtra `deleted_at IS NULL`: es una de las CUATRO consultas que deben
+   * excluir las eliminadas por "Eliminar".
    */
   async findByBondIdOrdered(bondId: string): Promise<ActivityEntity[]> {
     return this.activityRepo
       .createQueryBuilder('a')
       .where('a.bond_id = :bondId', { bondId })
+      .andWhere('a.deleted_at IS NULL')
       .addOrderBy('a.scheduled_start IS NULL', 'ASC')
       .addOrderBy('a.scheduled_start', 'ASC', 'NULLS LAST')
       .addOrderBy('a.deadline IS NULL', 'ASC')
@@ -85,7 +95,22 @@ export class ActivitiesRepository extends BaseRepository<ActivityEntity> {
       .getMany();
   }
 
+  /**
+   * Lectura de RUTA DE USUARIO: excluye las eliminadas, así que después de
+   * "Eliminar" el detalle responde 404 (cuarta de las cuatro consultas).
+   */
   async findById(id: string): Promise<ActivityEntity | null> {
+    return this.activityRepo.findOne({ where: { id, deletedAt: IsNull() } });
+  }
+
+  /**
+   * Lectura de RUTA DE SISTEMA: sí incluye las eliminadas.
+   *
+   * Existe sólo para `restore` y `undo-decline`, que por definición tienen que
+   * encontrar una fila que las rutas de usuario ya no ven. Si `findById` no lo
+   * hiciera, deshacer una eliminación sería imposible por construcción.
+   */
+  async findByIdIncludingDeleted(id: string): Promise<ActivityEntity | null> {
     return this.activityRepo.findOne({ where: { id } });
   }
 
@@ -117,6 +142,10 @@ export class ActivitiesRepository extends BaseRepository<ActivityEntity> {
       .where('assigned_to IS NOT NULL')
       .andWhere('completed_at IS NULL')
       .andWhere("status NOT IN ('done', 'overdue')")
+      // 🔴 Quinta condición y no una más: una actividad eliminada no debe "vencer"
+      // ni reaparecer por la vía del scheduler. Sin esto, borrar a las 10:00 una
+      // actividad vencida la dejaría marcada `overdue` en la fila oculta.
+      .andWhere('deleted_at IS NULL')
       .andWhere('scheduled_start + notif_after <= now()')
       .execute();
     return result.affected ?? 0;
