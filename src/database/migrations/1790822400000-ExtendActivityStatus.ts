@@ -10,7 +10,9 @@ export class ExtendActivityStatus1790822400000 implements MigrationInterface {
     );
   }
 
-  public async down(queryRunner: QueryRunner): Promise<void> {
+  // Sin parámetro: `MigrationInterface` admite implementaciones con menos
+  // parámetros, y declararlo sin usar sólo añade un error de lint.
+  public async down(): Promise<void> {
     // Cannot remove enum values easily in Postgres; leave as no-op for safety
   }
 }

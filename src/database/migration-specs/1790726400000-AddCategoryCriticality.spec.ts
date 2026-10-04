@@ -1,4 +1,4 @@
-import { AddCategoryCriticality1790726400000 } from './1790726400000-AddCategoryCriticality';
+import { AddCategoryCriticality1790726400000 } from '../migrations/1790726400000-AddCategoryCriticality';
 
 describe('1790726400000-AddCategoryCriticality migration', () => {
   let qr: any;

@@ -63,10 +63,62 @@ export class DropActivityStatusLegacyValues1791081600000 implements MigrationInt
       END $$;
     `);
 
-    // Sólo se llega aquí con el enum limpio. El IF EXISTS evita que un reintento
-    // sobre una base ya saneada aborte por un valor que ya no existe.
-    await queryRunner.query(`ALTER TYPE "activity_status" DROP VALUE IF EXISTS 'objection'`);
-    await queryRunner.query(`ALTER TYPE "activity_status" DROP VALUE IF EXISTS 'dispute'`);
+    // Sólo se llega aquí con el enum limpio.
+    //
+    // 🔴 PostgreSQL NO tiene `ALTER TYPE ... DROP VALUE`. Comprobado contra
+    // pg16.15:
+    //     ALTER TYPE activity_status DROP VALUE 'objection';
+    //     ERROR: syntax error at or near "VALUE"
+    // No es que falte `IF EXISTS`: la forma `DROP VALUE` directamente no existe.
+    // (Para `ADD VALUE` sí hay `IF NOT EXISTS`, que es lo que usan los pasos 1 y 2.)
+    //
+    // La única forma soportada de quitar un valor de un enum es RECREAR el tipo:
+    // se crea uno nuevo con la lista definitiva, se reconvierten las columnas que
+    // lo usaban, se tira el viejo y el nuevo toma su nombre. `resolved_status`
+    // también es `activity_status` (`initial-schema:87`), así que va ella también.
+    //
+    // Todo va en un DO block y empieza por comprobar el catálogo: si `objection` y
+    // `dispute` ya no están, no se hace nada. Un reintento sobre una base ya
+    // saneada es un no-op en vez de un abort.
+    await queryRunner.query(`
+      DO $$
+      DECLARE
+        objection_exists boolean;
+        dispute_exists boolean;
+      BEGIN
+        SELECT EXISTS (
+          SELECT 1 FROM pg_enum e
+          JOIN pg_type t ON t.oid = e.enumtypid
+          WHERE t.typname = 'activity_status' AND e.enumlabel = 'objection'
+        ) INTO objection_exists;
+
+        SELECT EXISTS (
+          SELECT 1 FROM pg_enum e
+          JOIN pg_type t ON t.oid = e.enumtypid
+          WHERE t.typname = 'activity_status' AND e.enumlabel = 'dispute'
+        ) INTO dispute_exists;
+
+        IF NOT (objection_exists OR dispute_exists) THEN
+          RETURN;
+        END IF;
+
+        -- Orden de A5, verificado contra la base en el momento de escribir esto.
+        EXECUTE 'CREATE TYPE "activity_status__swipe" AS ENUM (''created'', ''assigned'', ''assisting'', ''in_progress'', ''verify'', ''done'', ''overdue'', ''not_assisting'', ''cancelled'')';
+
+        -- El DEFAULT va anclado al tipo viejo: hay que soltarlo antes de mover la
+        -- columna y volver a ponerlo contra el tipo nuevo.
+        EXECUTE 'ALTER TABLE "activity" ALTER COLUMN "status" DROP DEFAULT';
+
+        EXECUTE 'ALTER TABLE "activity" ALTER COLUMN "status" TYPE "activity_status__swipe" USING "status"::text::"activity_status__swipe"';
+
+        EXECUTE 'ALTER TABLE "activity" ALTER COLUMN "resolved_status" TYPE "activity_status__swipe" USING "resolved_status"::text::"activity_status__swipe"';
+
+        EXECUTE 'DROP TYPE "activity_status"';
+        EXECUTE 'ALTER TYPE "activity_status__swipe" RENAME TO "activity_status"';
+
+        EXECUTE 'ALTER TABLE "activity" ALTER COLUMN "status" SET DEFAULT ''created''::"activity_status"';
+      END $$;
+    `);
   }
 
   public async down(queryRunner: QueryRunner): Promise<void> {

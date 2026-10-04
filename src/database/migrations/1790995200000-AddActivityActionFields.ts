@@ -18,8 +18,12 @@ export class AddActivityActionFields1790995200000 implements MigrationInterface 
   name = 'AddActivityActionFields1790995200000';
 
   public async up(queryRunner: QueryRunner): Promise<void> {
-    await queryRunner.query(`ALTER TABLE "activity" ADD COLUMN IF NOT EXISTS "deleted_at" TIMESTAMP WITH TIME ZONE`);
-    await queryRunner.query(`ALTER TABLE "activity" ADD COLUMN IF NOT EXISTS "declined_at" TIMESTAMP WITH TIME ZONE`);
+    await queryRunner.query(
+      `ALTER TABLE "activity" ADD COLUMN IF NOT EXISTS "deleted_at" TIMESTAMP WITH TIME ZONE`,
+    );
+    await queryRunner.query(
+      `ALTER TABLE "activity" ADD COLUMN IF NOT EXISTS "declined_at" TIMESTAMP WITH TIME ZONE`,
+    );
     await queryRunner.query(
       `ALTER TABLE "activity" ADD COLUMN IF NOT EXISTS "declined_reason" character varying(200)`,
     );

@@ -26,12 +26,12 @@ export class AddActivityStatusCancelled1790908800000 implements MigrationInterfa
   name = 'AddActivityStatusCancelled1790908800000';
 
   public async up(queryRunner: QueryRunner): Promise<void> {
-    await queryRunner.query(
-      `ALTER TYPE "activity_status" ADD VALUE IF NOT EXISTS 'cancelled'`,
-    );
+    await queryRunner.query(`ALTER TYPE "activity_status" ADD VALUE IF NOT EXISTS 'cancelled'`);
   }
 
-  public async down(_queryRunner: QueryRunner): Promise<void> {
+  // Sin parámetro: `MigrationInterface` admite implementaciones con menos
+  // parámetros, y declararlo sin usar sólo añade un error de lint.
+  public async down(): Promise<void> {
     // Irreversible: Postgres no permite quitar valores de un enum.
   }
 }

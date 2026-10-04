@@ -1,6 +1,6 @@
-import { AddActivityStatusCancelled1790908800000 } from './1790908800000-AddActivityStatusCancelled';
-import { AddActivityActionFields1790995200000 } from './1790995200000-AddActivityActionFields';
-import { DropActivityStatusLegacyValues1791081600000 } from './1791081600000-DropActivityStatusLegacyValues';
+import { AddActivityStatusCancelled1790908800000 } from '../migrations/1790908800000-AddActivityStatusCancelled';
+import { AddActivityActionFields1790995200000 } from '../migrations/1790995200000-AddActivityActionFields';
+import { DropActivityStatusLegacyValues1791081600000 } from '../migrations/1791081600000-DropActivityStatusLegacyValues';
 
 /**
  * Tests ESTRUCTURALES de las migraciones: no hay Postgres en el entorno, así que
@@ -37,7 +37,9 @@ describe('activity status migrations', () => {
     it('has a no-op down() — Postgres cannot remove an enum value', async () => {
       const m = new AddActivityStatusCancelled1790908800000();
       qr.query.mockClear();
-      await m.down(qr as any);
+      // Sin argumento: `down()` no declara parámetros porque no los usa, y
+      // `MigrationInterface` admite implementaciones con menos parámetros.
+      await m.down();
       expect(qr.query).not.toHaveBeenCalled();
     });
   });
@@ -88,25 +90,26 @@ describe('activity status migrations', () => {
   });
 
   describe('1791081600000-DropActivityStatusLegacyValues — the guarded drop', () => {
-    it('ASSERTS the row counts BEFORE any DROP VALUE statement is issued', async () => {
+    it('ASSERTS the row counts BEFORE the type is recreated', async () => {
       await new DropActivityStatusLegacyValues1791081600000().up(qr as any);
       const sql = sqlOf(qr.query);
 
       const assertIndex = sql.findIndex((s) => s.includes('RAISE EXCEPTION'));
-      // Se busca la SENTENCIA `ALTER TYPE … DROP VALUE`, no la frase "DROP VALUE":
-      // el texto del propio `RAISE EXCEPTION` dice "Refusing to DROP VALUE", así que
-      // un `includes` a secas encontraría el abort en la posición 0 y el test
+      // Se busca la RECREACIÓN del tipo, no la frase "DROP VALUE": el texto del
+      // propio `RAISE EXCEPTION` dice "Refusing to DROP VALUE", así que un
+      // `includes` a secas encontraría el abort en la posición 0 y el test
       // compararía el mensaje consigo mismo, sin comprobar nada.
-      const dropIndex = sql.findIndex(
-        (s) => s.includes('ALTER TYPE') && s.includes('DROP VALUE'),
+      // (PostgreSQL no tiene `ALTER TYPE ... DROP VALUE`; ver más abajo.)
+      const recreateIndex = sql.findIndex((s) =>
+        s.includes('CREATE TYPE "activity_status__swipe"'),
       );
 
       expect(assertIndex).toBeGreaterThanOrEqual(0);
-      expect(dropIndex).toBeGreaterThanOrEqual(0);
-      // 🔴 El orden es la garantía: si el DROP se ejecutara antes, una fila
-      // inesperada haría fallar el ALTER con el error genérico de Postgres en
-      // lugar de abortar aquí con un mensaje que dice qué hay que decidir.
-      expect(assertIndex).toBeLessThan(dropIndex);
+      expect(recreateIndex).toBeGreaterThanOrEqual(0);
+      // 🔴 El orden es la garantía: si se recreara antes, una fila inesperada
+      // haría fallar la conversión con el error genérico de Postgres en lugar de
+      // abortar aquí con un mensaje que dice qué hay que decidir.
+      expect(assertIndex).toBeLessThan(recreateIndex);
     });
 
     it('checks BOTH `status` and `resolved_status` — resolved_status is also activity_status', async () => {
@@ -136,17 +139,55 @@ describe('activity status migrations', () => {
       expect(sql).not.toMatch(/SET\s+status/i);
     });
 
-    it('drops both legacy values, each guarded by IF EXISTS', async () => {
+    it('recreates the type — PostgreSQL has no ALTER TYPE ... DROP VALUE', async () => {
       await new DropActivityStatusLegacyValues1791081600000().up(qr as any);
-      const sql = sqlOf(qr.query);
-      expect(sql).toContain(`ALTER TYPE "activity_status" DROP VALUE IF EXISTS 'objection'`);
-      expect(sql).toContain(`ALTER TYPE "activity_status" DROP VALUE IF EXISTS 'dispute'`);
+      const sql = sqlOf(qr.query).join('\n');
+      // 🔴 Comprobado contra pg16.15: `DROP VALUE` no existe, con ni sin IF EXISTS.
+      expect(sql).not.toMatch(/ALTER TYPE[^;]*DROP VALUE/i);
+      // La forma soportada es recrear el tipo y reconvertir las columnas.
+      expect(sql).toContain('CREATE TYPE "activity_status__swipe" AS ENUM');
+      expect(sql).toContain('DROP TYPE "activity_status"');
+      expect(sql).toContain('ALTER TYPE "activity_status__swipe" RENAME TO "activity_status"');
+      // Las DOS columnas son activity_status: `resolved_status` también (`initial-schema:87`).
+      expect(sql).toContain('ALTER COLUMN "status" TYPE');
+      expect(sql).toContain('ALTER COLUMN "resolved_status" TYPE');
+      // La lista definitiva de A5, en orden.
+      // Las comillas van duplicadas: la lista vive dentro de un literal de cadena SQL.
+      expect(sql).toContain(
+        `''created'', ''assigned'', ''assisting'', ''in_progress'', ''verify'', ''done'', ''overdue'', ''not_assisting'', ''cancelled''`,
+      );
+    });
+
+    it('preserves the status DEFAULT across the type swap', async () => {
+      await new DropActivityStatusLegacyValues1791081600000().up(qr as any);
+      const sql = sqlOf(qr.query).join('\n');
+      // `status` tiene DEFAULT 'created'::activity_status anclado al tipo viejo.
+      // Sin soltarlo antes de mover la columna, la conversión falla.
+      const drop = sql.indexOf('ALTER COLUMN "status" DROP DEFAULT');
+      const conv = sql.indexOf('ALTER COLUMN "status" TYPE');
+      expect(drop).toBeGreaterThan(-1);
+      expect(conv).toBeGreaterThan(-1);
+      expect(drop).toBeLessThan(conv);
+      expect(sql).toContain(`SET DEFAULT ''created''::"activity_status"`);
+    });
+
+    it('is idempotent — bails out when neither legacy value remains in pg_enum', async () => {
+      await new DropActivityStatusLegacyValues1791081600000().up(qr as any);
+      const sql = sqlOf(qr.query).join('\n');
+      // La guarda mira el catálogo antes de recrear nada.
+      expect(sql).toContain(`e.enumlabel = 'objection'`);
+      expect(sql).toContain(`e.enumlabel = 'dispute'`);
+      const guard = sql.indexOf('RETURN');
+      const create = sql.indexOf('CREATE TYPE "activity_status__swipe"');
+      expect(guard).toBeGreaterThan(-1);
+      expect(guard).toBeLessThan(create);
     });
 
     it('KEEPS cancelled — the new value must survive the cleanup', async () => {
       await new DropActivityStatusLegacyValues1791081600000().up(qr as any);
       const sql = sqlOf(qr.query).join('\n');
-      expect(sql).not.toContain(`DROP VALUE IF EXISTS 'cancelled'`);
+      expect(sql).toContain(`''not_assisting'', ''cancelled''`);
+      expect(sql).not.toContain(`e.enumlabel = 'cancelled'`);
     });
 
     it('down() re-adds the two values and documents that it is not a true reversal', async () => {
