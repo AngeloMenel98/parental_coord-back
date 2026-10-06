@@ -46,6 +46,9 @@ import { validateConfig } from './config/app-config';
         username: cs.getOrThrow<string>('DB_USER'),
         password: cs.getOrThrow<string>('DB_PASSWORD'),
         database: cs.getOrThrow<string>('DB_NAME'),
+        // Managed Postgres (Supabase/Neon) requires SSL. Opt-in via DB_SSL=true
+        // so local dev against plain Postgres keeps working.
+        ssl: cs.get<string>('DB_SSL') === 'true' ? { rejectUnauthorized: false } : false,
         autoLoadEntities: true,
         synchronize: false,
       }),

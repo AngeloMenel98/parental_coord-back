@@ -46,6 +46,16 @@ export class AppConfig {
   @IsString()
   JWT_EXPIRES_IN?: string;
 
+  /** Set to 'true' for managed Postgres (Supabase/Neon) that requires SSL. */
+  @IsOptional()
+  @IsString()
+  DB_SSL?: string;
+
+  /** Comma-separated origins for CORS (e.g. app frontend origin). */
+  @IsOptional()
+  @IsString()
+  CORS_ORIGINS?: string;
+
   @IsOptional()
   @IsString()
   NODE_ENV?: string;
