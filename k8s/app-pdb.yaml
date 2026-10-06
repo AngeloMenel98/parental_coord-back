@@ -1,0 +1,15 @@
+# PodDisruptionBudget for the app.
+#
+# - Ensures at least 1 replica is always running during voluntary disruptions
+#   (node drains, cluster upgrades, etc.).
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: parental-coordination-back
+  labels:
+    app: parental-coordination-back
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: parental-coordination-back

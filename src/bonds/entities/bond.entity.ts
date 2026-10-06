@@ -2,9 +2,12 @@ import {
   Column,
   CreateDateColumn,
   Entity,
+  OneToMany,
   PrimaryGeneratedColumn,
   UpdateDateColumn,
 } from 'typeorm';
+import { BondMemberEntity } from './bond-member.entity';
+import { ChildEntity } from '../../children/entities/child.entity';
 
 export enum AgreementType {
   FORMAL = 'formal',
@@ -43,4 +46,10 @@ export class BondEntity {
 
   @UpdateDateColumn({ type: 'timestamptz', name: 'updated_at' })
   updatedAt!: Date;
+
+  @OneToMany(() => BondMemberEntity, (member) => member.bond)
+  members!: BondMemberEntity[];
+
+  @OneToMany(() => ChildEntity, (child) => child.bond)
+  children!: ChildEntity[];
 }
