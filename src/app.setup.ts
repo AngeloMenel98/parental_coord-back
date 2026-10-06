@@ -2,12 +2,13 @@ import type { INestApplication } from '@nestjs/common';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 
 /**
- * Swagger UI served from CDN.
+ * Swagger UI desde CDN.
  *
- * On serverless (Vercel) the bundled swagger-ui-dist static assets are not
- * exposed (they 404), which renders a blank page. Loading the UI from the
- * jsDelivr CDN fixes that; the OpenAPI spec itself is still served by Nest
- * at /docs-json.
+ * En serverless (Vercel) los assets estáticos de swagger-ui-dist no llegan al
+ * bundle de la función (dan 404: "Cannot GET /docs/swagger-ui-bundle.js"),
+ * lo que deja la página en blanco. Solución: desactivar el UI embebido de
+ * Nest (ui: false — el spec en /docs-json sigue publicado) y servir nosotros
+ * mismos el HTML de /docs cargando la UI desde jsDelivr.
  */
 const SWAGGER_CDN = 'https://cdn.jsdelivr.net/npm/swagger-ui-dist@5.25.2';
 
@@ -51,7 +52,14 @@ export function configureApp(app: INestApplication): void {
     .setVersion('0.1.0')
     .addBearerAuth()
     .build();
+
+  // Spec OpenAPI en /docs-json (y /docs-yaml), sin el UI estático de Nest.
   SwaggerModule.setup('docs', app, SwaggerModule.createDocument(app, document), {
-    customHtml: swaggerHtml,
+    ui: false,
+  });
+
+  // UI servida por nosotros desde CDN — funciona en Vercel y en local.
+  app.getHttpAdapter().get('/docs', (_req, res) => {
+    res.type('text/html').send(swaggerHtml);
   });
 }
