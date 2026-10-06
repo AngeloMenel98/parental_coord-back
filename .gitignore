@@ -8,3 +8,4 @@ coverage/
 k8s/*-secret.yaml
 !k8s/secret-template.yaml
 !k8s/app-sealedsecret.yaml
+.vercel
