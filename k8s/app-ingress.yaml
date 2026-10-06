@@ -1,0 +1,33 @@
+# Nginx Ingress for the app.
+#
+# - Uses nginx ingress controller with TLS via cert-manager.
+# - Host is configurable: replace APP_HOST_PLACEHOLDER with your domain.
+# - Routes / → app-service:80.
+# - Annotations enforce SSL redirect and allow large request bodies.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: parental-coordination-back
+  labels:
+    app: parental-coordination-back
+  annotations:
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/proxy-body-size: "10m"
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - APP_HOST_PLACEHOLDER
+      secretName: parental-coordination-tls
+  rules:
+    - host: APP_HOST_PLACEHOLDER
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: app-service
+                port:
+                  number: 80

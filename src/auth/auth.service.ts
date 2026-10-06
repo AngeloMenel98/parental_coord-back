@@ -1,8 +1,4 @@
-import {
-  BadRequestException,
-  Injectable,
-  UnauthorizedException,
-} from '@nestjs/common';
+import { BadRequestException, Injectable, UnauthorizedException } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { InjectRepository } from '@nestjs/typeorm';
 import * as bcrypt from 'bcryptjs';
@@ -32,7 +28,7 @@ export class AuthService {
     const user = this.userRepo.create({
       email: dto.email,
       passwordHash: hashed,
-      systemRole: SystemRole.PROGENITOR,
+      systemRole: SystemRole.USER,
       isActive: true,
     });
     await this.userRepo.save(user);
