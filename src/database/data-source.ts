@@ -15,6 +15,9 @@ export default new DataSource({
   username: process.env.DB_USER,
   password: process.env.DB_PASSWORD,
   database: process.env.DB_NAME,
+  // Managed Postgres (Supabase/Neon) requires SSL. Opt-in via DB_SSL=true
+  // so local dev against plain Postgres keeps working.
+  ssl: process.env.DB_SSL === 'true' ? { rejectUnauthorized: false } : false,
   entities: ['src/**/*.entity.ts'],
   migrations: ['src/database/migrations/*.ts'],
   synchronize: false,
