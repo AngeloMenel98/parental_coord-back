@@ -7,6 +7,8 @@ import { BondEntity } from '../bonds/entities/bond.entity';
 import { BondMemberEntity } from '../bonds/entities/bond-member.entity';
 import { ChildEntity } from '../children/entities/child.entity';
 import { BondsModule } from '../bonds/bonds.module';
+import { UsersModule } from '../users/users.module';
+import { ChildrenModule } from '../children/children.module';
 import { AdminController } from './admin.controller';
 import { AdminService } from './admin.service';
 
@@ -19,7 +21,9 @@ import { AdminService } from './admin.service';
       BondMemberEntity,
       ChildEntity,
     ]),
+    UsersModule,
     BondsModule,
+    ChildrenModule,
   ],
   controllers: [AdminController],
   providers: [AdminService],
