@@ -15,6 +15,7 @@ import { ActivityChildRepository } from './repositories/activity-child.repositor
 import { ActivityEntity, ActivityStatus, ActivityType } from './entities/activity.entity';
 import { NotificationRepository } from '../notifications/repositories/notification.repository';
 import { BondsRepository } from '../bonds/repositories/bonds.repository';
+import { BondMembersRepository } from '../bonds/repositories/bond-members.repository';
 import { ChildrenRepository } from '../children/repositories/children.repository';
 import { CategoriesRepository } from '../categories/repositories/categories.repository';
 import { CreateActivityDto } from './dto/create-activity.dto';
@@ -56,6 +57,7 @@ export class ActivitiesService {
     private readonly categoriesRepo: CategoriesRepository,
     private readonly clock: Clock,
     private readonly policy: ActivityPolicyService,
+    private readonly bondMembersRepo: BondMembersRepository,
   ) {}
 
   private async verifyBondMembership(bondId: string, userId: string): Promise<void> {
@@ -637,7 +639,7 @@ export class ActivitiesService {
     const endOfMonth = new Date(year, month + 1, 0, 23, 59, 59, 999);
     const period = `${year}-${String(month + 1).padStart(2, '0')}`;
 
-    const members = await this.activitiesRepo.findActiveBondMembers(bondId);
+    const members = await this.bondMembersRepo.findActiveMemberNames(bondId);
 
     if (members.length === 0) {
       return { bondActive: bond.isActive, period, members: [] };

@@ -11,6 +11,7 @@ import { ChildrenRepository } from '../../children/repositories/children.reposit
 import { CategoriesRepository } from '../../categories/repositories/categories.repository';
 import { ActivityStatus } from '../entities/activity.entity';
 import { BondsRepository } from '../../bonds/repositories/bonds.repository';
+import { BondMembersRepository } from '../../bonds/repositories/bond-members.repository';
 import { NotificationRepository } from '../../notifications/repositories/notification.repository';
 import { Clock } from '../../common/clock/clock';
 import { CodedException } from '../../common/errors/coded.exception';
@@ -25,6 +26,7 @@ describe('ActivitiesService', () => {
   let notificationRepo: any;
   let activityChildRepo: any;
   let bondsRepo: any;
+  let bondMembersRepo: any;
   let auditRepo: any;
   let clock: Clock;
   let fakeManager: any;
@@ -45,7 +47,6 @@ describe('ActivitiesService', () => {
       create: jest.fn(),
       findOneBy: jest.fn(),
       updateFields: jest.fn(),
-      findActiveBondMembers: jest.fn(),
     } as any;
     categoriesRepo = {
       findActiveById: jest.fn(),
@@ -67,6 +68,10 @@ describe('ActivitiesService', () => {
     } as any;
     bondsRepo = {
       findActiveBondForMember: jest.fn().mockResolvedValue({ id: bondId } as any),
+    } as any;
+    // T6 (R5): el join de compliance vive en BondMembersRepository.
+    bondMembersRepo = {
+      findActiveMemberNames: jest.fn().mockResolvedValue([]),
     } as any;
     auditRepo = {
       record: jest.fn(),
@@ -95,6 +100,7 @@ describe('ActivitiesService', () => {
         { provide: ActivityChildRepository, useValue: activityChildRepo },
         { provide: NotificationRepository, useValue: notificationRepo },
         { provide: BondsRepository, useValue: bondsRepo },
+        { provide: BondMembersRepository, useValue: bondMembersRepo },
         { provide: ChildrenRepository, useValue: childrenRepo },
         { provide: CategoriesRepository, useValue: categoriesRepo },
         { provide: Clock, useValue: clock },
@@ -805,7 +811,7 @@ describe('ActivitiesService', () => {
 
     it('getComplianceForBond: member gets bondActive + period + members', async () => {
       bondsRepo.findActiveBondForMember.mockResolvedValue({ id: bondId, isActive: true } as any);
-      activityRepo.findActiveBondMembers.mockResolvedValue([]);
+      bondMembersRepo.findActiveMemberNames.mockResolvedValue([]);
 
       const res = await service.getComplianceForBond(bondId, userId);
 

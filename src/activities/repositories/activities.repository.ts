@@ -5,12 +5,6 @@ import { DeepPartial, EntityManager, IsNull, QueryDeepPartialEntity, Repository 
 import { BaseRepository } from '../../common/repositories/base.repository';
 import { ActivityEntity, ActivityStatus } from '../entities/activity.entity';
 
-export interface BondMemberRow {
-  userId: string;
-  firstName: string;
-  lastName: string;
-}
-
 export interface ComplianceRow {
   assignedTo: string;
   total: string;
@@ -24,24 +18,6 @@ export class ActivitiesRepository extends BaseRepository<ActivityEntity> {
     private readonly activityRepo: Repository<ActivityEntity>,
   ) {
     super(activityRepo);
-  }
-
-  /**
-   * Returns active bond members with their personal data.
-   * Raw query joins bond_member → user → personal_data.
-   */
-  async findActiveBondMembers(bondId: string): Promise<BondMemberRow[]> {
-    return this.activityRepo.manager
-      .createQueryBuilder()
-      .select('bm.user_id', 'userId')
-      .addSelect('pd.first_name', 'firstName')
-      .addSelect('pd.last_name', 'lastName')
-      .from('bond_member', 'bm')
-      .innerJoin('user', 'u', 'u.id = bm.user_id')
-      .innerJoin('personal_data', 'pd', 'pd.user_id = u.id')
-      .where('bm.bond_id = :bondId', { bondId })
-      .andWhere('bm.left_at IS NULL')
-      .getRawMany<BondMemberRow>();
   }
 
   /**
