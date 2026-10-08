@@ -1,6 +1,6 @@
 import { Test, TestingModule } from '@nestjs/testing';
-import { ActivitiesScheduler } from './activities.scheduler';
-import { ActivitiesRepository } from './repositories/activities.repository';
+import { ActivitiesScheduler } from '../activities.scheduler';
+import { ActivitiesRepository } from '../repositories/activities.repository';
 import { Logger } from '@nestjs/common';
 
 describe('ActivitiesScheduler', () => {

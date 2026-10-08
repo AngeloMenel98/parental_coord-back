@@ -53,40 +53,36 @@ export class ActivitiesRepository extends BaseRepository<ActivityEntity> {
     startOfMonth: Date,
     endOfMonth: Date,
   ): Promise<ComplianceRow[]> {
-    return (
-      this.activityRepo
-        .createQueryBuilder('a')
-        .select('a.assigned_to', 'assignedTo')
-        .addSelect('COUNT(*)', 'total')
-        .addSelect(`COUNT(*) FILTER (WHERE a.status IN (:...doneStatuses))`, 'completed')
-        .where('a.bond_id = :bondId', { bondId })
-        .andWhere('a.scheduled_start >= :startOfMonth', { startOfMonth })
-        .andWhere('a.scheduled_start <= :endOfMonth', { endOfMonth })
-        .andWhere('a.assigned_to IS NOT NULL')
-        // 🔴 Una actividad eliminada (`deleted_at`) no cuenta para el cumplimiento:
-        // el porcentaje es de lo que el usuario tiene PENDIENTE, no de lo que règles
-        // y luego escondiste.
-        .andWhere('a.deleted_at IS NULL')
-        .setParameters({
-          doneStatuses: [ActivityStatus.DONE],
-        })
-        .groupBy('a.assigned_to')
-        .getRawMany<ComplianceRow>()
-    );
+    return this.activityRepo
+      .createQueryBuilder('a')
+      .select('a.assigned_to', 'assignedTo')
+      .addSelect('COUNT(*)', 'total')
+      .addSelect(`COUNT(*) FILTER (WHERE a.status IN (:...doneStatuses))`, 'completed')
+      .where('a.bond_id = :bondId', { bondId })
+      .andWhere('a.scheduled_start >= :startOfMonth', { startOfMonth })
+      .andWhere('a.scheduled_start <= :endOfMonth', { endOfMonth })
+      .andWhere('a.assigned_to IS NOT NULL')
+      .andWhere('a.deleted_at IS NULL')
+      .setParameters({
+        doneStatuses: [ActivityStatus.DONE],
+      })
+      .groupBy('a.assigned_to')
+      .getRawMany<ComplianceRow>();
   }
 
   /**
    * Returns all activities of a bond ordered by scheduled_start (nulls last)
    * asc → deadline (nulls last) asc → created_at asc.
-   *
-   * 🔴 Filtra `deleted_at IS NULL`: es una de las CUATRO consultas que deben
-   * excluir las eliminadas por "Eliminar".
    */
   async findByBondIdOrdered(bondId: string): Promise<ActivityEntity[]> {
     return this.activityRepo
       .createQueryBuilder('a')
       .where('a.bond_id = :bondId', { bondId })
       .andWhere('a.deleted_at IS NULL')
+      .addSelect(
+        "(SELECT COALESCE(array_agg(ac.child_id ORDER BY ac.created_at), '{}'::uuid[]) FROM activity_child ac WHERE ac.activity_id = a.id)",
+        'childrenIds',
+      )
       .addOrderBy('a.scheduled_start IS NULL', 'ASC')
       .addOrderBy('a.scheduled_start', 'ASC', 'NULLS LAST')
       .addOrderBy('a.deadline IS NULL', 'ASC')

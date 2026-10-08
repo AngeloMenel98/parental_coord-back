@@ -16,16 +16,21 @@ export class BondsRepository extends BaseRepository<BondEntity> {
 
   async findBondsByUserId(userId: string): Promise<BondEntity[]> {
     return this.createQueryBuilder('bond')
+      .select(['bond.id', 'bond.courtCaseRef', 'bond.isActive'])
       .innerJoin(
         'bond.members',
         'activeMember',
         'activeMember.userId = :userId AND activeMember.leftAt IS NULL',
         { userId },
       )
-      .leftJoinAndSelect('bond.members', 'allMembers', 'allMembers.leftAt IS NULL')
-      .leftJoinAndSelect('allMembers.user', 'memberUser')
-      .leftJoinAndSelect('memberUser.personalData', 'memberPD')
-      .leftJoinAndSelect('bond.children', 'child')
+      .leftJoin('bond.members', 'allMembers', 'allMembers.leftAt IS NULL')
+      .addSelect(['allMembers.id', 'allMembers.role', 'allMembers.joinedAt'])
+      .leftJoin('allMembers.user', 'memberUser')
+      .addSelect(['memberUser.id', 'memberUser.systemRole'])
+      .leftJoin('memberUser.personalData', 'memberPD')
+      .addSelect(['memberPD.firstName', 'memberPD.lastName', 'memberPD.avatarUrl'])
+      .innerJoin('bond.children', 'child')
+      .addSelect(['child.id', 'child.firstName', 'child.lastName', 'child.dateOfBirth'])
       .where('bond.isActive = :isActive', { isActive: true })
       .orderBy('bond.createdAt', 'DESC')
       .getMany();

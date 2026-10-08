@@ -26,6 +26,7 @@ export class ActivitySummaryDto {
   @Expose() canDelete!: boolean;
   @Expose() canCancel!: boolean;
   @Expose() canDecline!: boolean;
+  @Expose() childrenIds!: string[];
 }
 
 @Exclude()

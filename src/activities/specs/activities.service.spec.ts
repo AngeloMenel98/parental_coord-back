@@ -1,18 +1,21 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { getDataSourceToken, getRepositoryToken } from '@nestjs/typeorm';
 import { BadRequestException } from '@nestjs/common';
-import { ActivitiesService } from './activities.service';
-import { ActivitiesRepository } from './repositories/activities.repository';
-import { ActivitiesAuditRepository } from './repositories/activities-audit.repository';
-import { ActivityPolicyService } from './activity-policy.service';
-import { CategoryEntity } from '../categories/entities/category.entity';
-import { ChildEntity } from '../children/entities/child.entity';
-import { NotificationEntity } from '../notifications/entities/notification.entity';
-import { ActivityEntity, ActivityStatus } from './entities/activity.entity';
-import { ActivityChildEntity } from './entities/activity-child.entity';
-import { BondsRepository } from '../bonds/repositories/bonds.repository';
-import { Clock } from '../common/clock/clock';
-import { CodedException } from '../common/errors/coded.exception';
+import { plainToInstance } from 'class-transformer';
+import { validate } from 'class-validator';
+import { ActivitiesService } from '../activities.service';
+import { ActivitiesRepository } from '../repositories/activities.repository';
+import { ActivitiesAuditRepository } from '../repositories/activities-audit.repository';
+import { ActivityPolicyService } from '../activity-policy.service';
+import { CategoryEntity } from '../../categories/entities/category.entity';
+import { ChildEntity } from '../../children/entities/child.entity';
+import { NotificationEntity } from '../../notifications/entities/notification.entity';
+import { ActivityEntity, ActivityStatus } from '../entities/activity.entity';
+import { ActivityChildEntity } from '../entities/activity-child.entity';
+import { BondsRepository } from '../../bonds/repositories/bonds.repository';
+import { Clock } from '../../common/clock/clock';
+import { CodedException } from '../../common/errors/coded.exception';
+import { CreateActivityDto } from '../dto/create-activity.dto';
 
 describe('ActivitiesService', () => {
   let service: ActivitiesService;
@@ -130,33 +133,27 @@ describe('ActivitiesService', () => {
     });
 
     it('rejects when childIds is empty', async () => {
-      categoryRepo.findOneBy.mockResolvedValue({
-        id: categoryId,
-        isActive: true,
-        criticality: 'medium',
-      } as any);
-      const dto = {
+      // La validación de childIds vive en el DTO (@ArrayNotEmpty/@ArrayUnique),
+      // no en el servicio. Este caso garantiza que el pipe la aplica.
+      const dto = plainToInstance(CreateActivityDto, {
         title: 'Test',
         categoryId,
         scheduledStart: '2026-10-05T10:00:00Z',
         childrenIds: [],
-      } as any;
-      await expect(service.create(bondId, dto, userId)).rejects.toThrow(BadRequestException);
+      });
+      const errors = await validate(dto);
+      expect(errors.map((e) => e.property)).toContain('childrenIds');
     });
 
     it('rejects when childIds has duplicates', async () => {
-      categoryRepo.findOneBy.mockResolvedValue({
-        id: categoryId,
-        isActive: true,
-        criticality: 'medium',
-      } as any);
-      const dto = {
+      const dto = plainToInstance(CreateActivityDto, {
         title: 'Test',
         categoryId,
         scheduledStart: '2026-10-05T10:00:00Z',
         childrenIds: [childId, childId],
-      } as any;
-      await expect(service.create(bondId, dto, userId)).rejects.toThrow(BadRequestException);
+      });
+      const errors = await validate(dto);
+      expect(errors.map((e) => e.property)).toContain('childrenIds');
     });
 
     it('rejects when category is inactive', async () => {

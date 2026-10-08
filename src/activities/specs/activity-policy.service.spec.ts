@@ -1,4 +1,4 @@
-import { ActivityPolicyService, UNDO_WINDOW_MS, PolicySubject } from './activity-policy.service';
+import { ActivityPolicyService, UNDO_WINDOW_MS, PolicySubject } from '../activity-policy.service';
 
 describe('ActivityPolicyService', () => {
   let policy: ActivityPolicyService;

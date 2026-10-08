@@ -76,33 +76,37 @@ export class ActivitiesService {
     }
   }
 
-  async create(bondId: string, dto: CreateActivityDto, userId: string): Promise<ActivityEntity> {
-    await this.verifyBondMembership(bondId, userId);
-    if (dto.assignedTo) {
-      await this.verifyBondMembership(bondId, dto.assignedTo);
-    }
-
-    if (!dto.childrenIds || dto.childrenIds.length === 0) {
-      throw new BadRequestException('childrenIds must contain at least one child');
-    }
-    if (new Set(dto.childrenIds).size !== dto.childrenIds.length) {
-      throw new BadRequestException('childrenIds must not contain duplicates');
-    }
-    await this.verifyChildrenBelongToBond(bondId, dto.childrenIds);
-
-    const category = await this.categoryRepo.findOneBy({ id: dto.categoryId, isActive: true });
+  private async verifyCategoryActive(categoryId: string): Promise<CategoryEntity> {
+    const category = await this.categoryRepo.findOneBy({ id: categoryId, isActive: true });
     if (!category) {
       throw new BadRequestException('Category is unknown or inactive');
     }
+    return category;
+  }
 
-    const start = new Date(dto.scheduledStart);
+  private validateSchedules(scheduledStart: string, scheduledEnd?: string): void {
+    const start = new Date(scheduledStart);
     if (start.getTime() <= this.clock.now().getTime()) {
       throw new BadRequestException('scheduledStart must be in the future');
     }
-    const end = dto.scheduledEnd ? new Date(dto.scheduledEnd) : null;
-    if (end && end.getTime() <= start.getTime()) {
-      throw new BadRequestException('scheduledEnd must be strictly after scheduledStart');
+
+    if (scheduledEnd) {
+      const end = new Date(scheduledEnd);
+      if (end.getTime() <= start.getTime()) {
+        throw new BadRequestException('scheduledEnd must be strictly after scheduledStart');
+      }
     }
+  }
+
+  async create(bondId: string, dto: CreateActivityDto, userId: string): Promise<ActivityEntity> {
+    this.validateSchedules(dto.scheduledStart, dto.scheduledEnd);
+
+    const [, , , category] = await Promise.all([
+      this.verifyBondMembership(bondId, userId),
+      dto.assignedTo ? this.verifyBondMembership(bondId, dto.assignedTo) : Promise.resolve(),
+      this.verifyChildrenBelongToBond(bondId, dto.childrenIds),
+      this.verifyCategoryActive(dto.categoryId),
+    ]);
 
     const assignedTo = dto.assignedTo ?? null;
     return this.dataSource.transaction(async (manager) => {
@@ -121,8 +125,8 @@ export class ActivitiesService {
           description: dto.description ?? '',
           createdBy: userId,
           assignedTo,
-          scheduledStart: start,
-          scheduledEnd: end,
+          scheduledStart: dto.scheduledStart,
+          scheduledEnd: dto.scheduledEnd,
           deadline: null,
           notifBefore: NOTIF_BEFORE,
           notifAfter: NOTIF_AFTER,
@@ -168,7 +172,11 @@ export class ActivitiesService {
     return rows.map((row) =>
       plainToInstance(
         ActivitySummaryDto,
-        { ...row, ...this.policy.evaluate(row, viewerId, now) },
+        {
+          ...row,
+          childrenIds: (row as any).childrenIds ?? [],
+          ...this.policy.evaluate(row, viewerId, now),
+        },
         {
           excludeExtraneousValues: true,
         },

@@ -34,7 +34,6 @@ export class ActivitiesController {
   ) {}
 
   @Post(':bondId/create')
-  @HttpCode(HttpStatus.CREATED)
   @ApiBearerAuth()
   @ApiOperation({ summary: 'Create activity' })
   create(

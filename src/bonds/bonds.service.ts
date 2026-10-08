@@ -10,6 +10,9 @@ export class BondsService {
 
   async findByUserId(userId: string): Promise<BondResponseDto[]> {
     const bonds = await this.bondRepo.findBondsByUserId(userId);
+    return plainToInstance(BondResponseDto, bonds, { excludeExtraneousValues: true });
+
+    /*  
 
     const flattened = bonds.map((bond) => ({
       ...bond,
@@ -27,6 +30,6 @@ export class BondsService {
 
     return plainToInstance(BondResponseDto, flattened, {
       excludeExtraneousValues: true,
-    });
+    });*/
   }
 }

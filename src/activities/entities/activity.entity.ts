@@ -165,6 +165,9 @@ export class ActivityEntity {
   @UpdateDateColumn({ type: 'timestamptz', name: 'updated_at' })
   updatedAt!: Date;
 
+  /** Non-column field populated by query projections (e.g. findByBondIdOrdered). */
+  childrenIds?: string[];
+
   @OneToMany(() => ActivityChildEntity, (ac) => ac.activity)
   activityChildren!: ActivityChildEntity[];
 }
