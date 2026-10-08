@@ -6,6 +6,7 @@ import { BondMemberEntity } from './entities/bond-member.entity';
 import { ChildEntity } from '../children/entities/child.entity';
 import { PersonalDataEntity } from '../users/entities/personal-data.entity';
 import { BondsRepository } from './repositories/bonds.repository';
+import { BondMembersRepository } from './repositories/bond-members.repository';
 import { BondsService } from './bonds.service';
 import { BondsController } from './bonds.controller';
 
@@ -14,7 +15,7 @@ import { BondsController } from './bonds.controller';
     TypeOrmModule.forFeature([BondEntity, BondMemberEntity, ChildEntity, PersonalDataEntity]),
   ],
   controllers: [BondsController],
-  providers: [BondsRepository, BondsService],
-  exports: [TypeOrmModule, BondsRepository],
+  providers: [BondsRepository, BondMembersRepository, BondsService],
+  exports: [TypeOrmModule, BondsRepository, BondMembersRepository],
 })
 export class BondsModule {}

@@ -6,6 +6,7 @@ import { ActivityChildEntity } from './entities/activity-child.entity';
 import { ActAttachmentEntity } from './entities/act-attachment.entity';
 import { ActivitiesRepository } from './repositories/activities.repository';
 import { ActivitiesAuditRepository } from './repositories/activities-audit.repository';
+import { ActivityChildRepository } from './repositories/activity-child.repository';
 import { ActivitiesService } from './activities.service';
 import { ActivitiesController } from './activities.controller';
 import { ActivityPolicyService } from './activity-policy.service';
@@ -39,12 +40,13 @@ import { Clock } from '../common/clock/clock';
   providers: [
     ActivitiesRepository,
     ActivitiesAuditRepository,
+    ActivityChildRepository,
     ActivitiesService,
     ActivityPolicyService,
     ActivitiesScheduler,
     SystemClock,
     { provide: Clock, useExisting: SystemClock },
   ],
-  exports: [ActivitiesService],
+  exports: [ActivitiesService, ActivityChildRepository],
 })
 export class ActivitiesModule {}

@@ -1,6 +1,6 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { IsNull, Repository } from 'typeorm';
+import { DeepPartial, EntityManager, IsNull, QueryDeepPartialEntity, Repository } from 'typeorm';
 
 import { BaseRepository } from '../../common/repositories/base.repository';
 import { ActivityEntity, ActivityStatus } from '../entities/activity.entity';
@@ -108,6 +108,37 @@ export class ActivitiesRepository extends BaseRepository<ActivityEntity> {
    */
   async findByIdIncludingDeleted(id: string): Promise<ActivityEntity | null> {
     return this.activityRepo.findOne({ where: { id } });
+  }
+
+  /**
+   * Crea una actividad dentro de una transacción abierta por `transaction()`.
+   *
+   * `manager` es opcional (patrón `manager?` de ActivitiesAuditRepository.record):
+   * con él, la fila de `activity` participa en la MISMA transacción que
+   * `activity_child` y la notificación; sin él, escribe por la conexión normal.
+   */
+  async createInTx(
+    data: DeepPartial<ActivityEntity>,
+    manager?: EntityManager,
+  ): Promise<ActivityEntity> {
+    const repo = manager ? manager.getRepository(ActivityEntity) : this.activityRepo;
+    return repo.save(repo.create(data));
+  }
+
+  /**
+   * Actualización parcial de columnas sin hidratar la fila.
+   *
+   * El `patch` se tipea como `QueryDeepPartialEntity<ActivityEntity>` — es el
+   * tipo que `Repository.update()` ya acepta — para que los call sites de swipe
+   * no necesiten ningún cast (`as any`).
+   */
+  async updateFields(
+    id: string,
+    patch: QueryDeepPartialEntity<ActivityEntity>,
+    manager?: EntityManager,
+  ): Promise<void> {
+    const repo = manager ? manager.getRepository(ActivityEntity) : this.activityRepo;
+    await repo.update(id, patch);
   }
 
   async markCompleted(id: string, now: Date): Promise<{ status: string; completedAt: string }> {

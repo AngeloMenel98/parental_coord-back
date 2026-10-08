@@ -5,12 +5,24 @@ import {
   FindOneOptions,
   FindManyOptions,
   DeepPartial,
+  EntityManager,
 } from 'typeorm';
 
 @Injectable()
 export abstract class BaseRepository<T extends { id: string }> extends Repository<T> {
   constructor(private readonly repo: Repository<T>) {
     super(repo.target, repo.manager);
+  }
+
+  /**
+   * Abre una transacción y delega el `EntityManager` al callback.
+   *
+   * `this.manager` está garantizado: el ctor de la base hace
+   * `super(repo.target, repo.manager)` (base.repository.ts:13), así que el
+   * repositorio siempre nace con el manager del DataSource.
+   */
+  async transaction<T>(fn: (manager: EntityManager) => Promise<T>): Promise<T> {
+    return this.manager.transaction(fn);
   }
 
   // --- Standard CRUD ---
