@@ -20,6 +20,8 @@ async function seed() {
     username: process.env.DB_USER ?? 'parental',
     password: process.env.DB_PASSWORD!,
     database: process.env.DB_NAME ?? 'parental_coordination',
+    // Managed Postgres (Supabase/Neon) requires SSL. Opt-in via DB_SSL=true
+    ssl: process.env.DB_SSL === 'true' ? { rejectUnauthorized: false } : false,
     entities: ['src/**/*.entity.ts'],
     synchronize: false,
   });
