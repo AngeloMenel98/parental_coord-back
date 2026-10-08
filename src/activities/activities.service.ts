@@ -149,10 +149,15 @@ export class ActivitiesService {
   /**
    * Lista del vínculo, con los `can_*` calculados PARA ESTE VISOR (R1).
    *
-   * `viewerId` es obligatorio: sin él los flags no se pueden calcular, y el
-   * llamador (el controlador) ya ha comprobado la membresía.
+   * `viewerId` es obligatorio: sin él los flags no se pueden calcular, y
+   * este método comprueba él mismo la membresía (R4).
    */
   async listByBond(bondId: string, viewerId: string): Promise<ActivitySummaryDto[]> {
+    const bond = await this.bondsRepo.findActiveBondForMember(bondId, viewerId);
+    if (!bond) {
+      throw new NotFoundException('Bond not found or you are not a member');
+    }
+
     const rows = await this.activitiesRepo.findByBondIdOrdered(bondId);
     const now = this.clock.now();
     return rows.map((row) =>
@@ -612,18 +617,30 @@ export class ActivitiesService {
    * Returns per-member compliance data for a given bond.
    * Every active bond member appears in the result — members with zero
    * activities in the current month get total=0, completed=0, percentage=0.
+   *
+   * La membresía y el `bondActive` viven AQUÍ (R4): el controlador sólo
+   * mapea el DTO, así que el 404 y el flag salen del servicio.
    */
-  async getComplianceForBond(bondId: string): Promise<ComplianceMemberRaw[]> {
+  async getComplianceForBond(
+    bondId: string,
+    viewerId: string,
+  ): Promise<{ bondActive: boolean; period: string; members: ComplianceMemberRaw[] }> {
+    const bond = await this.bondsRepo.findActiveBondForMember(bondId, viewerId);
+    if (!bond) {
+      throw new NotFoundException('Bond not found or you are not a member');
+    }
+
     const now = new Date();
     const year = now.getFullYear();
     const month = now.getMonth(); // 0-based
     const startOfMonth = new Date(year, month, 1);
     const endOfMonth = new Date(year, month + 1, 0, 23, 59, 59, 999);
+    const period = `${year}-${String(month + 1).padStart(2, '0')}`;
 
     const members = await this.activitiesRepo.findActiveBondMembers(bondId);
 
     if (members.length === 0) {
-      return [];
+      return { bondActive: bond.isActive, period, members: [] };
     }
 
     const rows = await this.activitiesRepo.countActivitiesByAssignee(
@@ -640,7 +657,7 @@ export class ActivitiesService {
       });
     }
 
-    return members.map((member) => {
+    const memberStats = members.map((member) => {
       const stats = activityMap.get(member.userId) ?? { total: 0, completed: 0 };
       const total = stats.total;
       const completed = stats.completed;
@@ -654,5 +671,7 @@ export class ActivitiesService {
         percentage: total > 0 ? Math.round((completed / total) * 1000) / 10 : 0,
       };
     });
+
+    return { bondActive: bond.isActive, period, members: memberStats };
   }
 }

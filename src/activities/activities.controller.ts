@@ -5,7 +5,6 @@ import {
   Get,
   HttpCode,
   HttpStatus,
-  NotFoundException,
   Param,
   ParseUUIDPipe,
   Post,
@@ -22,16 +21,12 @@ import { ComplianceResponseDto } from '../bonds/dto/compliance-response.dto';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { AuthUser } from '../auth/dto/auth-user.dto';
-import { BondsRepository } from '../bonds/repositories/bonds.repository';
 
 @ApiTags('activities')
 @Controller('activities')
 @UseGuards(JwtAuthGuard)
 export class ActivitiesController {
-  constructor(
-    private readonly activitiesService: ActivitiesService,
-    private readonly bondsRepo: BondsRepository,
-  ) {}
+  constructor(private readonly activitiesService: ActivitiesService) {}
 
   @Post(':bondId/create')
   @ApiBearerAuth()
@@ -130,13 +125,7 @@ export class ActivitiesController {
   @Get('bond/:bondId')
   @ApiBearerAuth()
   @ApiOperation({ summary: 'List activities for a bond (ordered, summary shape)' })
-  async listByBond(@Param('bondId', ParseUUIDPipe) bondId: string, @CurrentUser() user: AuthUser) {
-    const bond = await this.bondsRepo.findActiveBondForMember(bondId, user.id);
-
-    if (!bond) {
-      throw new NotFoundException('Bond not found or you are not a member');
-    }
-
+  listByBond(@Param('bondId', ParseUUIDPipe) bondId: string, @CurrentUser() user: AuthUser) {
     return this.activitiesService.listByBond(bondId, user.id);
   }
 
@@ -153,23 +142,17 @@ export class ActivitiesController {
     @Param('bondId', ParseUUIDPipe) bondId: string,
     @CurrentUser() user: AuthUser,
   ) {
-    const bond = await this.bondsRepo.findActiveBondForMember(bondId, user.id);
-
-    if (!bond) {
-      throw new NotFoundException('Bond not found or you are not a member');
-    }
-
-    const members = await this.activitiesService.getComplianceForBond(bondId);
-
-    const now = new Date();
-    const period = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+    const { bondActive, period, members } = await this.activitiesService.getComplianceForBond(
+      bondId,
+      user.id,
+    );
 
     return plainToInstance(
       ComplianceResponseDto,
       {
         bondId,
         period,
-        bondActive: bond.isActive,
+        bondActive,
         members,
       },
       { excludeExtraneousValues: true },

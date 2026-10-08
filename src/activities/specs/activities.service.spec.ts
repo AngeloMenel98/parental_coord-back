@@ -1,5 +1,5 @@
 import { Test, TestingModule } from '@nestjs/testing';
-import { BadRequestException } from '@nestjs/common';
+import { BadRequestException, NotFoundException } from '@nestjs/common';
 import { plainToInstance } from 'class-transformer';
 import { validate } from 'class-validator';
 import { ActivitiesService } from '../activities.service';
@@ -45,6 +45,7 @@ describe('ActivitiesService', () => {
       create: jest.fn(),
       findOneBy: jest.fn(),
       updateFields: jest.fn(),
+      findActiveBondMembers: jest.fn(),
     } as any;
     categoriesRepo = {
       findActiveById: jest.fn(),
@@ -779,6 +780,38 @@ describe('ActivitiesService', () => {
         expect(detail.declinedReason).toBeNull();
         expect('declinedReason' in detail).toBe(true);
       });
+    });
+  });
+
+  describe('membership 404 parity (R4)', () => {
+    it('listByBond: non-member gets a plain 404 BEFORE the rows query', async () => {
+      bondsRepo.findActiveBondForMember.mockResolvedValue(null);
+
+      const err = await service.listByBond(bondId, userId).catch((e: any) => e);
+      expect(err).toBeInstanceOf(NotFoundException);
+      expect(err.getStatus()).toBe(404);
+      expect(err.message).toBe('Bond not found or you are not a member');
+      expect(activityRepo.findByBondIdOrdered).not.toHaveBeenCalled();
+    });
+
+    it('getComplianceForBond: non-member gets the same plain 404', async () => {
+      bondsRepo.findActiveBondForMember.mockResolvedValue(null);
+
+      const err = await service.getComplianceForBond(bondId, userId).catch((e: any) => e);
+      expect(err).toBeInstanceOf(NotFoundException);
+      expect(err.getStatus()).toBe(404);
+      expect(err.message).toBe('Bond not found or you are not a member');
+    });
+
+    it('getComplianceForBond: member gets bondActive + period + members', async () => {
+      bondsRepo.findActiveBondForMember.mockResolvedValue({ id: bondId, isActive: true } as any);
+      activityRepo.findActiveBondMembers.mockResolvedValue([]);
+
+      const res = await service.getComplianceForBond(bondId, userId);
+
+      expect(res.bondActive).toBe(true);
+      expect(res.period).toMatch(/^\d{4}-\d{2}$/);
+      expect(res.members).toEqual([]);
     });
   });
 });
