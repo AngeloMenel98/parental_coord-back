@@ -338,8 +338,7 @@ export class ActivitiesService {
     this.assertNotPast(activity, now);
 
     return this.activitiesRepo.transaction(async (manager) => {
-      const repo = manager.getRepository(ActivityEntity);
-      await repo.update(id, { deletedAt: now } as any);
+      await this.activitiesRepo.updateFields(id, { deletedAt: now }, manager);
       await this.auditRepo.record(
         {
           bondId: activity.bondId,
@@ -384,8 +383,7 @@ export class ActivitiesService {
     }
 
     return this.activitiesRepo.transaction(async (manager) => {
-      const repo = manager.getRepository(ActivityEntity);
-      await repo.update(id, { deletedAt: null } as any);
+      await this.activitiesRepo.updateFields(id, { deletedAt: null }, manager);
       await this.auditRepo.record(
         {
           bondId: activity.bondId,
@@ -430,13 +428,16 @@ export class ActivitiesService {
     }
 
     return this.activitiesRepo.transaction(async (manager) => {
-      const repo = manager.getRepository(ActivityEntity);
-      await repo.update(id, {
-        status: ActivityStatus.CANCELLED,
-        cancelledAt: now,
-        cancelledBy: userId,
-        updatedAt: now,
-      } as any);
+      await this.activitiesRepo.updateFields(
+        id,
+        {
+          status: ActivityStatus.CANCELLED,
+          cancelledAt: now,
+          cancelledBy: userId,
+          updatedAt: now,
+        },
+        manager,
+      );
       await this.auditRepo.record(
         {
           bondId: activity.bondId,
@@ -498,13 +499,16 @@ export class ActivitiesService {
     }
 
     return this.activitiesRepo.transaction(async (manager) => {
-      const repo = manager.getRepository(ActivityEntity);
-      await repo.update(id, {
-        status: ActivityStatus.NOT_ASSISTING,
-        declinedAt: now,
-        declinedReason: reason.value,
-        updatedAt: now,
-      } as any);
+      await this.activitiesRepo.updateFields(
+        id,
+        {
+          status: ActivityStatus.NOT_ASSISTING,
+          declinedAt: now,
+          declinedReason: reason.value,
+          updatedAt: now,
+        },
+        manager,
+      );
       await this.auditRepo.record(
         {
           bondId: activity.bondId,
@@ -576,13 +580,16 @@ export class ActivitiesService {
     }
 
     return this.activitiesRepo.transaction(async (manager) => {
-      const repo = manager.getRepository(ActivityEntity);
-      await repo.update(id, {
-        status: previousStatus,
-        declinedAt: null,
-        declinedReason: null,
-        updatedAt: now,
-      } as any);
+      await this.activitiesRepo.updateFields(
+        id,
+        {
+          status: previousStatus,
+          declinedAt: null,
+          declinedReason: null,
+          updatedAt: now,
+        },
+        manager,
+      );
       await this.auditRepo.record(
         {
           bondId: activity.bondId,

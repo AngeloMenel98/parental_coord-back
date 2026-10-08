@@ -9,9 +9,7 @@ import { ActivityChildRepository } from '../repositories/activity-child.reposito
 import { ActivityPolicyService } from '../activity-policy.service';
 import { ChildrenRepository } from '../../children/repositories/children.repository';
 import { CategoriesRepository } from '../../categories/repositories/categories.repository';
-import { NotificationEntity } from '../../notifications/entities/notification.entity';
-import { ActivityEntity, ActivityStatus } from '../entities/activity.entity';
-import { ActivityChildEntity } from '../entities/activity-child.entity';
+import { ActivityStatus } from '../entities/activity.entity';
 import { BondsRepository } from '../../bonds/repositories/bonds.repository';
 import { NotificationRepository } from '../../notifications/repositories/notification.repository';
 import { Clock } from '../../common/clock/clock';
@@ -46,6 +44,7 @@ describe('ActivitiesService', () => {
       save: jest.fn(),
       create: jest.fn(),
       findOneBy: jest.fn(),
+      updateFields: jest.fn(),
     } as any;
     categoriesRepo = {
       findActiveById: jest.fn(),
@@ -81,17 +80,11 @@ describe('ActivitiesService', () => {
 
     // Los 6 openers (create + 5 swipes) pasan por `activitiesRepo.transaction`;
     // `fakeManager` es el EntityManager de mentira que recibe el callback — el
-    // mismo que reciben createInTx/saveChildrenFor/createForActivity (R3). El
-    // shim de getRepository se mantiene mientras los cuerpos sigan usando
-    // `manager.getRepository` (muere en T3 con `updateFields`).
-    fakeManager = {
-      getRepository: jest.fn((entity: any) => {
-        if (entity === ActivityEntity) return activityRepo;
-        if (entity === ActivityChildEntity) return activityChildRepo;
-        if (entity === NotificationEntity) return notifRepo;
-        return {} as any;
-      }),
-    };
+    // mismo que reciben createInTx/saveChildrenFor/createForActivity (R3). Los
+    // cuerpos de swipe ya no lo desglosan: escriben vía
+    // `activitiesRepo.updateFields(id, patch, manager)`, así que el manager
+    // sólo se propaga como argumento (T3).
+    fakeManager = {} as any;
     activityRepo.transaction = jest.fn(async (fn: any) => fn(fakeManager));
 
     const module: TestingModule = await Test.createTestingModule({
@@ -394,9 +387,10 @@ describe('ActivitiesService', () => {
         const res = await service.delete('a1', creator);
 
         expect(res.deletedAt).toBe('2026-10-01T12:00:00.000Z');
-        expect(activityRepo.update).toHaveBeenCalledWith(
+        expect(activityRepo.updateFields).toHaveBeenCalledWith(
           'a1',
           expect.objectContaining({ deletedAt: new Date('2026-10-01T12:00:00Z') }),
+          fakeManager,
         );
         expect(auditRepo.record).toHaveBeenCalledWith(
           expect.objectContaining({ action: 'activity_delete', userId: creator }),
@@ -407,7 +401,7 @@ describe('ActivitiesService', () => {
       it('touches NOTHING else — no status change, no child-table cascade', async () => {
         (activityRepo as any).findById.mockResolvedValue(futureActivity());
         await service.delete('a1', creator);
-        const patch = activityRepo.update.mock.calls[0][1];
+        const patch = activityRepo.updateFields.mock.calls[0][1];
         expect(Object.keys(patch)).toEqual(['deletedAt']);
       });
 
@@ -425,7 +419,7 @@ describe('ActivitiesService', () => {
       it('409 ACTIVITY_ALREADY_PAST once the activity has ended', async () => {
         (activityRepo as any).findById.mockResolvedValue(pastActivity());
         await expectCode(service.delete('a1', creator), 'ACTIVITY_ALREADY_PAST', 409);
-        expect(activityRepo.update).not.toHaveBeenCalled();
+        expect(activityRepo.updateFields).not.toHaveBeenCalled();
       });
 
       it('404 when the activity does not exist at all', async () => {
@@ -441,7 +435,11 @@ describe('ActivitiesService', () => {
         );
         const res = await service.restore('a1', creator);
         expect(res.deletedAt).toBeNull();
-        expect(activityRepo.update).toHaveBeenCalledWith('a1', { deletedAt: null });
+        expect(activityRepo.updateFields).toHaveBeenCalledWith(
+          'a1',
+          { deletedAt: null },
+          fakeManager,
+        );
         expect(auditRepo.record).toHaveBeenCalledWith(
           expect.objectContaining({ action: 'activity_restore' }),
           expect.anything(),
@@ -479,7 +477,7 @@ describe('ActivitiesService', () => {
           id: 'a1',
           deletedAt: null,
         });
-        expect(activityRepo.update).not.toHaveBeenCalled();
+        expect(activityRepo.updateFields).not.toHaveBeenCalled();
         expect(auditRepo.record).not.toHaveBeenCalled();
       });
 
@@ -498,13 +496,14 @@ describe('ActivitiesService', () => {
 
         expect(res.status).toBe(ActivityStatus.CANCELLED);
         expect(res.cancelledAt).toBe('2026-10-01T12:00:00.000Z');
-        expect(activityRepo.update).toHaveBeenCalledWith(
+        expect(activityRepo.updateFields).toHaveBeenCalledWith(
           'a1',
           expect.objectContaining({
             status: ActivityStatus.CANCELLED,
             cancelledAt: new Date('2026-10-01T12:00:00Z'),
             cancelledBy: creator,
           }),
+          fakeManager,
         );
         expect(auditRepo.record).toHaveBeenCalledWith(
           expect.objectContaining({
@@ -587,13 +586,14 @@ describe('ActivitiesService', () => {
         const res = await service.declineAssignment('a1', assignee, 'estoy de guardia');
 
         expect(res.status).toBe(ActivityStatus.NOT_ASSISTING);
-        expect(activityRepo.update).toHaveBeenCalledWith(
+        expect(activityRepo.updateFields).toHaveBeenCalledWith(
           'a1',
           expect.objectContaining({
             status: ActivityStatus.NOT_ASSISTING,
             declinedAt: new Date('2026-10-01T12:00:00Z'),
             declinedReason: 'estoy de guardia',
           }),
+          fakeManager,
         );
       });
 
@@ -678,13 +678,14 @@ describe('ActivitiesService', () => {
 
         const res = await service.undoDecline('a1', assignee);
         expect(res.status).toBe(ActivityStatus.ASSIGNED);
-        expect(activityRepo.update).toHaveBeenCalledWith(
+        expect(activityRepo.updateFields).toHaveBeenCalledWith(
           'a1',
           expect.objectContaining({
             status: ActivityStatus.ASSIGNED,
             declinedAt: null,
             declinedReason: null,
           }),
+          fakeManager,
         );
       });
 
@@ -703,7 +704,7 @@ describe('ActivitiesService', () => {
           id: 'a1',
           status: ActivityStatus.ASSIGNED,
         });
-        expect(activityRepo.update).not.toHaveBeenCalled();
+        expect(activityRepo.updateFields).not.toHaveBeenCalled();
       });
 
       it('403 for a non-assignee', async () => {
