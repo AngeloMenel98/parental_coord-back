@@ -6,7 +6,7 @@ import {
 } from '@nestjs/common';
 import { plainToInstance } from 'class-transformer';
 import { InjectRepository } from '@nestjs/typeorm';
-import { DataSource, EntityManager, In, Repository } from 'typeorm';
+import { DataSource, In, Repository } from 'typeorm';
 
 import { ActivitiesRepository } from './repositories/activities.repository';
 import {
@@ -17,6 +17,7 @@ import { ActivityEntity, ActivityStatus, ActivityType } from './entities/activit
 import { ActivityChildEntity } from './entities/activity-child.entity';
 import { ChildEntity } from '../children/entities/child.entity';
 import { NotificationEntity } from '../notifications/entities/notification.entity';
+import { NotificationRepository } from '../notifications/repositories/notification.repository';
 import { BondsRepository } from '../bonds/repositories/bonds.repository';
 import { CreateActivityDto } from './dto/create-activity.dto';
 import { ActivitySummaryDto, ActivityDetailDto } from './dto/activity-response.dto';
@@ -58,6 +59,7 @@ export class ActivitiesService {
     private readonly clock: Clock,
     private readonly policy: ActivityPolicyService,
     private readonly auditRepo: ActivitiesAuditRepository,
+    private readonly notificationRepo: NotificationRepository,
   ) {}
 
   private async verifyBondMembership(bondId: string, userId: string): Promise<void> {
@@ -338,32 +340,6 @@ export class ActivitiesService {
   }
 
   /**
-   * Notificación de baja. `body` es texto ya compuesto por el llamador, para que
-   * el texto de negocio (y si lleva el motivo) quede visible en un solo sitio.
-   */
-  private async notify(
-    manager: EntityManager,
-    target: { userId: string; bondId: string; activityId: string },
-    type: string,
-    title: string,
-    body: string,
-  ): Promise<void> {
-    const notifRepo = manager.getRepository(NotificationEntity);
-    await notifRepo.save(
-      notifRepo.create({
-        userId: target.userId,
-        bondId: target.bondId,
-        type,
-        title,
-        body,
-        refEntityType: 'activity',
-        refEntityId: target.activityId,
-        isRead: false,
-      }),
-    );
-  }
-
-  /**
    * DELETE /activities/:id — "Eliminar".
    *
    * A4 · Soft delete PURO: se escribe `deleted_at` y NADA MÁS. No hay borrado en
@@ -377,7 +353,7 @@ export class ActivitiesService {
     const now = this.clock.now();
     this.assertNotPast(activity, now);
 
-    return this.dataSource.transaction(async (manager) => {
+    return this.activitiesRepo.transaction(async (manager) => {
       const repo = manager.getRepository(ActivityEntity);
       await repo.update(id, { deletedAt: now } as any);
       await this.auditRepo.record(
@@ -423,7 +399,7 @@ export class ActivitiesService {
       throw undoWindowExpired('restore');
     }
 
-    return this.dataSource.transaction(async (manager) => {
+    return this.activitiesRepo.transaction(async (manager) => {
       const repo = manager.getRepository(ActivityEntity);
       await repo.update(id, { deletedAt: null } as any);
       await this.auditRepo.record(
@@ -469,7 +445,7 @@ export class ActivitiesService {
       throw validationFailed(reason.message, { field: 'reason', reason: reason.reason });
     }
 
-    return this.dataSource.transaction(async (manager) => {
+    return this.activitiesRepo.transaction(async (manager) => {
       const repo = manager.getRepository(ActivityEntity);
       await repo.update(id, {
         status: ActivityStatus.CANCELLED,
@@ -495,12 +471,16 @@ export class ActivitiesService {
       );
       // R10 · Se avisa al asignado; al creador no, que ya lo sabe.
       if (activity.assignedTo && activity.assignedTo !== userId) {
-        await this.notify(
+        await this.notificationRepo.createForActivity(
+          {
+            userId: activity.assignedTo,
+            bondId: activity.bondId,
+            type: 'activity_cancelled',
+            title: activity.title,
+            body: `La actividad "${activity.title}" fue cancelada. Motivo: ${reason.value}`,
+            refEntityId: id,
+          },
           manager,
-          { userId: activity.assignedTo, bondId: activity.bondId, activityId: id },
-          'activity_cancelled',
-          activity.title,
-          `La actividad "${activity.title}" fue cancelada. Motivo: ${reason.value}`,
         );
       }
       return { id, status: ActivityStatus.CANCELLED, cancelledAt: now.toISOString() };
@@ -533,7 +513,7 @@ export class ActivitiesService {
       throw validationFailed(reason.message, { field: 'reason', reason: reason.reason });
     }
 
-    return this.dataSource.transaction(async (manager) => {
+    return this.activitiesRepo.transaction(async (manager) => {
       const repo = manager.getRepository(ActivityEntity);
       await repo.update(id, {
         status: ActivityStatus.NOT_ASSISTING,
@@ -562,12 +542,16 @@ export class ActivitiesService {
       // siendo el creador: A3 cambió la VISIBILIDAD del motivo en el DTO (toda la
       // actividad del vínculo), no la destinataria del aviso, que quedó sin ruling.
       if (activity.createdBy !== userId) {
-        await this.notify(
+        await this.notificationRepo.createForActivity(
+          {
+            userId: activity.createdBy,
+            bondId: activity.bondId,
+            type: 'activity_declined',
+            title: activity.title,
+            body: `La actividad "${activity.title}" se marcó como "No asisto". Motivo: ${reason.value}`,
+            refEntityId: id,
+          },
           manager,
-          { userId: activity.createdBy, bondId: activity.bondId, activityId: id },
-          'activity_declined',
-          activity.title,
-          `La actividad "${activity.title}" se marcó como "No asisto". Motivo: ${reason.value}`,
         );
       }
       return { id, status: ActivityStatus.NOT_ASSISTING, declinedAt: now.toISOString() };
@@ -607,7 +591,7 @@ export class ActivitiesService {
       return { id, status: activity.status };
     }
 
-    return this.dataSource.transaction(async (manager) => {
+    return this.activitiesRepo.transaction(async (manager) => {
       const repo = manager.getRepository(ActivityEntity);
       await repo.update(id, {
         status: previousStatus,

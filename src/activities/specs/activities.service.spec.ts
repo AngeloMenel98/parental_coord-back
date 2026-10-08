@@ -13,6 +13,7 @@ import { NotificationEntity } from '../../notifications/entities/notification.en
 import { ActivityEntity, ActivityStatus } from '../entities/activity.entity';
 import { ActivityChildEntity } from '../entities/activity-child.entity';
 import { BondsRepository } from '../../bonds/repositories/bonds.repository';
+import { NotificationRepository } from '../../notifications/repositories/notification.repository';
 import { Clock } from '../../common/clock/clock';
 import { CodedException } from '../../common/errors/coded.exception';
 import { CreateActivityDto } from '../dto/create-activity.dto';
@@ -23,6 +24,7 @@ describe('ActivitiesService', () => {
   let categoryRepo: any;
   let childRepo: any;
   let notifRepo: any;
+  let notificationRepo: any;
   let activityChildRepo: any;
   let bondsRepo: any;
   let auditRepo: any;
@@ -54,6 +56,12 @@ describe('ActivitiesService', () => {
       create: jest.fn((x: any) => x),
       save: jest.fn(),
     } as any;
+    // El repositorio dedicado delega en el create/save crudo de `notifRepo`:
+    // así las aserciones sobre el contenido de la notificación siguen midiendo
+    // el payload real sin reescribir los cuerpos de los tests en este lote.
+    notificationRepo = {
+      createForActivity: jest.fn(async (input: any) => notifRepo.save(notifRepo.create(input))),
+    } as any;
     activityChildRepo = {
       create: jest.fn(),
       save: jest.fn(),
@@ -82,6 +90,20 @@ describe('ActivitiesService', () => {
       }),
     };
 
+    // Los openers de las mutaciones ya pasan por `activitiesRepo.transaction`;
+    // `fakeManager` es el EntityManager de mentira que recibe el callback. El
+    // shim de getRepository se mantiene mientras los cuerpos sigan usando
+    // `manager.getRepository` (muere en T3 con `updateFields`).
+    const fakeManager: any = {
+      getRepository: jest.fn((entity: any) => {
+        if (entity === ActivityEntity) return activityRepo;
+        if (entity === ActivityChildEntity) return activityChildRepo;
+        if (entity === NotificationEntity) return notifRepo;
+        return {} as any;
+      }),
+    };
+    activityRepo.transaction = jest.fn(async (fn: any) => fn(fakeManager));
+
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         ActivitiesService,
@@ -95,6 +117,7 @@ describe('ActivitiesService', () => {
         { provide: Clock, useValue: clock },
         ActivityPolicyService,
         { provide: ActivitiesAuditRepository, useValue: auditRepo },
+        { provide: NotificationRepository, useValue: notificationRepo },
       ],
     }).compile();
 
