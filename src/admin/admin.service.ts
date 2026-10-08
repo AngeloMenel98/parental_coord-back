@@ -10,7 +10,7 @@ import { Repository } from 'typeorm';
 
 import { UserEntity, SystemRole } from '../users/entities/user.entity';
 import { PersonalDataEntity } from '../users/entities/personal-data.entity';
-import { BondEntity, AgreementType } from '../bonds/entities/bond.entity';
+import { BondEntity } from '../bonds/entities/bond.entity';
 import { BondMemberEntity, BondMemberRole } from '../bonds/entities/bond-member.entity';
 import { ChildEntity } from '../children/entities/child.entity';
 import { BondsRepository } from '../bonds/repositories/bonds.repository';

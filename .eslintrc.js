@@ -1,4 +1,4 @@
-# ESLint config aligned with @nestjs/cli defaults
+// ESLint config aligned with @nestjs/cli defaults
 module.exports = {
   parser: '@typescript-eslint/parser',
   parserOptions: {

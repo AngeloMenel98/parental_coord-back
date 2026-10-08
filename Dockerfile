@@ -35,4 +35,4 @@ USER app
 EXPOSE 3000
 # The app listens on PORT (default 3000). Migrations are run separately via
 # `pnpm typeorm migration:run` (see k8s/README.md) — this image only serves.
-CMD ["node", "dist/main.js"]
+CMD ["node", "dist/src/main.js"]

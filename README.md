@@ -23,7 +23,7 @@ cp .env.example .env
 createdb parental_coordination
 
 # 4. Ejecutar migraciones
-pnpm typeorm migration:run -d src/data-source.ts
+pnpm typeorm migration:run -d src/database/data-source.ts
 
 # 5. Iniciar en desarrollo
 pnpm start:dev
@@ -55,8 +55,8 @@ Ver `/home/angelo/ERD_REVISADO.md` para el detalle completo del esquema.
 
 - `pnpm build` — compilar
 - `pnpm start:dev` — desarrollo con watch
-- `pnpm typeorm migration:generate -d src/data-source.ts` — generar migración desde entidades
-- `pnpm typeorm migration:run -d src/data-source.ts` — aplicar migraciones
+- `pnpm typeorm migration:generate -d src/database/data-source.ts` — generar migración desde entidades
+- `pnpm typeorm migration:run -d src/database/data-source.ts` — aplicar migraciones
 - `pnpm lint` / `pnpm test` — calidad y tests
 
 ## Estructura
