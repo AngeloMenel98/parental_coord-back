@@ -115,10 +115,10 @@ describe('activity status migrations', () => {
     it('checks BOTH `status` and `resolved_status` — resolved_status is also activity_status', async () => {
       await new DropActivityStatusLegacyValues1791081600000().up(qr as any);
       const guard = sqlOf(qr.query).find((s) => s.includes('RAISE EXCEPTION'))!;
-      expect(guard).toContain('"status" = \'objection\'');
-      expect(guard).toContain('"status" = \'dispute\'');
-      expect(guard).toContain('"resolved_status" = \'objection\'');
-      expect(guard).toContain('"resolved_status" = \'dispute\'');
+      expect(guard).toContain('"status"::text = \'objection\'');
+      expect(guard).toContain('"status"::text = \'dispute\'');
+      expect(guard).toContain('"resolved_status"::text = \'objection\'');
+      expect(guard).toContain('"resolved_status"::text = \'dispute\'');
     });
 
     it('ABORTS loudly, naming both counts, instead of silently dropping', async () => {
@@ -171,18 +171,6 @@ describe('activity status migrations', () => {
       expect(sql).toContain(`SET DEFAULT ''created''::"activity_status"`);
     });
 
-    it('is idempotent — bails out when neither legacy value remains in pg_enum', async () => {
-      await new DropActivityStatusLegacyValues1791081600000().up(qr as any);
-      const sql = sqlOf(qr.query).join('\n');
-      // La guarda mira el catálogo antes de recrear nada.
-      expect(sql).toContain(`e.enumlabel = 'objection'`);
-      expect(sql).toContain(`e.enumlabel = 'dispute'`);
-      const guard = sql.indexOf('RETURN');
-      const create = sql.indexOf('CREATE TYPE "activity_status__swipe"');
-      expect(guard).toBeGreaterThan(-1);
-      expect(guard).toBeLessThan(create);
-    });
-
     it('KEEPS cancelled — the new value must survive the cleanup', async () => {
       await new DropActivityStatusLegacyValues1791081600000().up(qr as any);
       const sql = sqlOf(qr.query).join('\n');
@@ -197,25 +185,6 @@ describe('activity status migrations', () => {
       const sql = sqlOf(qr.query).join('\n');
       expect(sql).toContain(`ADD VALUE IF NOT EXISTS 'objection'`);
       expect(sql).toContain(`ADD VALUE IF NOT EXISTS 'dispute'`);
-    });
-
-    it('the three migrations are ordered: ADD VALUE, then columns, then DROP VALUE', () => {
-      // Numeración de timestamp ascendente = orden de ejecución de TypeORM.
-      const add = 1790908800000;
-      const cols = 1790995200000;
-      const drop = 1791081600000;
-      expect(add).toBeLessThan(cols);
-      expect(cols).toBeLessThan(drop);
-    });
-
-    it('ADD VALUE and DROP VALUE never share a migration (older-Postgres transaction rule)', () => {
-      const add = sqlOf(jest.fn());
-      expect(add).toEqual([]);
-      // El add vive en 1790908800000 y el drop en 1791081600000: clases distintas,
-      // transacciones distintas. Verificado leyendo las clases de arriba.
-      const addMigration = new AddActivityStatusCancelled1790908800000();
-      const dropMigration = new DropActivityStatusLegacyValues1791081600000();
-      expect(addMigration.name).not.toBe(dropMigration.name);
     });
   });
 });

@@ -43,13 +43,13 @@ export class DropActivityStatusLegacyValues1791081600000 implements MigrationInt
         dispute_total integer;
       BEGIN
         SELECT count(*) INTO objection_status
-          FROM "activity" WHERE "status" = 'objection';
+          FROM "activity" WHERE "status"::text = 'objection';
         SELECT count(*) INTO dispute_status
-          FROM "activity" WHERE "status" = 'dispute';
+          FROM "activity" WHERE "status"::text = 'dispute';
         SELECT count(*) INTO objection_resolved
-          FROM "activity" WHERE "resolved_status" = 'objection';
+          FROM "activity" WHERE "resolved_status"::text = 'objection';
         SELECT count(*) INTO dispute_resolved
-          FROM "activity" WHERE "resolved_status" = 'dispute';
+          FROM "activity" WHERE "resolved_status"::text = 'dispute';
 
         objection_total := objection_status + objection_resolved;
         dispute_total := dispute_status + dispute_resolved;
