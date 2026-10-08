@@ -10,6 +10,6 @@ import { CategoriesRepository } from './repositories/categories.repository';
   imports: [TypeOrmModule.forFeature([CategoryEntity])],
   controllers: [CategoriesController],
   providers: [CategoriesService, CategoriesRepository],
-  exports: [CategoriesService, CategoriesRepository, TypeOrmModule],
+  exports: [CategoriesService, CategoriesRepository],
 })
 export class CategoriesModule {}

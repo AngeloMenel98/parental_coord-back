@@ -15,6 +15,5 @@ import { ThirdActivityParticipationEntity } from './entities/third-activity-part
       ThirdActivityParticipationEntity,
     ]),
   ],
-  exports: [TypeOrmModule],
 })
 export class ExpensesModule {}

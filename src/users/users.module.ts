@@ -8,6 +8,6 @@ import { PersonalDataRepository } from './repositories/personal-data.repository'
 @Module({
   imports: [TypeOrmModule.forFeature([UserEntity, PersonalDataEntity])],
   providers: [UsersRepository, PersonalDataRepository],
-  exports: [TypeOrmModule, UsersRepository, PersonalDataRepository],
+  exports: [UsersRepository, PersonalDataRepository],
 })
 export class UsersModule {}
