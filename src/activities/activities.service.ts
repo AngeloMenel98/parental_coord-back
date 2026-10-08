@@ -5,20 +5,18 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { plainToInstance } from 'class-transformer';
-import { InjectRepository } from '@nestjs/typeorm';
-import { DataSource, In, Repository } from 'typeorm';
 
 import { ActivitiesRepository } from './repositories/activities.repository';
 import {
   ACTIVITY_AUDIT_ACTIONS,
   ActivitiesAuditRepository,
 } from './repositories/activities-audit.repository';
+import { ActivityChildRepository } from './repositories/activity-child.repository';
 import { ActivityEntity, ActivityStatus, ActivityType } from './entities/activity.entity';
-import { ActivityChildEntity } from './entities/activity-child.entity';
-import { ChildEntity } from '../children/entities/child.entity';
-import { NotificationEntity } from '../notifications/entities/notification.entity';
 import { NotificationRepository } from '../notifications/repositories/notification.repository';
 import { BondsRepository } from '../bonds/repositories/bonds.repository';
+import { ChildrenRepository } from '../children/repositories/children.repository';
+import { CategoriesRepository } from '../categories/repositories/categories.repository';
 import { CreateActivityDto } from './dto/create-activity.dto';
 import { ActivitySummaryDto, ActivityDetailDto } from './dto/activity-response.dto';
 import { CompleteActivityResponseDto } from './dto/complete-activity-response.dto';
@@ -50,16 +48,14 @@ export const NOTIF_AFTER = '1 day';
 export class ActivitiesService {
   constructor(
     private readonly activitiesRepo: ActivitiesRepository,
-    @InjectRepository(CategoryEntity)
-    private readonly categoryRepo: Repository<CategoryEntity>,
-    @InjectRepository(ChildEntity)
-    private readonly childRepo: Repository<ChildEntity>,
+    private readonly activityChildRepo: ActivityChildRepository,
+    private readonly notificationRepo: NotificationRepository,
+    private readonly auditRepo: ActivitiesAuditRepository,
     private readonly bondsRepo: BondsRepository,
-    private readonly dataSource: DataSource,
+    private readonly childrenRepo: ChildrenRepository,
+    private readonly categoriesRepo: CategoriesRepository,
     private readonly clock: Clock,
     private readonly policy: ActivityPolicyService,
-    private readonly auditRepo: ActivitiesAuditRepository,
-    private readonly notificationRepo: NotificationRepository,
   ) {}
 
   private async verifyBondMembership(bondId: string, userId: string): Promise<void> {
@@ -70,16 +66,14 @@ export class ActivitiesService {
   }
 
   private async verifyChildrenBelongToBond(bondId: string, childrenIds: string[]): Promise<void> {
-    const children = await this.childRepo.find({
-      where: { id: In(childrenIds), bondId },
-    });
+    const children = await this.childrenRepo.findByIdsAndBond(childrenIds, bondId);
     if (children.length !== childrenIds.length) {
       throw new BadRequestException('One or more children do not belong to this bond');
     }
   }
 
   private async verifyCategoryActive(categoryId: string): Promise<CategoryEntity> {
-    const category = await this.categoryRepo.findOneBy({ id: categoryId, isActive: true });
+    const category = await this.categoriesRepo.findActiveById(categoryId);
     if (!category) {
       throw new BadRequestException('Category is unknown or inactive');
     }
@@ -111,13 +105,9 @@ export class ActivitiesService {
     ]);
 
     const assignedTo = dto.assignedTo ?? null;
-    return this.dataSource.transaction(async (manager) => {
-      const activityRepo = manager.getRepository(ActivityEntity);
-      const activityChildRepo = manager.getRepository(ActivityChildEntity);
-      const notifRepo = manager.getRepository(NotificationEntity);
-
-      const savedActivity = await activityRepo.save(
-        activityRepo.create({
+    return this.activitiesRepo.transaction(async (manager) => {
+      const activity = await this.activitiesRepo.createInTx(
+        {
           bondId,
           categoryId: dto.categoryId,
           type: dto.type ?? ActivityType.EVENT,
@@ -132,33 +122,27 @@ export class ActivitiesService {
           deadline: null,
           notifBefore: NOTIF_BEFORE,
           notifAfter: NOTIF_AFTER,
-        }),
+        },
+        manager,
       );
 
-      await activityChildRepo.save(
-        dto.childrenIds.map((childId) =>
-          activityChildRepo.create({
-            activityId: savedActivity.id,
-            childId,
-          }),
-        ),
-      );
+      await this.activityChildRepo.saveChildrenFor(activity.id, dto.childrenIds, manager);
 
       if (assignedTo) {
-        const notification = notifRepo.create({
-          userId: assignedTo,
-          bondId,
-          type: 'activity_assigned',
-          title: dto.title,
-          body: `New activity assigned: ${dto.title}`,
-          refEntityType: 'activity',
-          refEntityId: savedActivity.id,
-          isRead: false,
-        });
-        await notifRepo.save(notification);
+        await this.notificationRepo.createForActivity(
+          {
+            userId: assignedTo,
+            bondId,
+            type: 'activity_assigned',
+            title: dto.title,
+            body: `New activity assigned: ${dto.title}`,
+            refEntityId: activity.id,
+          },
+          manager,
+        );
       }
 
-      return savedActivity;
+      return activity;
     });
   }
 

@@ -1,14 +1,14 @@
 import { Test, TestingModule } from '@nestjs/testing';
-import { getDataSourceToken, getRepositoryToken } from '@nestjs/typeorm';
 import { BadRequestException } from '@nestjs/common';
 import { plainToInstance } from 'class-transformer';
 import { validate } from 'class-validator';
 import { ActivitiesService } from '../activities.service';
 import { ActivitiesRepository } from '../repositories/activities.repository';
 import { ActivitiesAuditRepository } from '../repositories/activities-audit.repository';
+import { ActivityChildRepository } from '../repositories/activity-child.repository';
 import { ActivityPolicyService } from '../activity-policy.service';
-import { CategoryEntity } from '../../categories/entities/category.entity';
-import { ChildEntity } from '../../children/entities/child.entity';
+import { ChildrenRepository } from '../../children/repositories/children.repository';
+import { CategoriesRepository } from '../../categories/repositories/categories.repository';
 import { NotificationEntity } from '../../notifications/entities/notification.entity';
 import { ActivityEntity, ActivityStatus } from '../entities/activity.entity';
 import { ActivityChildEntity } from '../entities/activity-child.entity';
@@ -21,14 +21,15 @@ import { CreateActivityDto } from '../dto/create-activity.dto';
 describe('ActivitiesService', () => {
   let service: ActivitiesService;
   let activityRepo: any;
-  let categoryRepo: any;
-  let childRepo: any;
+  let categoriesRepo: any;
+  let childrenRepo: any;
   let notifRepo: any;
   let notificationRepo: any;
   let activityChildRepo: any;
   let bondsRepo: any;
   let auditRepo: any;
   let clock: Clock;
+  let fakeManager: any;
   const bondId = 'b1';
   const userId = 'u1';
   const childId = 'c1';
@@ -46,25 +47,23 @@ describe('ActivitiesService', () => {
       create: jest.fn(),
       findOneBy: jest.fn(),
     } as any;
-    categoryRepo = {
-      findOneBy: jest.fn(),
+    categoriesRepo = {
+      findActiveById: jest.fn(),
     } as any;
-    childRepo = {
-      find: jest.fn(),
+    childrenRepo = {
+      findByIdsAndBond: jest.fn(),
     } as any;
     notifRepo = {
       create: jest.fn((x: any) => x),
       save: jest.fn(),
     } as any;
-    // El repositorio dedicado delega en el create/save crudo de `notifRepo`:
-    // así las aserciones sobre el contenido de la notificación siguen midiendo
-    // el payload real sin reescribir los cuerpos de los tests en este lote.
+    // El repo dedicado recibe el input YA compuesto (refEntityType/isRead los
+    // pone él): la aserción mide el payload que el servicio decide enviar.
     notificationRepo = {
-      createForActivity: jest.fn(async (input: any) => notifRepo.save(notifRepo.create(input))),
+      createForActivity: jest.fn(),
     } as any;
     activityChildRepo = {
-      create: jest.fn(),
-      save: jest.fn(),
+      saveChildrenFor: jest.fn(),
     } as any;
     bondsRepo = {
       findActiveBondForMember: jest.fn().mockResolvedValue({ id: bondId } as any),
@@ -80,21 +79,12 @@ describe('ActivitiesService', () => {
     // una que depende del reloj de pared.
     clock = { now: jest.fn(() => new Date('2026-10-01T12:00:00Z')) } as any;
 
-    const dataSourceMock: any = {
-      transaction: jest.fn(async (fn) => fn(dataSourceMock as any)),
-      getRepository: jest.fn((entity) => {
-        if (entity === ActivityEntity) return activityRepo;
-        if (entity === ActivityChildEntity) return activityChildRepo;
-        if (entity === NotificationEntity) return notifRepo;
-        return {} as any;
-      }),
-    };
-
-    // Los openers de las mutaciones ya pasan por `activitiesRepo.transaction`;
-    // `fakeManager` es el EntityManager de mentira que recibe el callback. El
+    // Los 6 openers (create + 5 swipes) pasan por `activitiesRepo.transaction`;
+    // `fakeManager` es el EntityManager de mentira que recibe el callback — el
+    // mismo que reciben createInTx/saveChildrenFor/createForActivity (R3). El
     // shim de getRepository se mantiene mientras los cuerpos sigan usando
     // `manager.getRepository` (muere en T3 con `updateFields`).
-    const fakeManager: any = {
+    fakeManager = {
       getRepository: jest.fn((entity: any) => {
         if (entity === ActivityEntity) return activityRepo;
         if (entity === ActivityChildEntity) return activityChildRepo;
@@ -108,16 +98,14 @@ describe('ActivitiesService', () => {
       providers: [
         ActivitiesService,
         { provide: ActivitiesRepository, useValue: activityRepo },
-        { provide: getRepositoryToken(CategoryEntity), useValue: categoryRepo },
-        { provide: getRepositoryToken(ChildEntity), useValue: childRepo },
-        { provide: getRepositoryToken(NotificationEntity), useValue: notifRepo },
-        { provide: getRepositoryToken(ActivityEntity), useValue: activityRepo },
-        { provide: getDataSourceToken(), useValue: dataSourceMock },
+        { provide: ActivityChildRepository, useValue: activityChildRepo },
+        { provide: NotificationRepository, useValue: notificationRepo },
         { provide: BondsRepository, useValue: bondsRepo },
+        { provide: ChildrenRepository, useValue: childrenRepo },
+        { provide: CategoriesRepository, useValue: categoriesRepo },
         { provide: Clock, useValue: clock },
         ActivityPolicyService,
         { provide: ActivitiesAuditRepository, useValue: auditRepo },
-        { provide: NotificationRepository, useValue: notificationRepo },
       ],
     }).compile();
 
@@ -126,22 +114,17 @@ describe('ActivitiesService', () => {
 
   describe('create', () => {
     it('creates activity with valid data', async () => {
-      categoryRepo.findOneBy.mockResolvedValue({
+      categoriesRepo.findActiveById.mockResolvedValue({
         id: categoryId,
         isActive: true,
         criticality: 'medium',
       } as any);
-      childRepo.find.mockResolvedValue([{ id: childId }] as any);
+      childrenRepo.findByIdsAndBond.mockResolvedValue([{ id: childId }] as any);
 
       const saved = { id: 'a1' } as any;
-      (activityRepo as any).create = jest.fn().mockReturnValue({ foo: 'bar' });
-      (activityRepo as any).save = jest.fn().mockResolvedValue(saved);
-
-      (activityChildRepo as any).create = jest.fn().mockReturnValue({ ac: 1 });
-      (activityChildRepo as any).save = jest.fn().mockResolvedValue([{}]);
-
-      (notifRepo as any).create = jest.fn().mockReturnValue({ n: 1 });
-      (notifRepo as any).save = jest.fn().mockResolvedValue({});
+      (activityRepo as any).createInTx = jest.fn().mockResolvedValue(saved);
+      (activityChildRepo as any).saveChildrenFor = jest.fn();
+      (notificationRepo as any).createForActivity = jest.fn();
 
       const dto = {
         title: 'Test Activity',
@@ -180,8 +163,8 @@ describe('ActivitiesService', () => {
     });
 
     it('rejects when category is inactive', async () => {
-      categoryRepo.findOneBy.mockResolvedValue(null as any);
-      childRepo.find.mockResolvedValue([{ id: childId }] as any);
+      categoriesRepo.findActiveById.mockResolvedValue(null as any);
+      childrenRepo.findByIdsAndBond.mockResolvedValue([{ id: childId }] as any);
       const dto = {
         title: 'Test',
         categoryId,
@@ -192,18 +175,17 @@ describe('ActivitiesService', () => {
     });
 
     it('derives criticality from category', async () => {
-      categoryRepo.findOneBy.mockResolvedValue({
+      categoriesRepo.findActiveById.mockResolvedValue({
         id: categoryId,
         isActive: true,
         criticality: 'critical',
       } as any);
-      childRepo.find.mockResolvedValue([{ id: childId }] as any);
-      (activityRepo as any).create = jest.fn((a) => a);
-      (activityRepo as any).save = jest.fn(async (a) => ({ id: 'a1', ...a }));
-      (activityChildRepo as any).create = jest.fn();
-      (activityChildRepo as any).save = jest.fn();
-      (notifRepo as any).create = jest.fn();
-      (notifRepo as any).save = jest.fn();
+      childrenRepo.findByIdsAndBond.mockResolvedValue([{ id: childId }] as any);
+      // Echo: createInTx devuelve el payload tal cual, de modo que el criticality
+      // que se verifica es exactamente el que el servicio puso en el objeto.
+      (activityRepo as any).createInTx = jest.fn(async (a: any) => ({ id: 'a1', ...a }));
+      (activityChildRepo as any).saveChildrenFor = jest.fn();
+      (notificationRepo as any).createForActivity = jest.fn();
       const dto = {
         title: 'Test',
         categoryId,
@@ -215,18 +197,15 @@ describe('ActivitiesService', () => {
     });
 
     it('does not notify when not assigned', async () => {
-      categoryRepo.findOneBy.mockResolvedValue({
+      categoriesRepo.findActiveById.mockResolvedValue({
         id: categoryId,
         isActive: true,
         criticality: 'medium',
       } as any);
-      childRepo.find.mockResolvedValue([{ id: childId }] as any);
-      (activityRepo as any).create = jest.fn((a) => a);
-      (activityRepo as any).save = jest.fn(async (a) => ({ id: 'a1', ...a }));
-      (activityChildRepo as any).create = jest.fn();
-      (activityChildRepo as any).save = jest.fn();
-      (notifRepo as any).create = jest.fn();
-      (notifRepo as any).save = jest.fn();
+      childrenRepo.findByIdsAndBond.mockResolvedValue([{ id: childId }] as any);
+      (activityRepo as any).createInTx = jest.fn(async (a: any) => ({ id: 'a1', ...a }));
+      (activityChildRepo as any).saveChildrenFor = jest.fn();
+      (notificationRepo as any).createForActivity = jest.fn();
       const dto = {
         title: 'Test',
         categoryId,
@@ -234,22 +213,19 @@ describe('ActivitiesService', () => {
         childrenIds: [childId],
       } as any;
       await service.create(bondId, dto, userId);
-      expect(notifRepo.save).not.toHaveBeenCalled();
+      expect(notificationRepo.createForActivity).not.toHaveBeenCalled();
     });
 
     it('rolls back if notification save fails', async () => {
-      categoryRepo.findOneBy.mockResolvedValue({
+      categoriesRepo.findActiveById.mockResolvedValue({
         id: categoryId,
         isActive: true,
         criticality: 'medium',
       } as any);
-      childRepo.find.mockResolvedValue([{ id: childId }] as any);
-      (activityRepo as any).create = jest.fn((a) => a);
-      (activityRepo as any).save = jest.fn(async (a) => ({ id: 'a1', ...a }));
-      (activityChildRepo as any).create = jest.fn();
-      (activityChildRepo as any).save = jest.fn();
-      (notifRepo as any).create = jest.fn();
-      (notifRepo as any).save = jest.fn().mockRejectedValue(new Error('fail'));
+      childrenRepo.findByIdsAndBond.mockResolvedValue([{ id: childId }] as any);
+      (activityRepo as any).createInTx = jest.fn(async (a: any) => ({ id: 'a1', ...a }));
+      (activityChildRepo as any).saveChildrenFor = jest.fn();
+      (notificationRepo as any).createForActivity = jest.fn().mockRejectedValue(new Error('fail'));
       const dto = {
         title: 'Test',
         categoryId,
@@ -258,6 +234,37 @@ describe('ActivitiesService', () => {
         assignedTo: 'u2',
       } as any;
       await expect(service.create(bondId, dto, userId)).rejects.toThrow();
+    });
+
+    it('opens EXACTLY ONE transaction and shares the SAME manager across the 3 writes (R3)', async () => {
+      categoriesRepo.findActiveById.mockResolvedValue({
+        id: categoryId,
+        isActive: true,
+        criticality: 'medium',
+      } as any);
+      childrenRepo.findByIdsAndBond.mockResolvedValue([{ id: childId }] as any);
+      (activityRepo as any).createInTx = jest.fn().mockResolvedValue({ id: 'a1' });
+      (activityChildRepo as any).saveChildrenFor = jest.fn();
+      (notificationRepo as any).createForActivity = jest.fn();
+
+      const dto = {
+        title: 'Test',
+        categoryId,
+        scheduledStart: '2026-10-05T10:00:00Z',
+        childrenIds: [childId],
+        assignedTo: 'u2',
+      } as any;
+      await service.create(bondId, dto, userId);
+
+      // R3 · "the spec asserts exactly one transaction(fn) invocation driven
+      // with fakeManager" — y las tres escrituras reciben ESE manager.
+      expect(activityRepo.transaction).toHaveBeenCalledTimes(1);
+      expect(activityRepo.createInTx).toHaveBeenCalledWith(expect.any(Object), fakeManager);
+      expect(activityChildRepo.saveChildrenFor).toHaveBeenCalledWith('a1', [childId], fakeManager);
+      expect(notificationRepo.createForActivity).toHaveBeenCalledWith(
+        expect.objectContaining({ userId: 'u2', refEntityId: 'a1' }),
+        fakeManager,
+      );
     });
   });
 
@@ -553,19 +560,22 @@ describe('ActivitiesService', () => {
           futureActivity({ title: 'Visita al museo' }),
         );
         await service.cancel('a1', creator, 'llueve mucho');
-        expect(notifRepo.save).toHaveBeenCalledWith(
+        expect(notificationRepo.createForActivity).toHaveBeenCalledWith(
           expect.objectContaining({
             userId: assignee,
             type: 'activity_cancelled',
             body: expect.stringContaining('llueve mucho'),
           }),
+          expect.anything(),
         );
       });
 
       it('does NOT notify the creator — the actor already knows they cancelled it', async () => {
         (activityRepo as any).findById.mockResolvedValue(futureActivity());
         await service.cancel('a1', creator, 'llueve mucho');
-        const recipients = notifRepo.save.mock.calls.map((c: any[]) => c[0].userId);
+        const recipients = notificationRepo.createForActivity.mock.calls.map(
+          (c: any[]) => c[0].userId,
+        );
         expect(recipients).not.toContain(creator);
         expect(recipients).toEqual([assignee]);
       });
@@ -638,12 +648,13 @@ describe('ActivitiesService', () => {
       it('notifies the creator WITH the reason (A3 changed DTO visibility, not this audience)', async () => {
         (activityRepo as any).findById.mockResolvedValue(futureActivity());
         await service.declineAssignment('a1', assignee, 'cita médica');
-        expect(notifRepo.save).toHaveBeenCalledWith(
+        expect(notificationRepo.createForActivity).toHaveBeenCalledWith(
           expect.objectContaining({
             userId: creator,
             type: 'activity_declined',
             body: expect.stringContaining('cita médica'),
           }),
+          expect.anything(),
         );
       });
 

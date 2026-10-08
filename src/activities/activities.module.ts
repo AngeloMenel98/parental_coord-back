@@ -14,6 +14,8 @@ import { NotificationEntity } from '../notifications/entities/notification.entit
 import { AuditLogEntity } from '../audit/entities/audit-log.entity';
 import { BondsModule } from '../bonds/bonds.module';
 import { NotificationsModule } from '../notifications/notifications.module';
+import { ChildrenModule } from '../children/children.module';
+import { CategoriesModule } from '../categories/categories.module';
 import { CategoryEntity } from '../categories/entities/category.entity';
 import { ChildEntity } from '../children/entities/child.entity';
 import { SystemClock } from '../common/clock/system-clock';
@@ -35,6 +37,10 @@ import { Clock } from '../common/clock/clock';
     ]),
     forwardRef(() => BondsModule),
     NotificationsModule,
+    // Los repositorios exportados por sus módulos dueños: ActivitiesService los
+    // inyecta desde T2b (D4 — el `imports +=` necesario a un swap aterriza en SU lote).
+    ChildrenModule,
+    CategoriesModule,
   ],
   controllers: [ActivitiesController],
   providers: [
