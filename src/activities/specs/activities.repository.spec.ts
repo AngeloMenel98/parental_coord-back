@@ -2,7 +2,7 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 
-import { ActivitiesRepository } from './activities.repository';
+import { ActivitiesRepository } from '../repositories/activities.repository';
 import { ActivityEntity } from '../entities/activity.entity';
 
 describe('ActivitiesRepository', () => {

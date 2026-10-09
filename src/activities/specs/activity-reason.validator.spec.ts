@@ -2,7 +2,7 @@ import {
   ACTIVITY_REASON_MAX,
   ACTIVITY_REASON_MIN,
   validateActivityReason,
-} from './activity-reason.validator';
+} from '../dto/activity-reason.validator';
 
 describe('validateActivityReason (shared by Cancelar and No asistir)', () => {
   it('exposes the shared bounds 3–200', () => {

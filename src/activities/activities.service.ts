@@ -32,6 +32,7 @@ import {
   undoWindowExpired,
   validationFailed,
 } from '../common/errors/coded.exception';
+import { BondsService } from 'src/bonds/bonds.service';
 
 export interface ComplianceMemberRaw {
   userId: string;
@@ -52,13 +53,24 @@ export class ActivitiesService {
     private readonly activityChildRepo: ActivityChildRepository,
     private readonly notificationRepo: NotificationRepository,
     private readonly auditRepo: ActivitiesAuditRepository,
-    private readonly bondsRepo: BondsRepository,
+    //private readonly bondsRepo: BondsRepository,
+    private readonly bondService: BondsService,
     private readonly childrenRepo: ChildrenRepository,
     private readonly categoriesRepo: CategoriesRepository,
     private readonly clock: Clock,
     private readonly policy: ActivityPolicyService,
     private readonly bondMembersRepo: BondMembersRepository,
   ) {}
+
+  private async findById(id: string) {
+    const activity = await this.activitiesRepo.findById(id);
+
+    if (!activity) {
+      throw new NotFoundException('Activity not found');
+    }
+
+    return activity;
+  }
 
   private async verifyBondMembership(bondId: string, userId: string): Promise<void> {
     const bond = await this.bondsRepo.findActiveBondForMember(bondId, userId);
@@ -148,12 +160,6 @@ export class ActivitiesService {
     });
   }
 
-  /**
-   * Lista del vínculo, con los `can_*` calculados PARA ESTE VISOR (R1).
-   *
-   * `viewerId` es obligatorio: sin él los flags no se pueden calcular, y
-   * este método comprueba él mismo la membresía (R4).
-   */
   async listByBond(bondId: string, viewerId: string): Promise<ActivitySummaryDto[]> {
     const bond = await this.bondsRepo.findActiveBondForMember(bondId, viewerId);
     if (!bond) {
@@ -162,35 +168,15 @@ export class ActivitiesService {
 
     const rows = await this.activitiesRepo.findByBondIdOrdered(bondId);
     const now = this.clock.now();
-    return rows.map((row) =>
-      plainToInstance(
-        ActivitySummaryDto,
-        {
-          ...row,
-          childrenIds: (row as any).childrenIds ?? [],
-          ...this.policy.evaluate(row, viewerId, now),
-        },
-        {
-          excludeExtraneousValues: true,
-        },
-      ),
+    return plainToInstance(
+      ActivitySummaryDto,
+      rows.map((row) => ({ ...row, ...this.policy.evaluate(row, viewerId, now) })),
+      { excludeExtraneousValues: true, exposeUnsetFields: false },
     );
   }
 
-  /**
-   * Returns the detail DTO for an activity. 404 when the activity does not
-   * exist or the caller is not an active member of the activity's bond.
-   *
-   * 🔴 A3 · `declinedReason` se expone a CUALQUIER miembro del vínculo, ya no sólo
-   * al creador. Lo que impide el cruce entre vínculos es ESTE chequeo de
-   * membresía, que va antes de construir el DTO: un no-miembro recibe 404 y nunca
-   * llega a leer el motivo. No hay ninguna rama aguas arriba que pueda filtrarlo.
-   */
   async getDetail(id: string, userId: string): Promise<ActivityDetailDto> {
-    const activity = await this.activitiesRepo.findById(id);
-    if (!activity) {
-      throw activityNotFound();
-    }
+    const activity = await this.findById(id);
 
     const bond = await this.bondsRepo.findActiveBondForMember(activity.bondId, userId);
     if (!bond) {
@@ -203,30 +189,19 @@ export class ActivitiesService {
       {
         ...activity,
         ...decision,
-        // A3 · se devuelve el valor tal cual. Se normaliza a `null` para que el
-        // contrato sea exacto cuando nadie ha declinado.
         declinedReason: activity.declinedReason ?? null,
       },
       { excludeExtraneousValues: true },
     );
   }
 
-  /**
-   * Confirms the assignment of an activity for the caller (idempotent,
-   * flag-only). Check order: existence (404) → membership (404) →
-   * assignee (403). Repeat confirm returns the stored confirmedAt with
-   * NO write. Never touches `status`.
-   */
-
   async complete(id: string, userId: string): Promise<CompleteActivityResponseDto> {
-    const activity = await this.activitiesRepo.findById(id);
-    if (!activity) {
-      throw new NotFoundException('Activity not found');
-    }
+    const activity = await this.findById(id);
     const bond = await this.bondsRepo.findActiveBondForMember(activity.bondId, userId);
     if (!bond) {
       throw new ForbiddenException('You are not a member of this bond');
     }
+
     const { status, completedAt } = await this.activitiesRepo.markCompleted(id, this.clock.now());
     return plainToInstance(
       CompleteActivityResponseDto,
@@ -239,40 +214,25 @@ export class ActivitiesService {
     id: string,
     userId: string,
   ): Promise<{ id: string; assignedConfirmed: boolean; confirmedAt: string | null }> {
-    const activity = await this.activitiesRepo.findById(id);
-    if (!activity) {
-      throw new NotFoundException('Activity not found');
-    }
+    const activity = await this.findById(id);
 
-    const bond = await this.bondsRepo.findActiveBondForMember(activity.bondId, userId);
-    if (!bond) {
-      throw new NotFoundException('Bond not found or you are not a member');
-    }
+    await this.bondService.isActiveBondForMember(activity.bondId, userId);
 
     if (activity.assignedTo !== userId) {
       throw new ForbiddenException('Only the assignee can confirm this activity');
     }
 
-    if (activity.assignedConfirmed) {
-      return {
-        id: activity.id,
+    let confirmedAt = activity.confirmedAt;
+    if (!activity.assignedConfirmed) {
+      confirmedAt = new Date();
+      await this.activitiesRepo.updateEntity(id, {
         assignedConfirmed: true,
-        confirmedAt: activity.confirmedAt?.toISOString() ?? null,
-      };
+        confirmedAt,
+        status: ActivityStatus.ASSISTING,
+      } as any);
     }
 
-    const now = new Date();
-    await this.activitiesRepo.updateEntity(id, {
-      assignedConfirmed: true,
-      confirmedAt: now,
-      status: ActivityStatus.ASSISTING,
-    } as any);
-
-    return {
-      id: activity.id,
-      assignedConfirmed: true,
-      confirmedAt: now.toISOString(),
-    };
+    return { id, assignedConfirmed: true, confirmedAt: confirmedAt?.toISOString() ?? null };
   }
 
   // ── Acciones de swipe (R4–R8, R11) ───────────────────────────────────────

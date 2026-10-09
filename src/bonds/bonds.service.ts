@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, NotFoundException } from '@nestjs/common';
 import { plainToInstance } from 'class-transformer';
 
 import { BondsRepository } from './repositories/bonds.repository';
@@ -31,5 +31,9 @@ export class BondsService {
     return plainToInstance(BondResponseDto, flattened, {
       excludeExtraneousValues: true,
     });*/
+  }
+
+  async isActiveBondForMember(bondId: string, userId: string): Promise<boolean> {
+    return this.bondRepo.existsActiveBondForMember(bondId /*userId*/);
   }
 }

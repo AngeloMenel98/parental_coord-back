@@ -90,6 +90,10 @@ export class BondsRepository extends BaseRepository<BondEntity> {
       .getOne();
   }
 
+  async existsActiveBondForMember(bondId: string) {
+    return this.bondRepo.exists({ where: { id: bondId, isActive: true } });
+  }
+
   /**
    * Count children for a bond (lightweight, no entity hydration).
    */

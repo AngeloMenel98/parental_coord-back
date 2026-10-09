@@ -33,35 +33,11 @@ export interface ActivityPolicyDecision {
  */
 @Injectable()
 export class ActivityPolicyService {
-  /**
-   * `now >= coalesce(scheduledEnd, scheduledStart)`.
-   *
-   * `coalesce` es la regla: una actividad sin hora de fin sigue siendo actionable
-   * hasta su inicio, y una sin ninguna de las dos no tiene ancla temporal — se
-   * considera NO pasada en lugar de tratar `null` como "terminó hace tiempo"
-   * (comparar contra `null` en JS es siempre `false`, así que sin este caso
-   * explícito el `coalesce` sería silencioso).
-   *
-   * `deadline` no participa: es un plazo de cumplimiento, no el fin de la
-   * actividad.
-   */
   isPast(activity: PolicySubject, now: Date): boolean {
     const anchor = activity.scheduledEnd ?? activity.scheduledStart;
-    if (anchor === null || anchor === undefined) {
-      return false;
-    }
-    return now.getTime() >= anchor.getTime();
+    return anchor != null && now >= anchor;
   }
 
-  /**
-   * Matriz de decisión.
-   *
-   * - `canDelete` / `canCancel`: sólo el creador (A3 del PRD, ruling en firme).
-   * - `canDecline`: sólo el asignado.
-   * - Las tres se anulan cuando la actividad ya pasó, y por eso una actividad en
-   *   curso (`inicio < now < fin`) conserva las acciones POR CONSTRUCCIÓN: no hay
-   *   ningún caso especial para "en curso".
-   */
   evaluate(activity: PolicySubject, viewerId: string, now: Date): ActivityPolicyDecision {
     const isPast = this.isPast(activity, now);
     const isCreator = activity.createdBy === viewerId;
