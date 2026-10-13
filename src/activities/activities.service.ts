@@ -25,13 +25,7 @@ import { parseActivityReason } from './dto/activity-reason.validator';
 import { CategoryEntity } from '../categories/entities/category.entity';
 import { Clock } from '../common/clock/clock';
 import { ActivityPolicyService } from './activity-policy.service';
-import {
-  activityAlreadyPast,
-  activityForbidden,
-  activityNotFound,
-  undoWindowExpired,
-  validationFailed,
-} from '../common/errors/coded.exception';
+import { activityForbidden, activityNotFound } from '../common/errors/coded.exception';
 import { BondsService } from '../bonds/bonds.service';
 
 export const NOTIF_BEFORE = '-3 days';
@@ -71,6 +65,16 @@ export class ActivitiesService {
     }
   }
 
+  private async assertActivityMember(activity: ActivityEntity, userId: string): Promise<void> {
+    const isMember = await this.bondService.isActiveBondForMember(activity.bondId, userId);
+    if (!isMember) throw activityNotFound();
+  }
+
+  private async assertBondMember(bondId: string, userId: string): Promise<void> {
+    const isMember = await this.bondService.isActiveBondForMember(bondId, userId);
+    if (!isMember) throw new NotFoundException('Bond not found or you are not a member');
+  }
+
   private async verifyCategoryActive(categoryId: string): Promise<CategoryEntity> {
     const category = await this.categoriesRepo.findActiveById(categoryId);
     if (!category) {
@@ -103,20 +107,28 @@ export class ActivitiesService {
       : this.activitiesRepo.findById(id));
     if (!activity) throw activityNotFound();
 
-    await this.bondService.isActiveBondForMember(activity.bondId, userId);
+    await this.assertActivityMember(activity, userId);
     return activity;
   }
 
   async create(bondId: string, dto: CreateActivityDto, userId: string): Promise<ActivityEntity> {
     this.validateSchedules(dto.scheduledStart, dto.scheduledEnd);
 
+    await this.assertBondMember(bondId, userId);
+
     const memberIds =
       dto.assignedTo && dto.assignedTo !== userId ? [userId, dto.assignedTo] : [userId];
+
+    const memberships = await Promise.all(
+      memberIds.map((id) => this.bondService.isActiveBondForMember(bondId, id)),
+    );
+    if (memberships.some((isMember) => !isMember)) {
+      throw new BadRequestException('One or more members do not belong to this bond');
+    }
 
     const [category] = await Promise.all([
       this.verifyCategoryActive(dto.categoryId),
       this.verifyChildrenBelongToBond(bondId, dto.childrenIds),
-      ...memberIds.map((id) => this.bondService.isActiveBondForMember(bondId, id)),
     ]);
 
     const assignedTo = dto.assignedTo ?? null;
@@ -162,7 +174,7 @@ export class ActivitiesService {
   }
 
   async listByBond(bondId: string, viewerId: string): Promise<ActivitySummaryDto[]> {
-    await this.bondService.isActiveBondForMember(bondId, viewerId);
+    await this.assertBondMember(bondId, viewerId);
 
     const rows = await this.activitiesRepo.findByBondIdOrdered(bondId);
     const now = this.clock.now();
@@ -176,7 +188,7 @@ export class ActivitiesService {
   async getDetail(id: string, userId: string): Promise<ActivityDetailDto> {
     const activity = await this.findById(id);
 
-    await this.bondService.isActiveBondForMember(activity.bondId, userId);
+    await this.assertActivityMember(activity, userId);
 
     const decision = this.policy.evaluate(activity, userId, this.clock.now());
     return plainToInstance(
@@ -192,7 +204,7 @@ export class ActivitiesService {
 
   async complete(id: string, userId: string): Promise<CompleteActivityResponseDto> {
     const activity = await this.findById(id);
-    await this.bondService.isActiveBondForMember(activity.bondId, userId);
+    await this.assertActivityMember(activity, userId);
 
     const { status, completedAt } = await this.activitiesRepo.markCompleted(id, this.clock.now());
     return plainToInstance(
@@ -208,7 +220,7 @@ export class ActivitiesService {
   ): Promise<{ id: string; assignedConfirmed: boolean; confirmedAt: string | null }> {
     const activity = await this.findById(id);
 
-    await this.bondService.isActiveBondForMember(activity.bondId, userId);
+    await this.assertActivityMember(activity, userId);
 
     if (activity.assignedTo !== userId) {
       throw new ForbiddenException('Only the assignee can confirm this activity');
@@ -268,7 +280,7 @@ export class ActivitiesService {
 
     const reason = parseActivityReason(rawReason);
 
-    await this.activitiesRepo.cancelWithAudit(activity, userId, now, reason);
+    await this.activitiesRepo.declineWithAudit(activity, userId, now, reason);
     return { id, status: ActivityStatus.NOT_ASSISTING, declinedAt: now.toISOString() };
   }
 
@@ -276,7 +288,7 @@ export class ActivitiesService {
     bondId: string,
     viewerId: string,
   ): Promise<{ period: string; members: ComplianceMemberRow[] }> {
-    await this.bondService.isActiveBondForMember(bondId, viewerId);
+    await this.assertBondMember(bondId, viewerId);
 
     const now = new Date();
     const year = now.getFullYear();

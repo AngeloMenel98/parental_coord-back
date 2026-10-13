@@ -44,13 +44,13 @@ export class BondMembersRepository extends BaseRepository<BondMemberEntity> {
       .addSelect('pd.first_name', 'firstName')
       .addSelect('pd.last_name', 'lastName')
       .addSelect('COUNT(a.id)::int', 'total')
-      .addSelect("COUNT(a.id) FILTER (WHERE a.status = 'completed')::int", 'completed')
+      .addSelect("COUNT(a.id) FILTER (WHERE a.status = 'done')::int", 'completed')
       .from('bond_member', 'bm')
       .innerJoin('personal_data', 'pd', 'pd.user_id = bm.user_id')
       .leftJoin(
         'activity',
         'a',
-        'a.assigned_to = bm.user_id AND a.bond_id = bm.bond_id AND a.due_date >= :from AND a.due_date < :to',
+        'a.assigned_to = bm.user_id AND a.bond_id = bm.bond_id AND a.scheduled_start >= :from AND a.scheduled_start < :to',
         { from, to },
       )
       .where('bm.bond_id = :bondId', { bondId })

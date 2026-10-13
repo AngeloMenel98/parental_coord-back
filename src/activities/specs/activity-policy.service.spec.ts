@@ -1,4 +1,4 @@
-import { ActivityPolicyService, UNDO_WINDOW_MS, PolicySubject } from '../activity-policy.service';
+import { ActivityPolicyService, PolicySubject } from '../activity-policy.service';
 
 describe('ActivityPolicyService', () => {
   let policy: ActivityPolicyService;
@@ -116,41 +116,6 @@ describe('ActivityPolicyService', () => {
     it('is deterministic: same input, same output (pure, no hidden state)', () => {
       const a = subject();
       expect(policy.evaluate(a, 'creator', NOW)).toEqual(policy.evaluate(a, 'creator', NOW));
-    });
-  });
-
-  describe('isWithinUndoWindow — the server owns the 5000 ms window', () => {
-    const actedAt = new Date('2026-10-01T11:59:55Z');
-
-    it('is open 0 ms after the action', () => {
-      expect(policy.isWithinUndoWindow(actedAt, actedAt)).toBe(true);
-    });
-
-    it('is open at 4999 ms', () => {
-      expect(policy.isWithinUndoWindow(actedAt, new Date(actedAt.getTime() + 4999))).toBe(true);
-    });
-
-    it('is open at EXACTLY 5000 ms — the bound is inclusive', () => {
-      expect(policy.isWithinUndoWindow(actedAt, new Date(actedAt.getTime() + UNDO_WINDOW_MS))).toBe(
-        true,
-      );
-    });
-
-    it('is CLOSED at 5001 ms', () => {
-      expect(policy.isWithinUndoWindow(actedAt, new Date(actedAt.getTime() + 5001))).toBe(false);
-    });
-
-    it('is closed when there is no timestamp at all (null)', () => {
-      expect(policy.isWithinUndoWindow(null, NOW)).toBe(false);
-    });
-
-    it('is closed for a FUTURE timestamp — a clock skew must not open the window', () => {
-      const future = new Date(NOW.getTime() + 60_000);
-      expect(policy.isWithinUndoWindow(future, NOW)).toBe(false);
-    });
-
-    it('exposes 5000 as the single source of the constant', () => {
-      expect(UNDO_WINDOW_MS).toBe(5000);
     });
   });
 });

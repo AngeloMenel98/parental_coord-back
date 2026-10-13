@@ -3,7 +3,9 @@ import { getRepositoryToken } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 
 import { ActivitiesRepository } from '../repositories/activities.repository';
+import { ActsAuditRepository } from '../repositories/activities-audit.repository';
 import { ActivityEntity } from '../entities/activity.entity';
+import { NotificationRepository } from '../../notifications/repositories/notification.repository';
 
 describe('ActivitiesRepository', () => {
   let repo: ActivitiesRepository;
@@ -37,6 +39,8 @@ describe('ActivitiesRepository', () => {
       providers: [
         ActivitiesRepository,
         { provide: getRepositoryToken(ActivityEntity), useValue: activityRepo },
+        { provide: ActsAuditRepository, useValue: { record: jest.fn() } },
+        { provide: NotificationRepository, useValue: { createForActivity: jest.fn() } },
       ],
     }).compile();
 

@@ -3,6 +3,7 @@ import { ConfigModule, ConfigService } from '@nestjs/config';
 import { APP_GUARD, APP_PIPE } from '@nestjs/core';
 import { ThrottlerModule, ThrottlerGuard } from '@nestjs/throttler';
 import { ScheduleModule } from '@nestjs/schedule';
+import { BullModule } from '@nestjs/bullmq';
 import { TypeOrmModule } from '@nestjs/typeorm';
 
 import { AuthModule } from './auth/auth.module';
@@ -18,6 +19,7 @@ import { ReportsModule } from './reports/reports.module';
 import { AuditModule } from './audit/audit.module';
 import { AdminModule } from './admin/admin.module';
 import { validateConfig } from './config/app-config';
+import { buildBullConnection } from './queues/redis.config';
 
 @Module({
   imports: [
@@ -53,6 +55,11 @@ import { validateConfig } from './config/app-config';
         autoLoadEntities: true,
         synchronize: false,
       }),
+    }),
+    BullModule.forRootAsync({
+      imports: [ConfigModule],
+      inject: [ConfigService],
+      useFactory: (cs: ConfigService) => ({ connection: buildBullConnection(cs) }),
     }),
     // Sin esto los `@Cron` no se registran: `ActivitiesScheduler.markOverdueActivities`
     // estaba declarado y NEVER se ejecutaba, así que ninguna actividad pasaba a

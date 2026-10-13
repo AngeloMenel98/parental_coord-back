@@ -4,13 +4,12 @@ import { plainToInstance } from 'class-transformer';
 import { validate } from 'class-validator';
 import { ActivitiesService } from '../activities.service';
 import { ActivitiesRepository } from '../repositories/activities.repository';
-import { ActivitiesAuditRepository } from '../repositories/activities-audit.repository';
 import { ActivityChildRepository } from '../repositories/activity-child.repository';
 import { ActivityPolicyService } from '../activity-policy.service';
 import { ChildrenRepository } from '../../children/repositories/children.repository';
 import { CategoriesRepository } from '../../categories/repositories/categories.repository';
 import { ActivityStatus } from '../entities/activity.entity';
-import { BondsRepository } from '../../bonds/repositories/bonds.repository';
+import { BondsService } from '../../bonds/bonds.service';
 import { BondMembersRepository } from '../../bonds/repositories/bond-members.repository';
 import { NotificationRepository } from '../../notifications/repositories/notification.repository';
 import { Clock } from '../../common/clock/clock';
@@ -25,9 +24,8 @@ describe('ActivitiesService', () => {
   let notifRepo: any;
   let notificationRepo: any;
   let activityChildRepo: any;
-  let bondsRepo: any;
+  let bondService: any;
   let bondMembersRepo: any;
-  let auditRepo: any;
   let clock: Clock;
   let fakeManager: any;
   const bondId = 'b1';
@@ -47,6 +45,9 @@ describe('ActivitiesService', () => {
       create: jest.fn(),
       findOneBy: jest.fn(),
       updateFields: jest.fn(),
+      softDeleteWithAudit: jest.fn(),
+      cancelWithAudit: jest.fn(),
+      declineWithAudit: jest.fn(),
     } as any;
     categoriesRepo = {
       findActiveById: jest.fn(),
@@ -66,16 +67,12 @@ describe('ActivitiesService', () => {
     activityChildRepo = {
       saveChildrenFor: jest.fn(),
     } as any;
-    bondsRepo = {
-      findActiveBondForMember: jest.fn().mockResolvedValue({ id: bondId } as any),
+    bondService = {
+      isActiveBondForMember: jest.fn().mockResolvedValue(true),
     } as any;
     // T6 (R5): el join de compliance vive en BondMembersRepository.
     bondMembersRepo = {
-      findActiveMemberNames: jest.fn().mockResolvedValue([]),
-    } as any;
-    auditRepo = {
-      record: jest.fn(),
-      findLatestOldValue: jest.fn().mockResolvedValue(null),
+      findActiveMembersWithActStats: jest.fn().mockResolvedValue([]),
     } as any;
 
     // `jest.fn` y no una flecha suelta: los tests de la guarda de tiempo y de la
@@ -99,13 +96,12 @@ describe('ActivitiesService', () => {
         { provide: ActivitiesRepository, useValue: activityRepo },
         { provide: ActivityChildRepository, useValue: activityChildRepo },
         { provide: NotificationRepository, useValue: notificationRepo },
-        { provide: BondsRepository, useValue: bondsRepo },
+        { provide: BondsService, useValue: bondService },
         { provide: BondMembersRepository, useValue: bondMembersRepo },
         { provide: ChildrenRepository, useValue: childrenRepo },
         { provide: CategoriesRepository, useValue: categoriesRepo },
         { provide: Clock, useValue: clock },
         ActivityPolicyService,
-        { provide: ActivitiesAuditRepository, useValue: auditRepo },
       ],
     }).compile();
 
@@ -266,6 +262,48 @@ describe('ActivitiesService', () => {
         fakeManager,
       );
     });
+
+    it('404 when the acting user is not an active bond member', async () => {
+      bondService.isActiveBondForMember.mockResolvedValue(false);
+      const dto = {
+        title: 'Test',
+        categoryId,
+        scheduledStart: '2026-10-05T10:00:00Z',
+        childrenIds: [childId],
+      } as any;
+      await expect(service.create(bondId, dto, userId)).rejects.toThrow(NotFoundException);
+    });
+
+    it('400 when assignedTo is not an active bond member (OQ-1)', async () => {
+      const nonMember = 'u-out';
+      bondService.isActiveBondForMember.mockImplementation((_bond: string, id: string) =>
+        Promise.resolve(id !== nonMember),
+      );
+      const dto = {
+        title: 'Test',
+        categoryId,
+        scheduledStart: '2026-10-05T10:00:00Z',
+        childrenIds: [childId],
+        assignedTo: nonMember,
+      } as any;
+      await expect(service.create(bondId, dto, userId)).rejects.toThrow(BadRequestException);
+    });
+
+    it('400 when a derived memberIds entry is not an active bond member (SC-005)', async () => {
+      const nonMember = 'u-out';
+      bondService.isActiveBondForMember.mockImplementation((_bond: string, id: string) =>
+        Promise.resolve(id !== nonMember),
+      );
+      const dto = {
+        title: 'Test',
+        categoryId,
+        scheduledStart: '2026-10-05T10:00:00Z',
+        childrenIds: [childId],
+        assignedTo: nonMember,
+      } as any;
+      await expect(service.create(bondId, dto, userId)).rejects.toThrow(BadRequestException);
+      expect(bondService.isActiveBondForMember).toHaveBeenCalledWith(bondId, nonMember);
+    });
   });
 
   describe('complete', () => {
@@ -389,27 +427,25 @@ describe('ActivitiesService', () => {
     };
 
     describe('delete (Eliminar) — A4: deleted_at and nothing else', () => {
-      it('sets deleted_at to the CLOCK time and writes an audit row', async () => {
-        (activityRepo as any).findById.mockResolvedValue(futureActivity());
+      it('delegates to softDeleteWithAudit with the CLOCK time', async () => {
+        const activity = futureActivity();
+        (activityRepo as any).findById.mockResolvedValue(activity);
         const res = await service.delete('a1', creator);
 
         expect(res.deletedAt).toBe('2026-10-01T12:00:00.000Z');
-        expect(activityRepo.updateFields).toHaveBeenCalledWith(
-          'a1',
-          expect.objectContaining({ deletedAt: new Date('2026-10-01T12:00:00Z') }),
-          fakeManager,
-        );
-        expect(auditRepo.record).toHaveBeenCalledWith(
-          expect.objectContaining({ action: 'activity_delete', userId: creator }),
-          expect.anything(),
+        expect(activityRepo.softDeleteWithAudit).toHaveBeenCalledWith(
+          activity,
+          creator,
+          new Date('2026-10-01T12:00:00Z'),
         );
       });
 
-      it('touches NOTHING else — no status change, no child-table cascade', async () => {
+      it('touches NOTHING else — no cancel/decline, no child-table cascade', async () => {
         (activityRepo as any).findById.mockResolvedValue(futureActivity());
         await service.delete('a1', creator);
-        const patch = activityRepo.updateFields.mock.calls[0][1];
-        expect(Object.keys(patch)).toEqual(['deletedAt']);
+        expect(activityRepo.cancelWithAudit).not.toHaveBeenCalled();
+        expect(activityRepo.declineWithAudit).not.toHaveBeenCalled();
+        expect(activityChildRepo.saveChildrenFor).not.toHaveBeenCalled();
       });
 
       it('403 for a bond member who is not the creator', async () => {
@@ -417,16 +453,10 @@ describe('ActivitiesService', () => {
         await expectCode(service.delete('a1', assignee), 'ACTIVITY_FORBIDDEN', 403);
       });
 
-      it('404 (NOT 403) for a non-member — existence is not revealed', async () => {
-        (activityRepo as any).findById.mockResolvedValue(futureActivity());
-        bondsRepo.findActiveBondForMember.mockResolvedValue(null);
-        await expectCode(service.delete('a1', stranger), 'ACTIVITY_NOT_FOUND', 404);
-      });
-
-      it('409 ACTIVITY_ALREADY_PAST once the activity has ended', async () => {
+      it('403 once the activity has ended — being past strips the creator flag', async () => {
         (activityRepo as any).findById.mockResolvedValue(pastActivity());
-        await expectCode(service.delete('a1', creator), 'ACTIVITY_ALREADY_PAST', 409);
-        expect(activityRepo.updateFields).not.toHaveBeenCalled();
+        await expectCode(service.delete('a1', creator), 'ACTIVITY_FORBIDDEN', 403);
+        expect(activityRepo.softDeleteWithAudit).not.toHaveBeenCalled();
       });
 
       it('404 when the activity does not exist at all', async () => {
@@ -435,90 +465,19 @@ describe('ActivitiesService', () => {
       });
     });
 
-    describe('restore (undo delete) — server-owned 5000 ms window', () => {
-      it('clears deleted_at 3000 ms after the delete', async () => {
-        (activityRepo as any).findByIdIncludingDeleted.mockResolvedValue(
-          futureActivity({ deletedAt: new Date('2026-10-01T11:59:57Z') }),
-        );
-        const res = await service.restore('a1', creator);
-        expect(res.deletedAt).toBeNull();
-        expect(activityRepo.updateFields).toHaveBeenCalledWith(
-          'a1',
-          { deletedAt: null },
-          fakeManager,
-        );
-        expect(auditRepo.record).toHaveBeenCalledWith(
-          expect.objectContaining({ action: 'activity_restore' }),
-          expect.anything(),
-        );
-      });
-
-      it('is open at EXACTLY 5000 ms and closed at 5001 ms', async () => {
-        (activityRepo as any).findByIdIncludingDeleted.mockResolvedValue(
-          futureActivity({ deletedAt: new Date('2026-10-01T11:59:55Z') }),
-        );
-        await expect(service.restore('a1', creator)).resolves.toEqual({
-          id: 'a1',
-          deletedAt: null,
-        });
-
-        (activityRepo as any).findByIdIncludingDeleted.mockResolvedValue(
-          futureActivity({ deletedAt: new Date('2026-10-01T11:59:54.999Z') }),
-        );
-        await expectCode(service.restore('a1', creator), 'ACTIVITY_UNDO_WINDOW_EXPIRED', 409);
-      });
-
-      it('reads through findByIdIncludingDeleted — the row is already hidden', async () => {
-        (activityRepo as any).findByIdIncludingDeleted.mockResolvedValue(
-          futureActivity({ deletedAt: new Date('2026-10-01T11:59:59Z') }),
-        );
-        await service.restore('a1', creator);
-        expect(activityRepo.findByIdIncludingDeleted).toHaveBeenCalledWith('a1');
-      });
-
-      it('is idempotent when nothing was deleted — 200, no write, no audit noise', async () => {
-        (activityRepo as any).findByIdIncludingDeleted.mockResolvedValue(
-          futureActivity({ deletedAt: null }),
-        );
-        await expect(service.restore('a1', creator)).resolves.toEqual({
-          id: 'a1',
-          deletedAt: null,
-        });
-        expect(activityRepo.updateFields).not.toHaveBeenCalled();
-        expect(auditRepo.record).not.toHaveBeenCalled();
-      });
-
-      it('403 for a non-creator even inside the window', async () => {
-        (activityRepo as any).findByIdIncludingDeleted.mockResolvedValue(
-          futureActivity({ deletedAt: new Date('2026-10-01T11:59:59Z') }),
-        );
-        await expectCode(service.restore('a1', assignee), 'ACTIVITY_FORBIDDEN', 403);
-      });
-    });
-
     describe('cancel (Cancelar) — A1: reason REQUIRED, 3–200', () => {
-      it('sets CANCELLED + cancelled_at + cancelled_by and audits the reason', async () => {
-        (activityRepo as any).findById.mockResolvedValue(futureActivity());
+      it('delegates to cancelWithAudit with CANCELLED + the reason', async () => {
+        const activity = futureActivity();
+        (activityRepo as any).findById.mockResolvedValue(activity);
         const res = await service.cancel('a1', creator, 'no podemos ese día');
 
         expect(res.status).toBe(ActivityStatus.CANCELLED);
         expect(res.cancelledAt).toBe('2026-10-01T12:00:00.000Z');
-        expect(activityRepo.updateFields).toHaveBeenCalledWith(
-          'a1',
-          expect.objectContaining({
-            status: ActivityStatus.CANCELLED,
-            cancelledAt: new Date('2026-10-01T12:00:00Z'),
-            cancelledBy: creator,
-          }),
-          fakeManager,
-        );
-        expect(auditRepo.record).toHaveBeenCalledWith(
-          expect.objectContaining({
-            action: 'activity_cancel',
-            detail: 'no podemos ese día',
-            oldValue: { status: ActivityStatus.ASSIGNED },
-          }),
-          expect.anything(),
+        expect(activityRepo.cancelWithAudit).toHaveBeenCalledWith(
+          activity,
+          creator,
+          new Date('2026-10-01T12:00:00Z'),
+          'no podemos ese día',
         );
       });
 
@@ -552,55 +511,42 @@ describe('ActivitiesService', () => {
         );
       });
 
-      it('409 when already past', async () => {
+      it('403 when already past — being past strips the creator flag', async () => {
         (activityRepo as any).findById.mockResolvedValue(pastActivity());
         await expectCode(
           service.cancel('a1', creator, 'un motivo válido'),
-          'ACTIVITY_ALREADY_PAST',
-          409,
+          'ACTIVITY_FORBIDDEN',
+          403,
         );
       });
 
-      it('notifies the assignee WITH the reason', async () => {
+      it('forwards the reason to the repository that owns the notification', async () => {
         (activityRepo as any).findById.mockResolvedValue(
           futureActivity({ title: 'Visita al museo' }),
         );
         await service.cancel('a1', creator, 'llueve mucho');
-        expect(notificationRepo.createForActivity).toHaveBeenCalledWith(
-          expect.objectContaining({
-            userId: assignee,
-            type: 'activity_cancelled',
-            body: expect.stringContaining('llueve mucho'),
-          }),
+        expect(activityRepo.cancelWithAudit).toHaveBeenCalledWith(
           expect.anything(),
+          creator,
+          expect.any(Date),
+          'llueve mucho',
         );
-      });
-
-      it('does NOT notify the creator — the actor already knows they cancelled it', async () => {
-        (activityRepo as any).findById.mockResolvedValue(futureActivity());
-        await service.cancel('a1', creator, 'llueve mucho');
-        const recipients = notificationRepo.createForActivity.mock.calls.map(
-          (c: any[]) => c[0].userId,
-        );
-        expect(recipients).not.toContain(creator);
-        expect(recipients).toEqual([assignee]);
       });
     });
 
     describe('decline (No asistir) — reason required and PERSISTED', () => {
-      it('persists declined_at AND declined_reason (the old endpoint dropped it)', async () => {
-        (activityRepo as any).findById.mockResolvedValue(futureActivity());
+      it('delegates to declineWithAudit with NOT_ASSISTING + the reason', async () => {
+        const activity = futureActivity();
+        (activityRepo as any).findById.mockResolvedValue(activity);
         const res = await service.declineAssignment('a1', assignee, 'estoy de guardia');
 
         expect(res.status).toBe(ActivityStatus.NOT_ASSISTING);
-        expect(activityRepo.updateFields).toHaveBeenCalledWith(
-          'a1',
-          expect.objectContaining({
-            status: ActivityStatus.NOT_ASSISTING,
-            declinedAt: new Date('2026-10-01T12:00:00Z'),
-            declinedReason: 'estoy de guardia',
-          }),
-          fakeManager,
+        expect(res.declinedAt).toBe('2026-10-01T12:00:00.000Z');
+        expect(activityRepo.declineWithAudit).toHaveBeenCalledWith(
+          activity,
+          assignee,
+          new Date('2026-10-01T12:00:00Z'),
+          'estoy de guardia',
         );
       });
 
@@ -631,37 +577,23 @@ describe('ActivitiesService', () => {
         );
       });
 
-      it('409 when already past', async () => {
+      it('403 when already past — being past strips the assignee flag', async () => {
         (activityRepo as any).findById.mockResolvedValue(pastActivity());
         await expectCode(
           service.declineAssignment('a1', assignee, 'no puedo'),
-          'ACTIVITY_ALREADY_PAST',
-          409,
+          'ACTIVITY_FORBIDDEN',
+          403,
         );
       });
 
-      it('stores the PREVIOUS status in the audit so undo has something to restore', async () => {
-        (activityRepo as any).findById.mockResolvedValue(futureActivity());
-        await service.declineAssignment('a1', assignee, 'no puedo');
-        expect(auditRepo.record).toHaveBeenCalledWith(
-          expect.objectContaining({
-            action: 'activity_decline',
-            oldValue: { status: ActivityStatus.ASSIGNED },
-          }),
-          expect.anything(),
-        );
-      });
-
-      it('notifies the creator WITH the reason (A3 changed DTO visibility, not this audience)', async () => {
+      it('forwards the reason to the repository that owns the notification', async () => {
         (activityRepo as any).findById.mockResolvedValue(futureActivity());
         await service.declineAssignment('a1', assignee, 'cita médica');
-        expect(notificationRepo.createForActivity).toHaveBeenCalledWith(
-          expect.objectContaining({
-            userId: creator,
-            type: 'activity_declined',
-            body: expect.stringContaining('cita médica'),
-          }),
+        expect(activityRepo.declineWithAudit).toHaveBeenCalledWith(
           expect.anything(),
+          assignee,
+          expect.any(Date),
+          'cita médica',
         );
       });
 
@@ -669,56 +601,6 @@ describe('ActivitiesService', () => {
         (activityRepo as any).findById.mockResolvedValue(futureActivity());
         await service.declineAssignment('a1', assignee, 'no puedo');
         expect(clock.now).toHaveBeenCalled();
-      });
-    });
-
-    describe('undo-decline', () => {
-      it('restores the previous status from the audit and clears the reason', async () => {
-        (activityRepo as any).findById.mockResolvedValue(
-          futureActivity({
-            status: ActivityStatus.NOT_ASSISTING,
-            declinedAt: new Date('2026-10-01T11:59:57Z'),
-            declinedReason: 'no puedo',
-          }),
-        );
-        auditRepo.findLatestOldValue.mockResolvedValue({ status: ActivityStatus.ASSIGNED });
-
-        const res = await service.undoDecline('a1', assignee);
-        expect(res.status).toBe(ActivityStatus.ASSIGNED);
-        expect(activityRepo.updateFields).toHaveBeenCalledWith(
-          'a1',
-          expect.objectContaining({
-            status: ActivityStatus.ASSIGNED,
-            declinedAt: null,
-            declinedReason: null,
-          }),
-          fakeManager,
-        );
-      });
-
-      it('409 ACTIVITY_UNDO_WINDOW_EXPIRED past 5000 ms', async () => {
-        (activityRepo as any).findById.mockResolvedValue(
-          futureActivity({ declinedAt: new Date('2026-10-01T11:59:50Z') }),
-        );
-        await expectCode(service.undoDecline('a1', assignee), 'ACTIVITY_UNDO_WINDOW_EXPIRED', 409);
-      });
-
-      it('is idempotent when there is no decline to undo', async () => {
-        (activityRepo as any).findById.mockResolvedValue(
-          futureActivity({ status: ActivityStatus.ASSIGNED, declinedAt: null }),
-        );
-        await expect(service.undoDecline('a1', assignee)).resolves.toEqual({
-          id: 'a1',
-          status: ActivityStatus.ASSIGNED,
-        });
-        expect(activityRepo.updateFields).not.toHaveBeenCalled();
-      });
-
-      it('403 for a non-assignee', async () => {
-        (activityRepo as any).findById.mockResolvedValue(
-          futureActivity({ declinedAt: new Date('2026-10-01T11:59:59Z') }),
-        );
-        await expectCode(service.undoDecline('a1', creator), 'ACTIVITY_FORBIDDEN', 403);
       });
     });
 
@@ -770,16 +652,6 @@ describe('ActivitiesService', () => {
         expect(detail.declinedReason).toBe('cita médica');
       });
 
-      it('A3: NEVER leaks across bonds — a non-member gets 404, not the reason', async () => {
-        (activityRepo as any).findById.mockResolvedValue(
-          futureActivity({ declinedReason: 'cita médica' }),
-        );
-        bondsRepo.findActiveBondForMember.mockResolvedValue(null);
-        await expect(service.getDetail('a1', stranger)).rejects.toMatchObject({
-          code: 'ACTIVITY_NOT_FOUND',
-        });
-      });
-
       it('declinedReason is null (present, not omitted) when nobody declined', async () => {
         (activityRepo as any).findById.mockResolvedValue(futureActivity());
         const detail = await service.getDetail('a1', creator);
@@ -787,37 +659,85 @@ describe('ActivitiesService', () => {
         expect('declinedReason' in detail).toBe(true);
       });
     });
-  });
 
-  describe('membership 404 parity (R4)', () => {
-    it('listByBond: non-member gets a plain 404 BEFORE the rows query', async () => {
-      bondsRepo.findActiveBondForMember.mockResolvedValue(null);
+    describe('membership enforcement (BOLA closure)', () => {
+      const nonMember = 'u-out';
+      const notMember = () => bondService.isActiveBondForMember.mockResolvedValue(false);
 
-      const err = await service.listByBond(bondId, userId).catch((e: any) => e);
-      expect(err).toBeInstanceOf(NotFoundException);
-      expect(err.getStatus()).toBe(404);
-      expect(err.message).toBe('Bond not found or you are not a member');
-      expect(activityRepo.findByBondIdOrdered).not.toHaveBeenCalled();
-    });
+      const expectPlain404 = async (p: Promise<unknown>) => {
+        const err = await p.then(
+          () => null,
+          (e: unknown) => e,
+        );
+        expect(err).toBeInstanceOf(NotFoundException);
+        expect((err as Error).message).toBe('Bond not found or you are not a member');
+      };
 
-    it('getComplianceForBond: non-member gets the same plain 404', async () => {
-      bondsRepo.findActiveBondForMember.mockResolvedValue(null);
+      it('delete: non-member → coded 404 ACTIVITY_NOT_FOUND', async () => {
+        (activityRepo as any).findById.mockResolvedValue(futureActivity());
+        notMember();
+        await expectCode(service.delete('a1', nonMember), 'ACTIVITY_NOT_FOUND', 404);
+        expect(activityRepo.softDeleteWithAudit).not.toHaveBeenCalled();
+      });
 
-      const err = await service.getComplianceForBond(bondId, userId).catch((e: any) => e);
-      expect(err).toBeInstanceOf(NotFoundException);
-      expect(err.getStatus()).toBe(404);
-      expect(err.message).toBe('Bond not found or you are not a member');
-    });
+      it('cancel: non-member → coded 404 ACTIVITY_NOT_FOUND', async () => {
+        (activityRepo as any).findById.mockResolvedValue(futureActivity());
+        notMember();
+        await expectCode(
+          service.cancel('a1', nonMember, 'motivo válido'),
+          'ACTIVITY_NOT_FOUND',
+          404,
+        );
+        expect(activityRepo.cancelWithAudit).not.toHaveBeenCalled();
+      });
 
-    it('getComplianceForBond: member gets bondActive + period + members', async () => {
-      bondsRepo.findActiveBondForMember.mockResolvedValue({ id: bondId, isActive: true } as any);
-      bondMembersRepo.findActiveMemberNames.mockResolvedValue([]);
+      it('declineAssignment: non-member → coded 404 ACTIVITY_NOT_FOUND', async () => {
+        (activityRepo as any).findById.mockResolvedValue(futureActivity());
+        notMember();
+        await expectCode(
+          service.declineAssignment('a1', nonMember, 'no puedo'),
+          'ACTIVITY_NOT_FOUND',
+          404,
+        );
+        expect(activityRepo.declineWithAudit).not.toHaveBeenCalled();
+      });
 
-      const res = await service.getComplianceForBond(bondId, userId);
+      it('getDetail: non-member → coded 404 ACTIVITY_NOT_FOUND', async () => {
+        (activityRepo as any).findById.mockResolvedValue(futureActivity());
+        notMember();
+        await expectCode(service.getDetail('a1', nonMember), 'ACTIVITY_NOT_FOUND', 404);
+      });
 
-      expect(res.bondActive).toBe(true);
-      expect(res.period).toMatch(/^\d{4}-\d{2}$/);
-      expect(res.members).toEqual([]);
+      it('complete: non-member → coded 404 ACTIVITY_NOT_FOUND', async () => {
+        (activityRepo as any).findById.mockResolvedValue(futureActivity());
+        notMember();
+        await expectCode(service.complete('a1', nonMember), 'ACTIVITY_NOT_FOUND', 404);
+        expect(activityRepo.markCompleted).not.toHaveBeenCalled();
+      });
+
+      it('confirmAssignment: non-member → coded 404 before the assignee check', async () => {
+        (activityRepo as any).findById.mockResolvedValue(futureActivity());
+        notMember();
+        await expectCode(service.confirmAssignment('a1', nonMember), 'ACTIVITY_NOT_FOUND', 404);
+      });
+
+      it('listByBond: non-member → plain 404 before any row query', async () => {
+        notMember();
+        await expectPlain404(service.listByBond(bondId, nonMember));
+        expect(activityRepo.findByBondIdOrdered).not.toHaveBeenCalled();
+      });
+
+      it('getComplianceForBond: non-member → plain 404 before any row query', async () => {
+        notMember();
+        await expectPlain404(service.getComplianceForBond(bondId, nonMember));
+        expect(bondMembersRepo.findActiveMembersWithActStats).not.toHaveBeenCalled();
+      });
+
+      it('member happy path is unchanged (viewer flags still resolved)', async () => {
+        (activityRepo as any).findById.mockResolvedValue(futureActivity());
+        const detail = await service.getDetail('a1', creator);
+        expect(detail).toMatchObject({ canDelete: true, canCancel: true, canDecline: false });
+      });
     });
   });
 });

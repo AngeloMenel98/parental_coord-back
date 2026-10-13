@@ -1,4 +1,4 @@
-import { validationFailed } from 'src/common/errors/coded.exception';
+import { validationFailed } from '../../common/errors/coded.exception';
 
 export const ACTIVITY_REASON_MIN = 3;
 export const ACTIVITY_REASON_MAX = 200;

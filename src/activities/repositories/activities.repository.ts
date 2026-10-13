@@ -5,7 +5,7 @@ import { DeepPartial, EntityManager, IsNull, QueryDeepPartialEntity, Repository 
 import { BaseRepository } from '../../common/repositories/base.repository';
 import { ActivityEntity, ActivityStatus } from '../entities/activity.entity';
 import { ActsAuditRepository, ACT_AUDIT_ACTIONS } from './activities-audit.repository';
-import { NotificationRepository } from 'src/notifications/repositories/notification.repository';
+import { NotificationRepository } from '../../notifications/repositories/notification.repository';
 
 export interface ComplianceRow {
   assignedTo: string;

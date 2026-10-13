@@ -56,6 +56,35 @@ export class AppConfig {
   @Type(() => Number)
   @IsInt()
   PORT?: number;
+
+  @IsOptional()
+  @IsString()
+  REDIS_HOST?: string;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  REDIS_PORT?: number;
+
+  @IsOptional()
+  @IsString()
+  REDIS_PASSWORD?: string;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  REDIS_DB?: number;
+
+  /** Set to 'true' for managed Redis requiring TLS. */
+  @IsOptional()
+  @IsString()
+  REDIS_TLS?: string;
+
+  /** Response window (hours) before an assigned activity becomes overdue. */
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  RESPONSE_TIMEOUT_HOURS?: number;
 }
 
 export function validateConfig(config: Record<string, unknown>): AppConfig {

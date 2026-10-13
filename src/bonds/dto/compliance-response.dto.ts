@@ -14,7 +14,6 @@ export class ComplianceMemberDto {
 export class ComplianceResponseDto {
   @Expose() bondId!: string;
   @Expose() period!: string;
-  @Expose() bondActive!: boolean;
 
   @Type(() => ComplianceMemberDto)
   @Expose()
