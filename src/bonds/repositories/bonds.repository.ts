@@ -90,8 +90,16 @@ export class BondsRepository extends BaseRepository<BondEntity> {
       .getOne();
   }
 
-  async existsActiveBondForMember(bondId: string) {
-    return this.bondRepo.exists({ where: { id: bondId, isActive: true } });
+  async existsActiveBondForMember(bondId: string, userId: string) {
+    return this.createQueryBuilder('bond')
+      .innerJoin(
+        'bond.members',
+        'member',
+        'member.bondId = :bondId AND member.userId = :userId AND member.leftAt IS NULL',
+        { bondId, userId },
+      )
+      .where('bond.id = :bondId AND bond.isActive = true', { bondId })
+      .getExists();
   }
 
   /**

@@ -4,7 +4,7 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 import { ActivityEntity } from './entities/activity.entity';
 import { ActivityChildEntity } from './entities/activity-child.entity';
 import { ActivitiesRepository } from './repositories/activities.repository';
-import { ActivitiesAuditRepository } from './repositories/activities-audit.repository';
+import { ActsAuditRepository } from './repositories/activities-audit.repository';
 import { ActivityChildRepository } from './repositories/activity-child.repository';
 import { ActivitiesService } from './activities.service';
 import { ActivitiesController } from './activities.controller';
@@ -29,7 +29,7 @@ import { Clock } from '../common/clock/clock';
   controllers: [ActivitiesController],
   providers: [
     ActivitiesRepository,
-    ActivitiesAuditRepository,
+    ActsAuditRepository,
     ActivityChildRepository,
     ActivitiesService,
     ActivityPolicyService,

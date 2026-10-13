@@ -23,14 +23,6 @@ export interface ActivityPolicyDecision {
   isPast: boolean;
 }
 
-/**
- * Fuente ÚNICA de verdad de `can_*` e `isPast`.
- *
- * El servidor es la autoridad (R1) y el cliente sólo refleja estos flags para
- * pintar el affordance: si el cliente recalculara la regla, dos copias divergirían
- * en cuanto cambiara una. Por eso esta clase NO recibe `Clock`: el `now` llega
- * como parámetro desde el llamador, que sí lo tiene inyectado y mockeado.
- */
 @Injectable()
 export class ActivityPolicyService {
   isPast(activity: PolicySubject, now: Date): boolean {

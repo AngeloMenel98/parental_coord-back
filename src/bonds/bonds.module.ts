@@ -16,6 +16,6 @@ import { BondsController } from './bonds.controller';
   ],
   controllers: [BondsController],
   providers: [BondsRepository, BondMembersRepository, BondsService],
-  exports: [BondsRepository, BondMembersRepository],
+  exports: [BondsRepository, BondMembersRepository, BondsService],
 })
 export class BondsModule {}

@@ -4,6 +4,8 @@ import { DeepPartial, EntityManager, IsNull, QueryDeepPartialEntity, Repository 
 
 import { BaseRepository } from '../../common/repositories/base.repository';
 import { ActivityEntity, ActivityStatus } from '../entities/activity.entity';
+import { ActsAuditRepository, ACT_AUDIT_ACTIONS } from './activities-audit.repository';
+import { NotificationRepository } from 'src/notifications/repositories/notification.repository';
 
 export interface ComplianceRow {
   assignedTo: string;
@@ -16,6 +18,9 @@ export class ActivitiesRepository extends BaseRepository<ActivityEntity> {
   constructor(
     @InjectRepository(ActivityEntity)
     private readonly activityRepo: Repository<ActivityEntity>,
+
+    private readonly auditRepo: ActsAuditRepository,
+    private readonly notiRepo: NotificationRepository,
   ) {
     super(activityRepo);
   }
@@ -67,21 +72,10 @@ export class ActivitiesRepository extends BaseRepository<ActivityEntity> {
       .getMany();
   }
 
-  /**
-   * Lectura de RUTA DE USUARIO: excluye las eliminadas, así que después de
-   * "Eliminar" el detalle responde 404 (cuarta de las cuatro consultas).
-   */
   async findById(id: string): Promise<ActivityEntity | null> {
     return this.activityRepo.findOne({ where: { id, deletedAt: IsNull() } });
   }
 
-  /**
-   * Lectura de RUTA DE SISTEMA: sí incluye las eliminadas.
-   *
-   * Existe sólo para `restore` y `undo-decline`, que por definición tienen que
-   * encontrar una fila que las rutas de usuario ya no ven. Si `findById` no lo
-   * hiciera, deshacer una eliminación sería imposible por construcción.
-   */
   async findByIdIncludingDeleted(id: string): Promise<ActivityEntity | null> {
     return this.activityRepo.findOne({ where: { id } });
   }
@@ -117,6 +111,113 @@ export class ActivitiesRepository extends BaseRepository<ActivityEntity> {
     await repo.update(id, patch);
   }
 
+  async softDeleteWithAudit(activity: ActivityEntity, userId: string, now: Date): Promise<void> {
+    await this.transaction(async (manager) => {
+      await this.updateFields(activity.id, { deletedAt: now }, manager);
+      await this.auditRepo.record(
+        {
+          bondId: activity.bondId,
+          userId,
+          entityId: activity.id,
+          action: ACT_AUDIT_ACTIONS.DELETE,
+          oldValue: { deletedAt: null },
+          newValue: { deletedAt: now.toISOString() },
+          detail: `Deleted by creator; undo available for 5000ms`,
+        },
+        manager,
+      );
+    });
+  }
+
+  async cancelWithAudit(
+    activity: ActivityEntity,
+    userId: string,
+    now: Date,
+    reason: string,
+  ): Promise<void> {
+    await this.transaction(async (manager) => {
+      await this.updateFields(activity.id, {
+        status: ActivityStatus.CANCELLED,
+        cancelledAt: now,
+        cancelledBy: userId,
+      });
+      await this.auditRepo.record(
+        {
+          bondId: activity.bondId,
+          userId,
+          entityId: activity.id,
+          action: ACT_AUDIT_ACTIONS.CANCEL,
+          oldValue: { status: activity.status },
+          newValue: {
+            status: ActivityStatus.CANCELLED,
+            cancelledAt: now.toISOString(),
+            cancelledBy: userId,
+          },
+          detail: reason,
+        },
+        manager,
+      );
+
+      if (activity.assignedTo && activity.assignedTo !== userId) {
+        await this.notiRepo.createForActivity(
+          {
+            userId: activity.assignedTo,
+            bondId: activity.bondId,
+            type: 'activity_cancelled',
+            title: activity.title,
+            body: `La actividad "${activity.title}" fue cancelada. Motivo: ${reason}`,
+            refEntityId: activity.id,
+          },
+          manager,
+        );
+      }
+    });
+  }
+
+  async declineWithAudit(activity: ActivityEntity, userId: string, now: Date, reason: string) {
+    await this.transaction(async (manager) => {
+      await this.updateFields(
+        activity.id,
+        {
+          status: ActivityStatus.NOT_ASSISTING,
+          declinedAt: now,
+          declinedReason: reason,
+          updatedAt: now,
+        },
+        manager,
+      );
+      await this.auditRepo.record(
+        {
+          bondId: activity.bondId,
+          userId,
+          entityId: activity.id,
+          action: ACT_AUDIT_ACTIONS.DECLINE,
+          oldValue: { status: activity.status },
+          newValue: {
+            status: ActivityStatus.NOT_ASSISTING,
+            declinedAt: now.toISOString(),
+            declinedReason: reason,
+          },
+          detail: reason,
+        },
+        manager,
+      );
+      if (activity.createdBy !== userId) {
+        await this.notiRepo.createForActivity(
+          {
+            userId: activity.createdBy,
+            bondId: activity.bondId,
+            type: 'activity_declined',
+            title: activity.title,
+            body: `La actividad "${activity.title}" se marcó como "No asisto". Motivo: ${reason}`,
+            refEntityId: activity.id,
+          },
+          manager,
+        );
+      }
+    });
+  }
+
   async markCompleted(id: string, now: Date): Promise<{ status: string; completedAt: string }> {
     const res = await this.activityRepo
       .createQueryBuilder()
@@ -145,9 +246,6 @@ export class ActivitiesRepository extends BaseRepository<ActivityEntity> {
       .where('assigned_to IS NOT NULL')
       .andWhere('completed_at IS NULL')
       .andWhere("status NOT IN ('done', 'overdue')")
-      // 🔴 Quinta condición y no una más: una actividad eliminada no debe "vencer"
-      // ni reaparecer por la vía del scheduler. Sin esto, borrar a las 10:00 una
-      // actividad vencida la dejaría marcada `overdue` en la fila oculta.
       .andWhere('deleted_at IS NULL')
       .andWhere('scheduled_start + notif_after <= now()')
       .execute();

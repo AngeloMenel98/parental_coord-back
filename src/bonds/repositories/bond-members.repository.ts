@@ -5,16 +5,12 @@ import { DeepPartial, Repository } from 'typeorm';
 import { BaseRepository } from '../../common/repositories/base.repository';
 import { BondMemberEntity } from '../entities/bond-member.entity';
 
-/**
- * Acceso a `bond_member` — la tabla raíz de este módulo.
- *
- * T6 (R5): `findActiveMemberNames(bondId)` recibió la porción de joins del
- * join de compliance migrada desde ActivitiesRepository.
- */
-export interface BondMemberRow {
+export interface ComplianceMemberRow {
   userId: string;
   firstName: string;
   lastName: string;
+  total: number;
+  completed: number;
 }
 
 @Injectable()
@@ -37,21 +33,31 @@ export class BondMembersRepository extends BaseRepository<BondMemberEntity> {
     return this.bondMemberRepo.save(members);
   }
 
-  /**
-   * Returns active bond members with their personal data.
-   * Raw query joins bond_member → user → personal_data.
-   */
-  async findActiveMemberNames(bondId: string): Promise<BondMemberRow[]> {
+  async findActiveMembersWithActStats(
+    bondId: string,
+    from: Date,
+    to: Date,
+  ): Promise<ComplianceMemberRow[]> {
     return this.bondMemberRepo.manager
       .createQueryBuilder()
       .select('bm.user_id', 'userId')
       .addSelect('pd.first_name', 'firstName')
       .addSelect('pd.last_name', 'lastName')
+      .addSelect('COUNT(a.id)::int', 'total')
+      .addSelect("COUNT(a.id) FILTER (WHERE a.status = 'completed')::int", 'completed')
       .from('bond_member', 'bm')
-      .innerJoin('user', 'u', 'u.id = bm.user_id')
-      .innerJoin('personal_data', 'pd', 'pd.user_id = u.id')
+      .innerJoin('personal_data', 'pd', 'pd.user_id = bm.user_id')
+      .leftJoin(
+        'activity',
+        'a',
+        'a.assigned_to = bm.user_id AND a.bond_id = bm.bond_id AND a.due_date >= :from AND a.due_date < :to',
+        { from, to },
+      )
       .where('bm.bond_id = :bondId', { bondId })
       .andWhere('bm.left_at IS NULL')
-      .getRawMany<BondMemberRow>();
+      .groupBy('bm.user_id')
+      .addGroupBy('pd.first_name')
+      .addGroupBy('pd.last_name')
+      .getRawMany<ComplianceMemberRow>();
   }
 }

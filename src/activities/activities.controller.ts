@@ -80,19 +80,6 @@ export class ActivitiesController {
     return this.activitiesService.delete(id, user.id);
   }
 
-  @Post(':id/restore')
-  @HttpCode(HttpStatus.OK)
-  @ApiBearerAuth()
-  @ApiOperation({
-    summary: 'Undo delete ("Deshacer") within the 5000 ms window',
-    description:
-      '409 ACTIVITY_UNDO_WINDOW_EXPIRED fuera de la ventana. La ventana la mide el reloj del servidor, ' +
-      'así que si la app muere a mitad el borrado se sostiene.',
-  })
-  restoreActivity(@Param('id', ParseUUIDPipe) id: string, @CurrentUser() user: AuthUser) {
-    return this.activitiesService.restore(id, user.id);
-  }
-
   @Post(':id/cancel')
   @HttpCode(HttpStatus.OK)
   @ApiBearerAuth()
@@ -108,18 +95,6 @@ export class ActivitiesController {
     @Body() dto: CancelActivityDto,
   ) {
     return this.activitiesService.cancel(id, user.id, dto?.reason);
-  }
-
-  @Post(':id/undo-decline')
-  @HttpCode(HttpStatus.OK)
-  @ApiBearerAuth()
-  @ApiOperation({
-    summary: 'Undo decline ("Deshacer No asistir") within the 5000 ms window',
-    description:
-      'Restaura el estado previo leyéndolo del audit. 409 ACTIVITY_UNDO_WINDOW_EXPIRED fuera de ventana.',
-  })
-  undoDecline(@Param('id', ParseUUIDPipe) id: string, @CurrentUser() user: AuthUser) {
-    return this.activitiesService.undoDecline(id, user.id);
   }
 
   @Get('bond/:bondId')
@@ -142,17 +117,13 @@ export class ActivitiesController {
     @Param('bondId', ParseUUIDPipe) bondId: string,
     @CurrentUser() user: AuthUser,
   ) {
-    const { bondActive, period, members } = await this.activitiesService.getComplianceForBond(
-      bondId,
-      user.id,
-    );
+    const { period, members } = await this.activitiesService.getComplianceForBond(bondId, user.id);
 
     return plainToInstance(
       ComplianceResponseDto,
       {
         bondId,
         period,
-        bondActive,
         members,
       },
       { excludeExtraneousValues: true },

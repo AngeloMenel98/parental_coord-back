@@ -5,7 +5,7 @@ import { EntityManager, Repository } from 'typeorm';
 import { AuditLogEntity } from '../../audit/entities/audit-log.entity';
 
 /** Nombres de acción del audit de actividades. Estables: son contrato, no texto. */
-export const ACTIVITY_AUDIT_ACTIONS = {
+export const ACT_AUDIT_ACTIONS = {
   DELETE: 'activity_delete',
   RESTORE: 'activity_restore',
   CANCEL: 'activity_cancel',
@@ -13,8 +13,7 @@ export const ACTIVITY_AUDIT_ACTIONS = {
   UNDO_DECLINE: 'activity_undo_decline',
 } as const;
 
-export type ActivityAuditAction =
-  (typeof ACTIVITY_AUDIT_ACTIONS)[keyof typeof ACTIVITY_AUDIT_ACTIONS];
+export type ActivityAuditAction = (typeof ACT_AUDIT_ACTIONS)[keyof typeof ACT_AUDIT_ACTIONS];
 
 export interface AuditEntryInput {
   bondId: string;
@@ -35,7 +34,7 @@ export interface AuditEntryInput {
  * consultas), no en una columna propia.
  */
 @Injectable()
-export class ActivitiesAuditRepository {
+export class ActsAuditRepository {
   constructor(
     @InjectRepository(AuditLogEntity)
     private readonly auditRepo: Repository<AuditLogEntity>,
