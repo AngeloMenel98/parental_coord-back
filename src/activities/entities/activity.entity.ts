@@ -75,6 +75,10 @@ export class ActivityEntity {
   })
   status!: ActivityStatus;
 
+  /** Optimistic lock (FR-S5): +1 por transición; 0 en filas legadas (migración E1). */
+  @Column({ type: 'int', default: 0, name: 'version' })
+  version!: number;
+
   @Column({
     type: 'enum',
     enum: Criticality,
@@ -118,9 +122,11 @@ export class ActivityEntity {
   @Column({ type: 'interval', nullable: true, name: 'notif_after' })
   notifAfter!: string | null;
 
-  @Column({ type: 'boolean', default: false, name: 'assigned_confirmed' })
-  assignedConfirmed!: boolean;
-
+  /**
+   * `assigned_confirmed` (boolean) se ELIMINA del modelo (REQ-MODEL-4, AC-12):
+   * "confirmado" ahora se DERIVA de `status === assisting && confirmed_at != null`.
+   * La columna física sobrevive hasta la migración E7 (DropActivityAssignedConfirmed).
+   */
   @Column({ type: 'timestamptz', nullable: true, name: 'confirmed_at' })
   confirmedAt!: Date | null;
 

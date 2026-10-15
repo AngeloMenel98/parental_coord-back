@@ -23,6 +23,8 @@ export const ACTIVITY_ERROR_CODES = {
   UNDO_WINDOW_EXPIRED: 'ACTIVITY_UNDO_WINDOW_EXPIRED',
   /** Motivo fuera del rango compartido 3–200, o cuerpo mal formado. */
   VALIDATION_FAILED: 'VALIDATION_FAILED',
+  /** Transición fuera del mapa cerrado T1–T11/T15 (par inválido o estado terminal). */
+  INVALID_TRANSITION: 'ACTIVITY_INVALID_TRANSITION',
 } as const;
 
 export type ActivityErrorCode = (typeof ACTIVITY_ERROR_CODES)[keyof typeof ACTIVITY_ERROR_CODES];
@@ -100,6 +102,19 @@ export function undoWindowExpired(action: 'restore' | 'undo-decline'): CodedExce
     ACTIVITY_ERROR_CODES.UNDO_WINDOW_EXPIRED,
     HttpStatus.CONFLICT,
     `The ${action === 'restore' ? 'delete' : 'decline'} undo window (5000 ms) has expired`,
+  );
+}
+
+export function activityInvalidTransition(
+  from: string,
+  to: string,
+  message?: string,
+): CodedException {
+  return new CodedException(
+    ACTIVITY_ERROR_CODES.INVALID_TRANSITION,
+    HttpStatus.CONFLICT,
+    message ?? `Invalid activity transition: ${from} -> ${to}`,
+    { from, to },
   );
 }
 

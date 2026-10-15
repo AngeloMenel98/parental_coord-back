@@ -1,9 +1,9 @@
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { DeepPartial, Repository } from 'typeorm';
+import { DeepPartial, IsNull, Repository } from 'typeorm';
 
 import { BaseRepository } from '../../common/repositories/base.repository';
-import { BondMemberEntity } from '../entities/bond-member.entity';
+import { BondMemberEntity, BondMemberRole } from '../entities/bond-member.entity';
 
 export interface ComplianceMemberRow {
   userId: string;
@@ -25,6 +25,17 @@ export class BondMembersRepository extends BaseRepository<BondMemberEntity> {
   /** Miembro de un bond por usuario o `null` (chequeo de duplicado en admin). */
   async findOneByBondAndUser(bondId: string, userId: string): Promise<BondMemberEntity | null> {
     return this.bondMemberRepo.findOneBy({ bondId, userId });
+  }
+
+  /**
+   * Coordinador parental ACTIVO del bond o `null` (design D2, REQ-ACTOR-1/3).
+   * "Activo" = `left_at IS NULL`. Se usa para notificar el paso a `overdue` (T7);
+   * `null` es un caso normal (skip de notificación, no un error).
+   */
+  async findCoordinator(bondId: string): Promise<BondMemberEntity | null> {
+    return this.bondMemberRepo.findOne({
+      where: { bondId, role: BondMemberRole.COORDINATOR, leftAt: IsNull() },
+    });
   }
 
   /** Alta en lote de miembros (admin.service `createBond`: create[] + save[]). */

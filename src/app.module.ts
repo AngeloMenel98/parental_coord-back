@@ -2,7 +2,7 @@ import { Module, ValidationPipe } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { APP_GUARD, APP_PIPE } from '@nestjs/core';
 import { ThrottlerModule, ThrottlerGuard } from '@nestjs/throttler';
-import { ScheduleModule } from '@nestjs/schedule';
+
 import { BullModule } from '@nestjs/bullmq';
 import { TypeOrmModule } from '@nestjs/typeorm';
 
@@ -61,11 +61,7 @@ import { buildBullConnection } from './queues/redis.config';
       inject: [ConfigService],
       useFactory: (cs: ConfigService) => ({ connection: buildBullConnection(cs) }),
     }),
-    // Sin esto los `@Cron` no se registran: `ActivitiesScheduler.markOverdueActivities`
-    // estaba declarado y NEVER se ejecutaba, así que ninguna actividad pasaba a
-    // `overdue` por sí sola. `ScheduleModule` ya estaba importado y `@nestjs/schedule`
-    // ya era dependencia; faltaba la llamada. Detectado por sdd-verify (#1333).
-    ScheduleModule.forRoot(),
+
     UsersModule,
     AuthModule,
     HealthModule,

@@ -1,16 +1,63 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { DeepPartial, EntityManager, IsNull, QueryDeepPartialEntity, Repository } from 'typeorm';
 
 import { BaseRepository } from '../../common/repositories/base.repository';
 import { ActivityEntity, ActivityStatus } from '../entities/activity.entity';
-import { ActsAuditRepository, ACT_AUDIT_ACTIONS } from './activities-audit.repository';
 import { NotificationRepository } from '../../notifications/repositories/notification.repository';
+import { OutboxEventRepository } from '../../outbox/repositories/outbox-event.repository';
+import { InitialTransition } from '../activity-transition.map';
 
 export interface ComplianceRow {
   assignedTo: string;
   total: string;
   completed: string;
+}
+
+/** Side-effect columns a transition may write (REQ-TX-1). */
+export type ApplyTransitionFields = Partial<
+  Pick<
+    ActivityEntity,
+    | 'confirmedAt'
+    | 'cancelledAt'
+    | 'cancelledBy'
+    | 'declinedAt'
+    | 'declinedReason'
+    | 'completedAt'
+    | 'deadline'
+    | 'deletedAt'
+  >
+>;
+
+/** Notification written INSIDE the transition tx (T7 coordinator, REQ-ACTOR-3). */
+export interface ApplyTransitionNotification {
+  userId: string;
+  type: string;
+  title: string;
+  body: string;
+}
+
+/** Plain DTO (no typeorm types leak to the service). `null` return = CAS/guard miss. */
+export interface ApplyTransitionInput {
+  id: string;
+  expectedFrom: ActivityStatus;
+  expectedVersion: number;
+  nextStatus: ActivityStatus;
+  fields?: ApplyTransitionFields;
+  outbox: {
+    bondId: string;
+    eventType: string;
+    payload: Record<string, unknown>;
+  };
+  /** Optional companion write in the SAME tx (e.g. coordinator overdue notice). */
+  notification?: ApplyTransitionNotification;
+}
+
+/** Create INSERT exception (design D3): v1 + one outbox row. */
+export interface InsertWithInitialTransitionInput {
+  row: DeepPartial<ActivityEntity>;
+  initial: InitialTransition;
+  payload: Record<string, unknown>;
 }
 
 @Injectable()
@@ -19,8 +66,8 @@ export class ActivitiesRepository extends BaseRepository<ActivityEntity> {
     @InjectRepository(ActivityEntity)
     private readonly activityRepo: Repository<ActivityEntity>,
 
-    private readonly auditRepo: ActsAuditRepository,
     private readonly notiRepo: NotificationRepository,
+    private readonly outboxRepo: OutboxEventRepository,
   ) {
     super(activityRepo);
   }
@@ -111,144 +158,141 @@ export class ActivitiesRepository extends BaseRepository<ActivityEntity> {
     await repo.update(id, patch);
   }
 
-  async softDeleteWithAudit(activity: ActivityEntity, userId: string, now: Date): Promise<void> {
-    await this.transaction(async (manager) => {
-      await this.updateFields(activity.id, { deletedAt: now }, manager);
-      await this.auditRepo.record(
+  /**
+   * Primitive atómico de transición (REQ-TX-1/2/3, design D3).
+   *
+   * Una sola tx: `SELECT … FOR UPDATE` → guardas (`deleted_at`, `expectedFrom`,
+   * `expectedVersion`) → status/campos + `version++` → `outbox_event` en la MISMA
+   * tx. Devuelve `null` en cualquier miss (sin save, sin outbox) — el service
+   * interpreta ese `null` como 409 (user) o no-op (system).
+   *
+   * `manager?` sigue el patrón `createInTx`/`updateFields`: con él, participa en
+   * una tx ya abierta por el caller; sin él, el repositorio abre la suya.
+   */
+  async applyTransition(
+    input: ApplyTransitionInput,
+    manager?: EntityManager,
+  ): Promise<ActivityEntity | null> {
+    const run = async (em: EntityManager): Promise<ActivityEntity | null> => {
+      const row = await em
+        .createQueryBuilder(ActivityEntity, 'a')
+        .setLock('pessimistic_write')
+        .where('a.id = :id', { id: input.id })
+        .getOne();
+
+      if (
+        !row ||
+        row.deletedAt != null ||
+        row.status !== input.expectedFrom ||
+        row.version !== input.expectedVersion
+      ) {
+        return null;
+      }
+
+      const nextVersion = row.version + 1;
+      row.status = input.nextStatus;
+      row.version = nextVersion;
+      if (input.fields) {
+        Object.assign(row, input.fields);
+      }
+
+      const saved = await em.getRepository(ActivityEntity).save(row);
+
+      await this.outboxRepo.insert(
         {
-          bondId: activity.bondId,
-          userId,
-          entityId: activity.id,
-          action: ACT_AUDIT_ACTIONS.DELETE,
-          oldValue: { deletedAt: null },
-          newValue: { deletedAt: now.toISOString() },
-          detail: `Deleted by creator; undo available for 5000ms`,
+          activityId: input.id,
+          bondId: input.outbox.bondId,
+          eventType: input.outbox.eventType,
+          aggregateVersion: nextVersion,
+          payload: input.outbox.payload,
         },
-        manager,
+        em,
       );
-    });
+
+      if (input.notification) {
+        await this.notiRepo.createForActivity(
+          {
+            userId: input.notification.userId,
+            bondId: input.outbox.bondId,
+            type: input.notification.type,
+            title: input.notification.title,
+            body: input.notification.body,
+            refEntityId: input.id,
+          },
+          em,
+        );
+      }
+
+      return saved;
+    };
+
+    return manager ? run(manager) : this.transaction(run);
   }
 
-  async cancelWithAudit(
-    activity: ActivityEntity,
-    userId: string,
-    now: Date,
-    reason: string,
-  ): Promise<void> {
-    await this.transaction(async (manager) => {
-      await this.updateFields(activity.id, {
-        status: ActivityStatus.CANCELLED,
-        cancelledAt: now,
-        cancelledBy: userId,
+  /**
+   * INSERT inicial de `create` (excepción documentada, design D3): la fila nace
+   * en el status inicial del mapa con `version = 1` y, en la MISMA tx, se escribe
+   * UNA fila de outbox (`aggregate_version = 1`).
+   */
+  async insertWithInitialTransition(
+    input: InsertWithInitialTransitionInput,
+    manager?: EntityManager,
+  ): Promise<ActivityEntity> {
+    const run = async (em: EntityManager): Promise<ActivityEntity> => {
+      const repo = em.getRepository(ActivityEntity);
+      const entity = repo.create({
+        ...input.row,
+        status: input.initial.status,
+        version: 1,
       });
-      await this.auditRepo.record(
+      const saved = await repo.save(entity);
+
+      await this.outboxRepo.insert(
         {
-          bondId: activity.bondId,
-          userId,
-          entityId: activity.id,
-          action: ACT_AUDIT_ACTIONS.CANCEL,
-          oldValue: { status: activity.status },
-          newValue: {
-            status: ActivityStatus.CANCELLED,
-            cancelledAt: now.toISOString(),
-            cancelledBy: userId,
-          },
-          detail: reason,
+          activityId: saved.id,
+          bondId: saved.bondId,
+          eventType: input.initial.event,
+          aggregateVersion: 1,
+          payload: input.payload,
         },
-        manager,
+        em,
       );
 
-      if (activity.assignedTo && activity.assignedTo !== userId) {
-        await this.notiRepo.createForActivity(
-          {
-            userId: activity.assignedTo,
-            bondId: activity.bondId,
-            type: 'activity_cancelled',
-            title: activity.title,
-            body: `La actividad "${activity.title}" fue cancelada. Motivo: ${reason}`,
-            refEntityId: activity.id,
-          },
-          manager,
-        );
-      }
-    });
+      return saved;
+    };
+
+    return manager ? run(manager) : this.transaction(run);
   }
 
-  async declineWithAudit(activity: ActivityEntity, userId: string, now: Date, reason: string) {
-    await this.transaction(async (manager) => {
-      await this.updateFields(
-        activity.id,
+  /**
+   * Reconciliation source of truth (REQ-TIMER-4, design D9). Returns the live
+   * activities whose timer should already have fired:
+   * `assigned` past its response `deadline`, `assisting` past `scheduled_start`,
+   * `in_progress` past `COALESCE(scheduled_end, scheduled_start)`. Soft-deleted
+   * rows are excluded; results are bounded and ordered by soonest anchor.
+   */
+  async findDueForTransition(now: Date, limit = 100): Promise<ActivityEntity[]> {
+    return this.activityRepo
+      .createQueryBuilder('a')
+      .where('a.deleted_at IS NULL')
+      .andWhere(
+        `(
+          (a.status = :assigned AND a.deadline IS NOT NULL AND a.deadline <= :now)
+          OR (a.status = :assisting AND a.scheduled_start IS NOT NULL AND a.scheduled_start <= :now)
+          OR (a.status = :inProgress AND COALESCE(a.scheduled_end, a.scheduled_start) IS NOT NULL
+              AND COALESCE(a.scheduled_end, a.scheduled_start) <= :now)
+        )`,
         {
-          status: ActivityStatus.NOT_ASSISTING,
-          declinedAt: now,
-          declinedReason: reason,
-          updatedAt: now,
+          now,
+          assigned: ActivityStatus.ASSIGNED,
+          assisting: ActivityStatus.ASSISTING,
+          inProgress: ActivityStatus.IN_PROGRESS,
         },
-        manager,
-      );
-      await this.auditRepo.record(
-        {
-          bondId: activity.bondId,
-          userId,
-          entityId: activity.id,
-          action: ACT_AUDIT_ACTIONS.DECLINE,
-          oldValue: { status: activity.status },
-          newValue: {
-            status: ActivityStatus.NOT_ASSISTING,
-            declinedAt: now.toISOString(),
-            declinedReason: reason,
-          },
-          detail: reason,
-        },
-        manager,
-      );
-      if (activity.createdBy !== userId) {
-        await this.notiRepo.createForActivity(
-          {
-            userId: activity.createdBy,
-            bondId: activity.bondId,
-            type: 'activity_declined',
-            title: activity.title,
-            body: `La actividad "${activity.title}" se marcó como "No asisto". Motivo: ${reason}`,
-            refEntityId: activity.id,
-          },
-          manager,
-        );
-      }
-    });
-  }
-
-  async markCompleted(id: string, now: Date): Promise<{ status: string; completedAt: string }> {
-    const res = await this.activityRepo
-      .createQueryBuilder()
-      .update(ActivityEntity)
-      .set({
-        status: ActivityStatus.DONE,
-        completedAt: () => 'COALESCE(completed_at, :now)',
-        updatedAt: () => 'now()',
-      })
-      .where('id = :id', { id })
-      .setParameters({ now })
-      .returning(['status', 'completedAt'])
-      .execute();
-    const row = res.raw?.[0] as { status: string; completed_at: Date | string } | undefined;
-    if (!row) {
-      throw new NotFoundException('Activity not found');
-    }
-    return { status: row.status, completedAt: new Date(row.completed_at).toISOString() };
-  }
-
-  async markOverdue(): Promise<number> {
-    const result = await this.activityRepo
-      .createQueryBuilder()
-      .update(ActivityEntity)
-      .set({ status: ActivityStatus.OVERDUE })
-      .where('assigned_to IS NOT NULL')
-      .andWhere('completed_at IS NULL')
-      .andWhere("status NOT IN ('done', 'overdue')")
-      .andWhere('deleted_at IS NULL')
-      .andWhere('scheduled_start + notif_after <= now()')
-      .execute();
-    return result.affected ?? 0;
+      )
+      .addOrderBy('a.deadline', 'ASC', 'NULLS LAST')
+      .addOrderBy('a.scheduled_start', 'ASC', 'NULLS LAST')
+      .addOrderBy('a.scheduled_end', 'ASC', 'NULLS LAST')
+      .limit(limit)
+      .getMany();
   }
 }

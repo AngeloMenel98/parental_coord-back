@@ -14,8 +14,9 @@ import { BondsModule } from '../bonds/bonds.module';
 import { NotificationsModule } from '../notifications/notifications.module';
 import { ChildrenModule } from '../children/children.module';
 import { CategoriesModule } from '../categories/categories.module';
+import { OutboxModule } from '../outbox/outbox.module';
+import { ActivityTimersModule } from '../queues/activity-timers/activity-timers.module';
 import { SystemClock } from '../common/clock/system-clock';
-import { ActivitiesScheduler } from './activities.scheduler';
 import { Clock } from '../common/clock/clock';
 
 @Module({
@@ -25,6 +26,8 @@ import { Clock } from '../common/clock/clock';
     NotificationsModule,
     ChildrenModule,
     CategoriesModule,
+    OutboxModule,
+    ActivityTimersModule,
   ],
   controllers: [ActivitiesController],
   providers: [
@@ -33,7 +36,6 @@ import { Clock } from '../common/clock/clock';
     ActivityChildRepository,
     ActivitiesService,
     ActivityPolicyService,
-    ActivitiesScheduler,
     SystemClock,
     { provide: Clock, useExisting: SystemClock },
   ],

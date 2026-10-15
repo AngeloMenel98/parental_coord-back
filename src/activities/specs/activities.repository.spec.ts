@@ -4,14 +4,21 @@ import { Repository } from 'typeorm';
 
 import { ActivitiesRepository } from '../repositories/activities.repository';
 import { ActsAuditRepository } from '../repositories/activities-audit.repository';
-import { ActivityEntity } from '../entities/activity.entity';
+import { ActivityEntity, ActivityStatus } from '../entities/activity.entity';
 import { NotificationRepository } from '../../notifications/repositories/notification.repository';
+import { OutboxEventRepository } from '../../outbox/repositories/outbox-event.repository';
 
 describe('ActivitiesRepository', () => {
   let repo: ActivitiesRepository;
   let activityRepo: jest.Mocked<Repository<ActivityEntity>>;
+  let outboxRepo: { insert: jest.Mock };
+  let notiRepo: { createForActivity: jest.Mock };
 
   let qb: any;
+  let lockQb: any;
+  let emRepo: any;
+  let em: any;
+  let manager: any;
 
   beforeEach(async () => {
     qb = {
@@ -25,45 +32,51 @@ describe('ActivitiesRepository', () => {
       groupBy: jest.fn().mockReturnThis(),
       select: jest.fn().mockReturnThis(),
       addSelect: jest.fn().mockReturnThis(),
+      limit: jest.fn().mockReturnThis(),
       getMany: jest.fn().mockResolvedValue([]),
       getRawMany: jest.fn().mockResolvedValue([]),
       execute: jest.fn().mockResolvedValue({ affected: 1 }),
     };
 
+    lockQb = {
+      setLock: jest.fn().mockReturnThis(),
+      where: jest.fn().mockReturnThis(),
+      getOne: jest.fn().mockResolvedValue(null),
+    };
+
+    emRepo = {
+      create: jest.fn((data: any) => data),
+      save: jest.fn((e: any) => Promise.resolve(e)),
+    };
+
+    em = {
+      createQueryBuilder: jest.fn().mockReturnValue(lockQb),
+      getRepository: jest.fn().mockReturnValue(emRepo),
+    };
+
+    manager = { transaction: jest.fn((cb: any) => cb(em)) };
+
     activityRepo = {
       createQueryBuilder: jest.fn().mockReturnValue(qb),
       findOne: jest.fn().mockResolvedValue(null),
+      target: ActivityEntity,
+      manager,
     } as any;
+
+    outboxRepo = { insert: jest.fn().mockResolvedValue({}) };
+    notiRepo = { createForActivity: jest.fn().mockResolvedValue({}) };
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         ActivitiesRepository,
         { provide: getRepositoryToken(ActivityEntity), useValue: activityRepo },
         { provide: ActsAuditRepository, useValue: { record: jest.fn() } },
-        { provide: NotificationRepository, useValue: { createForActivity: jest.fn() } },
+        { provide: NotificationRepository, useValue: notiRepo },
+        { provide: OutboxEventRepository, useValue: outboxRepo },
       ],
     }).compile();
 
     repo = module.get<ActivitiesRepository>(ActivitiesRepository);
-  });
-
-  describe('markOverdue', () => {
-    it('builds correct query conditions', async () => {
-      await repo.markOverdue();
-      expect(qb.update).toHaveBeenCalled();
-      expect(qb.where).toHaveBeenCalledWith('assigned_to IS NOT NULL');
-    });
-
-    it('returns affected count', async () => {
-      const qb: any = activityRepo.createQueryBuilder();
-      qb.execute.mockResolvedValueOnce({ affected: 3 });
-      const res = await repo.markOverdue();
-      expect(res).toBe(3);
-
-      qb.execute.mockResolvedValueOnce({ affected: null });
-      const res2 = await repo.markOverdue();
-      expect(res2).toBe(0);
-    });
   });
 
   // ══════════════════════════════════════════════════════════════════════════
@@ -85,11 +98,6 @@ describe('ActivitiesRepository', () => {
     it('countActivitiesByAssignee excludes deleted — compliance counts live work only', async () => {
       await repo.countActivitiesByAssignee('b1', new Date(), new Date());
       expect(qb.andWhere).toHaveBeenCalledWith(softDeleteClause);
-    });
-
-    it('markOverdue excludes deleted — a hidden row must not be flipped to overdue', async () => {
-      await repo.markOverdue();
-      expect(qb.andWhere).toHaveBeenCalledWith('deleted_at IS NULL');
     });
 
     it('findById (user path) filters on deletedAt', async () => {
@@ -114,6 +122,221 @@ describe('ActivitiesRepository', () => {
       expect((repo as any).purgeDeleted).toBeUndefined();
       expect((repo as any).purgeDeletedActivities).toBeUndefined();
       expect((repo as any).hardDelete).toBeUndefined();
+    });
+  });
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // E4 · Primitive atómico de transición (REQ-TX-1/2/3)
+  // ══════════════════════════════════════════════════════════════════════════
+  describe('applyTransition', () => {
+    const baseRow = (): ActivityEntity =>
+      ({
+        id: 'a1',
+        bondId: 'b1',
+        status: ActivityStatus.CREATED,
+        version: 0,
+        deletedAt: null,
+      }) as ActivityEntity;
+
+    const baseInput = () => ({
+      id: 'a1',
+      expectedFrom: ActivityStatus.CREATED,
+      expectedVersion: 0,
+      nextStatus: ActivityStatus.ASSIGNED,
+      fields: { deadline: new Date('2030-01-01T00:00:00Z') },
+      outbox: { bondId: 'b1', eventType: 'activity.assigned', payload: { k: 'v' } },
+    });
+
+    it('locks FOR UPDATE, bumps version and saves with the same manager', async () => {
+      const row = baseRow();
+      lockQb.getOne.mockResolvedValue(row);
+
+      const result = await repo.applyTransition(baseInput());
+
+      expect(lockQb.setLock).toHaveBeenCalledWith('pessimistic_write');
+      expect(lockQb.where).toHaveBeenCalledWith('a.id = :id', { id: 'a1' });
+      expect(result).toBe(row);
+      expect(row.status).toBe(ActivityStatus.ASSIGNED);
+      expect(row.version).toBe(1);
+      expect(row.deadline).toEqual(new Date('2030-01-01T00:00:00Z'));
+      expect(emRepo.save).toHaveBeenCalledWith(row);
+    });
+
+    it('inserts exactly one outbox row in the same tx with the new version', async () => {
+      lockQb.getOne.mockResolvedValue(baseRow());
+
+      await repo.applyTransition(baseInput());
+
+      expect(outboxRepo.insert).toHaveBeenCalledTimes(1);
+      expect(outboxRepo.insert).toHaveBeenCalledWith(
+        {
+          activityId: 'a1',
+          bondId: 'b1',
+          eventType: 'activity.assigned',
+          aggregateVersion: 1,
+          payload: { k: 'v' },
+        },
+        em,
+      );
+    });
+
+    it('CAS miss (version mismatch) → null, no save, no outbox', async () => {
+      lockQb.getOne.mockResolvedValue({ ...baseRow(), version: 5 });
+
+      const result = await repo.applyTransition(baseInput());
+
+      expect(result).toBeNull();
+      expect(emRepo.save).not.toHaveBeenCalled();
+      expect(outboxRepo.insert).not.toHaveBeenCalled();
+    });
+
+    it('writes the optional notification with the SAME tx manager (T7 coordinator)', async () => {
+      lockQb.getOne.mockResolvedValue(baseRow());
+
+      await repo.applyTransition({
+        ...baseInput(),
+        notification: {
+          userId: 'coord-1',
+          type: 'activity_overdue',
+          title: 'T',
+          body: 'Activity overdue: T',
+        },
+      });
+
+      expect(notiRepo.createForActivity).toHaveBeenCalledTimes(1);
+      expect(notiRepo.createForActivity).toHaveBeenCalledWith(
+        {
+          userId: 'coord-1',
+          bondId: 'b1',
+          type: 'activity_overdue',
+          title: 'T',
+          body: 'Activity overdue: T',
+          refEntityId: 'a1',
+        },
+        em,
+      );
+    });
+
+    it('writes NO notification when the input omits one', async () => {
+      lockQb.getOne.mockResolvedValue(baseRow());
+
+      await repo.applyTransition(baseInput());
+
+      expect(notiRepo.createForActivity).not.toHaveBeenCalled();
+    });
+
+    it('CAS miss → notification is NOT written (all-or-nothing tx)', async () => {
+      lockQb.getOne.mockResolvedValue({ ...baseRow(), version: 5 });
+
+      const result = await repo.applyTransition({
+        ...baseInput(),
+        notification: { userId: 'coord-1', type: 'activity_overdue', title: 'T', body: 'B' },
+      });
+
+      expect(result).toBeNull();
+      expect(notiRepo.createForActivity).not.toHaveBeenCalled();
+    });
+
+    it('row missing → null, no save, no outbox', async () => {
+      lockQb.getOne.mockResolvedValue(null);
+
+      const result = await repo.applyTransition(baseInput());
+
+      expect(result).toBeNull();
+      expect(emRepo.save).not.toHaveBeenCalled();
+      expect(outboxRepo.insert).not.toHaveBeenCalled();
+    });
+
+    it('source status mismatch → null (guard miss)', async () => {
+      lockQb.getOne.mockResolvedValue({ ...baseRow(), status: ActivityStatus.ASSIGNED });
+
+      const result = await repo.applyTransition(baseInput());
+
+      expect(result).toBeNull();
+      expect(outboxRepo.insert).not.toHaveBeenCalled();
+    });
+
+    it('soft-deleted row → null (deleted_at guard)', async () => {
+      lockQb.getOne.mockResolvedValue({ ...baseRow(), deletedAt: new Date() });
+
+      const result = await repo.applyTransition(baseInput());
+
+      expect(result).toBeNull();
+      expect(outboxRepo.insert).not.toHaveBeenCalled();
+    });
+  });
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // E9 · Fuente de verdad del sweep (REQ-TIMER-4)
+  // ══════════════════════════════════════════════════════════════════════════
+  describe('findDueForTransition', () => {
+    it('excludes soft-deleted rows', async () => {
+      await repo.findDueForTransition(new Date(), 50);
+      expect(qb.where).toHaveBeenCalledWith('a.deleted_at IS NULL');
+    });
+
+    it('selects due rows by status + anchor and bounds the query', async () => {
+      qb.getMany.mockResolvedValueOnce([{ id: 'a1' }]);
+
+      const now = new Date('2026-10-01T12:00:00Z');
+      const res = await repo.findDueForTransition(now, 50);
+
+      expect(res).toEqual([{ id: 'a1' }]);
+      // The due predicate covers assigned/assisting/in_progress and is parameterized by `now`.
+      const [clause, params] = qb.andWhere.mock.calls[0];
+      expect(clause).toContain('a.status = :assigned');
+      expect(clause).toContain('a.status = :assisting');
+      expect(clause).toContain('COALESCE(a.scheduled_end, a.scheduled_start)');
+      expect(params.now).toBe(now);
+      expect(params.assigned).toBe(ActivityStatus.ASSIGNED);
+      expect(qb.limit).toHaveBeenCalledWith(50);
+    });
+
+    it('defaults the limit to 100', async () => {
+      await repo.findDueForTransition(new Date());
+      expect(qb.limit).toHaveBeenCalledWith(100);
+    });
+  });
+
+  describe('insertWithInitialTransition', () => {
+    it('inserts the row at the initial status with version 1 + one outbox row', async () => {
+      emRepo.save.mockImplementationOnce((e: any) => Promise.resolve({ ...e, id: 'new-id' }));
+
+      const created = await repo.insertWithInitialTransition({
+        row: { bondId: 'b1', title: 't', status: ActivityStatus.CANCELLED } as any,
+        initial: { status: ActivityStatus.ASSIGNED, event: 'activity.assigned' },
+        payload: { k: 'v' },
+      });
+
+      const savedArg = emRepo.save.mock.calls[0][0];
+      expect(savedArg.status).toBe(ActivityStatus.ASSIGNED);
+      expect(savedArg.version).toBe(1);
+      expect(created.id).toBe('new-id');
+      expect(outboxRepo.insert).toHaveBeenCalledTimes(1);
+      expect(outboxRepo.insert).toHaveBeenCalledWith(
+        {
+          activityId: 'new-id',
+          bondId: 'b1',
+          eventType: 'activity.assigned',
+          aggregateVersion: 1,
+          payload: { k: 'v' },
+        },
+        em,
+      );
+    });
+
+    it('uses the created status (T1) when there is no assignee — version 1', async () => {
+      emRepo.save.mockImplementationOnce((e: any) => Promise.resolve({ ...e, id: 'n2' }));
+
+      await repo.insertWithInitialTransition({
+        row: { bondId: 'b1', title: 't' } as any,
+        initial: { status: ActivityStatus.CREATED, event: 'activity.created' },
+        payload: {},
+      });
+
+      const savedArg = emRepo.save.mock.calls[0][0];
+      expect(savedArg.status).toBe(ActivityStatus.CREATED);
+      expect(savedArg.version).toBe(1);
     });
   });
 });
