@@ -27,7 +27,8 @@ import { buildBullConnection } from './queues/redis.config';
   imports: [
     ConfigModule.forRoot({
       isGlobal: true,
-      envFilePath: '.env',
+      // `ENV_FILE` permite correr el smoke e2e contra `.env.test` sin tocar dev.
+      envFilePath: process.env.ENV_FILE ?? '.env',
       validate: validateConfig,
     }),
     ThrottlerModule.forRootAsync({

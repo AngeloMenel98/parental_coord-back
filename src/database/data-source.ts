@@ -1,6 +1,10 @@
-import 'dotenv/config';
+import * as dotenv from 'dotenv';
 import { DataSource } from 'typeorm';
 import { join } from 'path';
+
+// `ENV_FILE` permite apuntar migraciones a otro entorno sin editar ficheros:
+//   ENV_FILE=.env.test pnpm typeorm migration:run
+dotenv.config({ path: process.env.ENV_FILE ?? '.env' });
 
 if (!process.env.DB_PASSWORD) {
   throw new Error(

@@ -2,6 +2,7 @@
  * Idempotent seed script: creates an admin user in the database.
  *
  * Usage:  pnpm seed:admin
+ *         ENV_FILE=.env.test pnpm seed:admin   ← apunta a la DB de smoke/test
  * Env:    DB_HOST, DB_PORT, DB_USER, DB_PASSWORD, DB_NAME (or .env)
  */
 import { DataSource } from 'typeorm';
@@ -9,8 +10,9 @@ import * as bcrypt from 'bcryptjs';
 import * as dotenv from 'dotenv';
 import * as path from 'path';
 
-// Load .env from project root
-dotenv.config({ path: path.resolve(process.cwd(), '.env') });
+// Load .env from project root. `ENV_FILE` permite apuntar a otro entorno
+// (p.ej. `.env.test` para la base de smoke) sin duplicar este script.
+dotenv.config({ path: path.resolve(process.cwd(), process.env.ENV_FILE ?? '.env') });
 
 async function seed() {
   const ds = new DataSource({
