@@ -19,6 +19,7 @@ import { ReportsModule } from './reports/reports.module';
 import { AuditModule } from './audit/audit.module';
 import { AdminModule } from './admin/admin.module';
 import { WebhooksModule } from './webhooks/webhooks.module';
+import { RealtimeModule } from './realtime/realtime.module';
 import { validateConfig } from './config/app-config';
 import { buildBullConnection } from './queues/redis.config';
 
@@ -76,6 +77,7 @@ import { buildBullConnection } from './queues/redis.config';
     AuditModule,
     AdminModule,
     WebhooksModule,
+    RealtimeModule,
   ],
   providers: [
     {

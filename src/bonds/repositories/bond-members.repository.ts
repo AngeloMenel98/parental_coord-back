@@ -44,6 +44,24 @@ export class BondMembersRepository extends BaseRepository<BondMemberEntity> {
     return this.bondMemberRepo.save(members);
   }
 
+  /**
+   * IDs de los miembros ACTIVOS del bond (REQ-3: recipients del gateway realtime).
+   *
+   * Lean a propósito: sólo `bond_id` + `left_at IS NULL` — sin JOINs ni métricas
+   * de compliance. NO reutiliza `findActiveMembersWithActStats`: ese método exige
+   * un rango de fechas, INNER JOINa `personal_data` (descartaría miembros sin
+   * perfil) y calcula estadísticas innecesarias para resolver destinatarios.
+   */
+  async findActiveMemberIds(bondId: string): Promise<string[]> {
+    const rows = await this.bondMemberRepo
+      .createQueryBuilder('bm')
+      .select('bm.user_id', 'userId')
+      .where('bm.bond_id = :bondId', { bondId })
+      .andWhere('bm.left_at IS NULL')
+      .getRawMany<{ userId: string }>();
+    return rows.map((row) => row.userId);
+  }
+
   async findActiveMembersWithActStats(
     bondId: string,
     from: Date,

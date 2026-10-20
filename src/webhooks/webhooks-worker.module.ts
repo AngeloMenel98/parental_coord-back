@@ -5,6 +5,7 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 import { ActivitiesModule } from '../activities/activities.module';
 import { OutboxModule } from '../outbox/outbox.module';
 import { NotificationsModule } from '../notifications/notifications.module';
+import { RealtimeWorkerModule } from '../realtime/realtime-worker.module';
 import { WebhookSubscriptionEntity } from './subscriptions/entities/webhook-subscription.entity';
 import { WebhookDeliveryEntity } from './delivery/entities/webhook-delivery.entity';
 import { WebhookDeliveryAttemptEntity } from './delivery/entities/webhook-delivery-attempt.entity';
@@ -34,7 +35,8 @@ import { WebhookObservabilityService } from './webhooks-observability';
  * de la cola de entregas y los schedulers repetibles (relay poll + reconcile +
  * retención). Reutiliza `OutboxModule` (lectura + purga del outbox),
  * `NotificationsModule` (aviso al `created_by`, T-W2.3/T-W2.4) y `ActivitiesModule`
- * (snapshot del payload, D4).
+ * (snapshot del payload, D4). `RealtimeWorkerModule` aporta el `RealtimePublisher`
+ * que el relay usa para emitir la señal de realtime tras un fan-out exitoso (REQ-4).
  */
 @Module({
   imports: [
@@ -47,6 +49,7 @@ import { WebhookObservabilityService } from './webhooks-observability';
     OutboxModule,
     NotificationsModule,
     ActivitiesModule,
+    RealtimeWorkerModule,
   ],
   providers: [
     WebhookSubscriptionRepository,

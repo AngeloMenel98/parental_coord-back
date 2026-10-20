@@ -51,3 +51,36 @@ describe('AppConfig — webhook keys (D12)', () => {
     );
   });
 });
+
+/**
+ * Realtime keys (design #1471, spec REQ-1/REQ-4). Both optional with defaults:
+ * `WS_PATH='/realtime'` and `REALTIME_PUBLISH_ENABLED='true'`.
+ */
+describe('AppConfig — realtime keys', () => {
+  const required = {
+    DB_HOST: 'localhost',
+    DB_PORT: '5432',
+    DB_USER: 'u',
+    DB_PASSWORD: 'p',
+    DB_NAME: 'd',
+    JWT_SECRET: 's',
+  };
+
+  it('applies the realtime defaults when the keys are absent', () => {
+    const cfg = validateConfig({ ...required });
+
+    expect(cfg.WS_PATH).toBe('/realtime');
+    expect(cfg.REALTIME_PUBLISH_ENABLED).toBe('true');
+  });
+
+  it('honours explicit realtime values', () => {
+    const cfg = validateConfig({
+      ...required,
+      WS_PATH: '/ws',
+      REALTIME_PUBLISH_ENABLED: 'false',
+    });
+
+    expect(cfg.WS_PATH).toBe('/ws');
+    expect(cfg.REALTIME_PUBLISH_ENABLED).toBe('false');
+  });
+});

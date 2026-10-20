@@ -149,6 +149,21 @@ export class AppConfig {
   @IsOptional()
   @IsString()
   WEBHOOK_SECRET_MASTER_KEY?: string;
+
+  // --- Realtime (design #1471, spec REQ-1/REQ-4) — optional, defaults here. ---
+
+  /**
+   * Path of the WebSocket realtime gateway (REQ-1). Read statically by
+   * `@WebSocketGateway`; the default is the effective value in v1.
+   */
+  @IsOptional()
+  @IsString()
+  WS_PATH?: string = '/realtime';
+
+  /** Set to 'false' to make the worker publisher a no-op (REQ-4). */
+  @IsOptional()
+  @IsString()
+  REALTIME_PUBLISH_ENABLED?: string = 'true';
 }
 
 export function validateConfig(config: Record<string, unknown>): AppConfig {
