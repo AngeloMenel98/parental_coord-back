@@ -2,6 +2,8 @@ import { Module, ValidationPipe } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { APP_GUARD, APP_PIPE } from '@nestjs/core';
 import { ThrottlerModule, ThrottlerGuard } from '@nestjs/throttler';
+
+import { BullModule } from '@nestjs/bullmq';
 import { TypeOrmModule } from '@nestjs/typeorm';
 
 import { AuthModule } from './auth/auth.module';
@@ -16,13 +18,17 @@ import { NotificationsModule } from './notifications/notifications.module';
 import { ReportsModule } from './reports/reports.module';
 import { AuditModule } from './audit/audit.module';
 import { AdminModule } from './admin/admin.module';
+import { WebhooksModule } from './webhooks/webhooks.module';
+import { RealtimeModule } from './realtime/realtime.module';
 import { validateConfig } from './config/app-config';
+import { buildBullConnection } from './queues/redis.config';
 
 @Module({
   imports: [
     ConfigModule.forRoot({
       isGlobal: true,
-      envFilePath: '.env',
+      // `ENV_FILE` permite correr el smoke e2e contra `.env.test` sin tocar dev.
+      envFilePath: process.env.ENV_FILE ?? '.env',
       validate: validateConfig,
     }),
     ThrottlerModule.forRootAsync({
@@ -46,10 +52,19 @@ import { validateConfig } from './config/app-config';
         username: cs.getOrThrow<string>('DB_USER'),
         password: cs.getOrThrow<string>('DB_PASSWORD'),
         database: cs.getOrThrow<string>('DB_NAME'),
+        // Managed Postgres (Supabase/Neon) requires SSL. Opt-in via DB_SSL=true
+        // so local dev against plain Postgres keeps working.
+        ssl: cs.get<string>('DB_SSL') === 'true' ? { rejectUnauthorized: false } : false,
         autoLoadEntities: true,
         synchronize: false,
       }),
     }),
+    BullModule.forRootAsync({
+      imports: [ConfigModule],
+      inject: [ConfigService],
+      useFactory: (cs: ConfigService) => ({ connection: buildBullConnection(cs) }),
+    }),
+
     UsersModule,
     AuthModule,
     HealthModule,
@@ -62,6 +77,8 @@ import { validateConfig } from './config/app-config';
     ReportsModule,
     AuditModule,
     AdminModule,
+    WebhooksModule,
+    RealtimeModule,
   ],
   providers: [
     {

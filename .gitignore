@@ -1,8 +1,11 @@
 node_modules/
 dist/
 .env
+.env.test
+.env.*.local
 coverage/
 *.js.map
+.vercel
 
 # K8s real secrets — use SealedSecrets or external secret managers
 k8s/*-secret.yaml

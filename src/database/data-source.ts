@@ -1,5 +1,10 @@
-import 'dotenv/config';
+import * as dotenv from 'dotenv';
 import { DataSource } from 'typeorm';
+import { join } from 'path';
+
+// `ENV_FILE` permite apuntar migraciones a otro entorno sin editar ficheros:
+//   ENV_FILE=.env.test pnpm typeorm migration:run
+dotenv.config({ path: process.env.ENV_FILE ?? '.env' });
 
 if (!process.env.DB_PASSWORD) {
   throw new Error(
@@ -15,7 +20,10 @@ export default new DataSource({
   username: process.env.DB_USER,
   password: process.env.DB_PASSWORD,
   database: process.env.DB_NAME,
-  entities: ['src/**/*.entity.ts'],
-  migrations: ['src/database/migrations/*.ts'],
+  // Managed Postgres (Supabase/Neon) requires SSL. Opt-in via DB_SSL=true
+  // so local dev against plain Postgres keeps working.
+  ssl: process.env.DB_SSL === 'true' ? { rejectUnauthorized: false } : false,
+  entities: [join(__dirname, '..', '**', '*.entity.{ts,js}')],
+  migrations: [join(__dirname, 'migrations', '*.{ts,js}')],
   synchronize: false,
 });

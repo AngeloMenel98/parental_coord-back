@@ -23,11 +23,33 @@ cp .env.example .env
 createdb parental_coordination
 
 # 4. Ejecutar migraciones
-pnpm typeorm migration:run -d src/data-source.ts
+# (el script typeorm ya incluye -d src/database/data-source.ts)
+pnpm typeorm migration:run
 
 # 5. Iniciar en desarrollo
 pnpm start:dev
 ```
+
+## Redis local (timers)
+
+Los timers de activities usan Redis + BullMQ. Para levantar un Redis de desarrollo:
+
+```bash
+docker compose up -d        # redis:7-alpine con AOF en localhost:6379
+docker compose ps           # verificar que el contenedor está healthy
+```
+
+Variables de entorno (ver `.env.example`, todas opcionales con defaults):
+
+- `REDIS_HOST` (default `localhost`)
+- `REDIS_PORT` (default `6379`)
+- `REDIS_PASSWORD` (vacío por defecto)
+- `REDIS_DB` (default `0`)
+- `REDIS_TLS` (`true`|`false`, default `false`)
+
+> ⚠️ **Pin de peers**: NO subir `bullmq` a v6 ni `@nestjs/bullmq` a v11.
+> Ambos exigen `@nestjs/core ^11` y rompen el peer de Nest 10. Mantener
+> `bullmq@^5.81.5` + `@nestjs/bullmq@^10.2.3` + `ioredis@^5.11.1`.
 
 ## Endpoints
 
@@ -55,8 +77,8 @@ Ver `/home/angelo/ERD_REVISADO.md` para el detalle completo del esquema.
 
 - `pnpm build` — compilar
 - `pnpm start:dev` — desarrollo con watch
-- `pnpm typeorm migration:generate -d src/data-source.ts` — generar migración desde entidades
-- `pnpm typeorm migration:run -d src/data-source.ts` — aplicar migraciones
+- `pnpm typeorm migration:generate -d src/database/data-source.ts` — generar migración desde entidades
+- `pnpm typeorm migration:run` — aplicar migraciones (el script ya incluye `-d src/database/data-source.ts`)
 - `pnpm lint` / `pnpm test` — calidad y tests
 
 ## Estructura

@@ -1,8 +1,7 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { INestApplication, ValidationPipe } from '@nestjs/common';
+import { WsAdapter } from '@nestjs/platform-ws';
 import * as request from 'supertest';
-import { TypeOrmModule } from '@nestjs/typeorm';
-import { ConfigModule } from '@nestjs/config';
 import { APP_GUARD } from '@nestjs/core';
 import { ThrottlerGuard } from '@nestjs/throttler';
 
@@ -20,6 +19,8 @@ describe('App (e2e)', () => {
       .compile();
 
     app = moduleFixture.createNestApplication();
+    // AppModule now registers the realtime gateway → init requires a WS adapter
+    app.useWebSocketAdapter(new WsAdapter(app));
     app.setGlobalPrefix('api');
     app.useGlobalPipes(
       new ValidationPipe({

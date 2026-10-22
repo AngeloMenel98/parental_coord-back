@@ -1,6 +1,7 @@
 import { NestFactory } from '@nestjs/core';
 import { Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { WsAdapter } from '@nestjs/platform-ws';
 import helmet from 'helmet';
 import { AppModule } from './app.module';
 import { configureApp } from './app.setup';
@@ -8,6 +9,8 @@ import { HttpExceptionFilter } from './common/filters/http-exception.filter';
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
+  // Native WebSocket adapter for the realtime gateway (platform-ws, no Socket.IO)
+  app.useWebSocketAdapter(new WsAdapter(app));
   const configService = app.get(ConfigService);
   const logger = new Logger('Bootstrap');
 

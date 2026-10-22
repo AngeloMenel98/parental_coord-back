@@ -1,14 +1,14 @@
 import { Controller, Get, HttpException, HttpStatus } from '@nestjs/common';
-import { DataSource } from 'typeorm';
+import { DatabaseProbe } from './database-probe';
 
 @Controller('health')
 export class HealthController {
-  constructor(private readonly dataSource: DataSource) {}
+  constructor(private readonly databaseProbe: DatabaseProbe) {}
 
   @Get()
   async check() {
     try {
-      await this.dataSource.query('SELECT 1');
+      await this.databaseProbe.ping();
       return { status: 'ok', db: 'ok' };
     } catch {
       throw new HttpException(

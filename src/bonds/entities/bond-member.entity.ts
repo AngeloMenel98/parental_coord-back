@@ -11,7 +11,8 @@ import { UserEntity } from '../../users/entities/user.entity';
 
 export enum BondMemberRole {
   PROGENITOR = 'progenitor',
-  COORDINATOR = 'coordinator',
+  COORDINATOR = 'coordinador',
+  /** FUTURE: TS-only value, never persisted (the DB enum has no `third_party`). */
   THIRD_PARTY = 'third_party',
 }
 

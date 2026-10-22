@@ -10,6 +10,19 @@ export interface JwtPayload {
   systemRole: string;
 }
 
+/**
+ * Pure mapping from a verified JWT payload to the request-scoped `AuthUser`
+ * (design #1471, REQ-1). Shared with the realtime WS auth service so REST and
+ * WebSocket handshakes resolve the same user shape from the same token.
+ */
+export function toAuthUser(payload: JwtPayload): AuthUser {
+  return {
+    id: payload.sub,
+    email: payload.email,
+    systemRole: payload.systemRole,
+  };
+}
+
 @Injectable()
 export class JwtStrategy extends PassportStrategy(Strategy) {
   constructor(config: ConfigService) {
@@ -21,10 +34,6 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
   }
 
   async validate(payload: JwtPayload): Promise<AuthUser> {
-    return {
-      id: payload.sub,
-      email: payload.email,
-      systemRole: payload.systemRole,
-    };
+    return toAuthUser(payload);
   }
 }

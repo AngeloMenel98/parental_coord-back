@@ -1,12 +1,12 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { BadRequestException, UnauthorizedException } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
-import { getRepositoryToken } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
 
 import { AuthService } from './auth.service';
 import { UserEntity, SystemRole } from '../users/entities/user.entity';
 import { PersonalDataEntity } from '../users/entities/personal-data.entity';
+import { UsersRepository } from '../users/repositories/users.repository';
+import { PersonalDataRepository } from '../users/repositories/personal-data.repository';
 
 jest.mock('bcryptjs', () => ({
   hash: jest.fn().mockResolvedValue('$2a$10$hashedpassword'),
@@ -17,21 +17,19 @@ import * as bcrypt from 'bcryptjs';
 
 describe('AuthService', () => {
   let service: AuthService;
-  let userRepo: jest.Mocked<Repository<UserEntity>>;
-  let personalDataRepo: jest.Mocked<Repository<PersonalDataEntity>>;
+  let userRepo: jest.Mocked<UsersRepository>;
+  let personalDataRepo: jest.Mocked<PersonalDataRepository>;
   let jwtService: jest.Mocked<JwtService>;
 
   beforeEach(async () => {
     userRepo = {
-      findOneBy: jest.fn(),
-      create: jest.fn(),
-      save: jest.fn(),
+      findOneByEmail: jest.fn(),
+      createAndSave: jest.fn(),
     } as any;
 
     personalDataRepo = {
-      findOneBy: jest.fn(),
-      create: jest.fn(),
-      save: jest.fn(),
+      findOneByUserId: jest.fn(),
+      createAndSave: jest.fn(),
     } as any;
 
     jwtService = {
@@ -41,8 +39,8 @@ describe('AuthService', () => {
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         AuthService,
-        { provide: getRepositoryToken(UserEntity), useValue: userRepo },
-        { provide: getRepositoryToken(PersonalDataEntity), useValue: personalDataRepo },
+        { provide: UsersRepository, useValue: userRepo },
+        { provide: PersonalDataRepository, useValue: personalDataRepo },
         { provide: JwtService, useValue: jwtService },
       ],
     }).compile();
@@ -56,17 +54,15 @@ describe('AuthService', () => {
 
   describe('register', () => {
     it('should register a new user and return access token', async () => {
-      userRepo.findOneBy.mockResolvedValue(null);
-      userRepo.create.mockReturnValue({
+      userRepo.findOneByEmail.mockResolvedValue(null);
+      userRepo.createAndSave.mockResolvedValue({
         id: 'user-1',
         email: 'test@example.com',
         systemRole: SystemRole.USER,
         isActive: true,
       } as UserEntity);
-      userRepo.save.mockResolvedValue({} as UserEntity);
-      personalDataRepo.create.mockReturnValue({} as PersonalDataEntity);
-      personalDataRepo.save.mockResolvedValue({} as PersonalDataEntity);
-      personalDataRepo.findOneBy.mockResolvedValue({
+      personalDataRepo.createAndSave.mockResolvedValue({} as PersonalDataEntity);
+      personalDataRepo.findOneByUserId.mockResolvedValue({
         firstName: 'John',
         lastName: 'Doe',
       } as PersonalDataEntity);
@@ -85,7 +81,7 @@ describe('AuthService', () => {
     });
 
     it('should throw BadRequestException for duplicate email', async () => {
-      userRepo.findOneBy.mockResolvedValue({
+      userRepo.findOneByEmail.mockResolvedValue({
         id: 'existing',
         email: 'test@example.com',
       } as UserEntity);
@@ -111,8 +107,8 @@ describe('AuthService', () => {
         isActive: true,
       } as UserEntity;
 
-      userRepo.findOneBy.mockResolvedValue(mockUser);
-      personalDataRepo.findOneBy.mockResolvedValue(null);
+      userRepo.findOneByEmail.mockResolvedValue(mockUser);
+      personalDataRepo.findOneByUserId.mockResolvedValue(null);
 
       (bcrypt.compare as jest.Mock).mockResolvedValue(true);
 
@@ -126,7 +122,7 @@ describe('AuthService', () => {
     });
 
     it('should throw UnauthorizedException for invalid credentials', async () => {
-      userRepo.findOneBy.mockResolvedValue(null);
+      userRepo.findOneByEmail.mockResolvedValue(null);
 
       await expect(
         service.login({
