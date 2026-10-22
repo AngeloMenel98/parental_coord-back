@@ -7,6 +7,19 @@ import { ThrottlerGuard } from '@nestjs/throttler';
 
 import { AppModule } from '../src/app.module';
 
+/** Fila del read path de notificaciones (`GET /api/notifications`). */
+interface NotificationItem {
+  id: string;
+  type: string;
+  title: string;
+  body: string;
+  refEntityType: string;
+  refEntityId: string | null;
+  bondId: string | null;
+  isRead: boolean;
+  createdAt: string;
+}
+
 /**
  * SMOKE E2E contra Postgres REAL (DB aislada `parental_coordination_test`).
  *
@@ -31,8 +44,18 @@ describe('Smoke (e2e) — flujo real sobre Postgres', () => {
   const run = Date.now();
 
   // ── Datos únicos por corrida ────────────────────────────────────────────
-  const userA = { email: `smoke-a-${run}@test.dev`, password: 'password123', firstName: 'Ana', lastName: 'Smoke' };
-  const userB = { email: `smoke-b-${run}@test.dev`, password: 'password123', firstName: 'Beto', lastName: 'Smoke' };
+  const userA = {
+    email: `smoke-a-${run}@test.dev`,
+    password: 'password123',
+    firstName: 'Ana',
+    lastName: 'Smoke',
+  };
+  const userB = {
+    email: `smoke-b-${run}@test.dev`,
+    password: 'password123',
+    firstName: 'Beto',
+    lastName: 'Smoke',
+  };
   const admin = { email: 'admin@admin.com', password: 'admin123' };
 
   let tokenA = '';
@@ -76,12 +99,18 @@ describe('Smoke (e2e) — flujo real sobre Postgres', () => {
 
     await server().post('/api/auth/register').send(userB).expect(201);
 
-    const loginA = await server().post('/api/auth/login').send({ email: userA.email, password: userA.password }).expect(201);
+    const loginA = await server()
+      .post('/api/auth/login')
+      .send({ email: userA.email, password: userA.password })
+      .expect(201);
     tokenA = loginA.body.access_token;
     idA = loginA.body.user.id;
     expect(loginA.body.user.systemRole).toBe('user');
 
-    const loginB = await server().post('/api/auth/login').send({ email: userB.email, password: userB.password }).expect(201);
+    const loginB = await server()
+      .post('/api/auth/login')
+      .send({ email: userB.email, password: userB.password })
+      .expect(201);
     tokenB = loginB.body.access_token;
     idB = loginB.body.user.id;
 
@@ -110,13 +139,19 @@ describe('Smoke (e2e) — flujo real sobre Postgres', () => {
     childId = child.body.id;
     expect(childId).toBeTruthy();
 
-    const bonds = await server().get('/api/bonds').set('Authorization', `Bearer ${tokenA}`).expect(200);
+    const bonds = await server()
+      .get('/api/bonds')
+      .set('Authorization', `Bearer ${tokenA}`)
+      .expect(200);
     expect(Array.isArray(bonds.body)).toBe(true);
     expect(bonds.body.some((b: { id: string }) => b.id === bondId)).toBe(true);
   });
 
   it('B.4 — GET /categories devuelve las categorías semilla', async () => {
-    const cats = await server().get('/api/categories').set('Authorization', `Bearer ${tokenA}`).expect(200);
+    const cats = await server()
+      .get('/api/categories')
+      .set('Authorization', `Bearer ${tokenA}`)
+      .expect(200);
     expect(Array.isArray(cats.body)).toBe(true);
     expect(cats.body.length).toBeGreaterThan(0);
     categoryId = cats.body[0].id;
@@ -167,7 +202,105 @@ describe('Smoke (e2e) — flujo real sobre Postgres', () => {
     expect(list.body.some((a: { id: string }) => a.id === activityId)).toBe(true);
   });
 
-  it('B.8 — GET /health reporta DB ok (sin tolerancia a 503)', async () => {
+  it('B.8 — read path de notificaciones: lista, marca leída, cuenta, scoping y 400/401', async () => {
+    // B.5 creó la notificación `activity_assigned` para el ASSIGNEE (idA).
+    const list = await server()
+      .get('/api/notifications')
+      .set('Authorization', `Bearer ${tokenA}`)
+      .expect(200);
+
+    expect(list.body).toHaveProperty('items');
+    expect(list.body.total).toBeGreaterThanOrEqual(1);
+    expect(list.body.limit).toBe(20);
+    expect(list.body.offset).toBe(0);
+    expect(list.body.nextCursor).toBeNull();
+
+    const items = list.body.items as NotificationItem[];
+    expect(items.length).toBeGreaterThanOrEqual(1);
+    // Orden determinista: created_at DESC, id DESC.
+    for (let i = 1; i < items.length; i++) {
+      expect(items[i - 1].createdAt >= items[i].createdAt).toBe(true);
+    }
+
+    const target = items.find((n) => n.type === 'activity_assigned');
+    expect(target).toBeDefined();
+    expect(target!.refEntityType).toBe('activity');
+    expect(target!.refEntityId).toBe(activityId);
+    expect(target!.isRead).toBe(false);
+
+    const before = await server()
+      .get('/api/notifications/unread-count')
+      .set('Authorization', `Bearer ${tokenA}`)
+      .expect(200);
+    expect(before.body.unreadCount).toBeGreaterThanOrEqual(1);
+
+    // Conteo acotado por bond (la notificación de B.5 pertenece a este bond).
+    const beforeBond = await server()
+      .get(`/api/notifications/unread-count?bondId=${bondId}`)
+      .set('Authorization', `Bearer ${tokenA}`)
+      .expect(200);
+    expect(beforeBond.body.unreadCount).toBeGreaterThanOrEqual(1);
+    expect(beforeBond.body.unreadCount).toBeLessThanOrEqual(before.body.unreadCount);
+
+    const marked = await server()
+      .patch(`/api/notifications/${target!.id}/read`)
+      .set('Authorization', `Bearer ${tokenA}`)
+      .expect(200);
+    expect(marked.body).toEqual({ id: target!.id, isRead: true });
+
+    const after = await server()
+      .get('/api/notifications/unread-count')
+      .set('Authorization', `Bearer ${tokenA}`)
+      .expect(200);
+    expect(after.body.unreadCount).toBe(before.body.unreadCount - 1);
+
+    const afterBond = await server()
+      .get(`/api/notifications/unread-count?bondId=${bondId}`)
+      .set('Authorization', `Bearer ${tokenA}`)
+      .expect(200);
+    expect(afterBond.body.unreadCount).toBe(beforeBond.body.unreadCount - 1);
+
+    // Scoping estricto: la notificación de A no aparece en la lista de B.
+    const listB = await server()
+      .get('/api/notifications')
+      .set('Authorization', `Bearer ${tokenB}`)
+      .expect(200);
+    expect(listB.body.total).toBe(0);
+    expect((listB.body.items as NotificationItem[]).some((n) => n.id === target!.id)).toBe(false);
+
+    // `limit=0` fuera de rango ⇒ 400 (ValidationPipe global, nunca 422).
+    await server()
+      .get('/api/notifications?limit=0')
+      .set('Authorization', `Bearer ${tokenA}`)
+      .expect(400);
+    // `unreadOnly` no booleano ⇒ 400 (el @Transform lanza BadRequestException).
+    await server()
+      .get('/api/notifications?unreadOnly=maybe')
+      .set('Authorization', `Bearer ${tokenA}`)
+      .expect(400);
+
+    // `ParseUUIDPipe`: id no-UUID ⇒ 400 (no 404, no 500).
+    await server()
+      .patch('/api/notifications/no-es-un-uuid/read')
+      .set('Authorization', `Bearer ${tokenA}`)
+      .expect(400);
+    // `ParseUUIDPipe` opcional en `unread-count`: bondId no-UUID ⇒ 400.
+    await server()
+      .get('/api/notifications/unread-count?bondId=no-es-un-uuid')
+      .set('Authorization', `Bearer ${tokenA}`)
+      .expect(400);
+    // `unread-count` se ata como DTO ⇒ un query param desconocido (aquí el `bondId`
+    // mal escrito) ⇒ 400, no se ignora en silencio y devuelve el conteo global.
+    await server()
+      .get(`/api/notifications/unread-count?bondid=${bondId}`)
+      .set('Authorization', `Bearer ${tokenA}`)
+      .expect(400);
+
+    // Sin credencial ⇒ 401.
+    await server().get('/api/notifications').expect(401);
+  });
+
+  it('B.9 — GET /health reporta DB ok (sin tolerancia a 503)', async () => {
     const health = await server().get('/api/health').expect(200);
     expect(health.body).toHaveProperty('status', 'ok');
     expect(health.body).toHaveProperty('db', 'ok');
