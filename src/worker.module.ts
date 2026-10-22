@@ -7,6 +7,7 @@ import { ActivitiesModule } from './activities/activities.module';
 import { UsersModule } from './users/users.module';
 import { ActivityTimersWorkerModule } from './queues/activity-timers/activity-timers-worker.module';
 import { WebhooksWorkerModule } from './webhooks/webhooks-worker.module';
+import { NotificationsWorkerModule } from './notifications/notifications-worker.module';
 import { validateConfig } from './config/app-config';
 import { buildBullConnection } from './queues/redis.config';
 
@@ -40,6 +41,7 @@ import { buildBullConnection } from './queues/redis.config';
     UsersModule,
     ActivityTimersWorkerModule,
     WebhooksWorkerModule,
+    NotificationsWorkerModule,
   ],
 })
 export class WorkerModule {}

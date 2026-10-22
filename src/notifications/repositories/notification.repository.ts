@@ -199,6 +199,44 @@ export class NotificationRepository extends BaseRepository<NotificationEntity> {
   }
 
   /**
+   * Purga las notificaciones ANTERIORES al corte (retención, slice 1).
+   *
+   * Política vigente (ruling #1553): se borran TODAS las filas más antiguas
+   * que la ventana de retención, LEÍDAS Y NO LEÍDAS — una notificación sin
+   * leer que envejezca más allá de la ventana también se elimina (consecuencia
+   * aceptada explícitamente en la spec "Retention policy"). El criterio es
+   * exclusivamente TEMPORAL: `source_event_id` es irrelevante para la
+   * retención, porque en esta slice la columna es NULL en todas las filas
+   * (nadie la escribe todavía) ⇒ no puede cambiar el resultado del borrado.
+   *
+   * El `options.onlyRead` existe para que un cambio de política futuro
+   * ("las leídas a N días, las no leídas a M días") sea una SEGUNDA llamada
+   * con un SEGUNDO corte, NO una reescritura de este método.
+   *
+   * El SQL vive AQUÍ (regla de casa: los servicios nunca tocan TypeORM); el
+   * servicio de retención resuelve el corte/política y registra el recuento.
+   *
+   * @param cutoff instante EXCLUSIVO: se borra lo que sea anterior a él.
+   * @param options.onlyRead `true` ⇒ añade `AND is_read = true`.
+   * @returns nº de filas borradas (0 si no había ninguna).
+   */
+  async purgeOlderThan(cutoff: Date, options: { onlyRead?: boolean } = {}): Promise<number> {
+    const qb = this.notifRepo
+      .createQueryBuilder()
+      .delete()
+      .from(NotificationEntity)
+      .where('created_at < :cutoff', { cutoff });
+
+    if (options.onlyRead === true) {
+      qb.andWhere('is_read = true');
+    }
+
+    const result = await qb.execute();
+
+    return result.affected ?? 0;
+  }
+
+  /**
    * QueryBuilder con el scoping por `user_id` + los filtros opcionales.
    *
    * Se construye uno por consulta (filas y `total`) para que el `COUNT` no
