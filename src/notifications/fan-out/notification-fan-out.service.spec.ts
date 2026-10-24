@@ -258,4 +258,27 @@ describe('NotificationFanOutService', () => {
     // should have attempted for both recipients
     expect(notificationRepository.createFromEvent).toHaveBeenCalledTimes(2);
   });
+
+  describe('unexpected failures propagate so the outbox event is retried', () => {
+    it('insert failure -> rejects instead of silently losing the notification', async () => {
+      notificationRepository.createFromEvent.mockRejectedValue(new Error('insert failed'));
+      const event = makeEvent({ eventType: ACTIVITY_EVENT.ASSIGNED });
+
+      await expect(service.handleOutboxEvent(event, manager)).rejects.toThrow('insert failed');
+    });
+
+    it('activity load failure -> rejects instead of reading as "no notifications"', async () => {
+      activitiesRepository.findById.mockRejectedValue(new Error('select failed'));
+      const event = makeEvent({ eventType: ACTIVITY_EVENT.ASSIGNED });
+
+      await expect(service.handleOutboxEvent(event, manager)).rejects.toThrow('select failed');
+    });
+
+    it('recipient resolution failure -> rejects instead of an empty recipient list', async () => {
+      bondMembersRepository.findActiveMemberIds.mockRejectedValue(new Error('members failed'));
+      const event = makeEvent({ eventType: ACTIVITY_EVENT.ASSIGNED });
+
+      await expect(service.handleOutboxEvent(event, manager)).rejects.toThrow('members failed');
+    });
+  });
 });

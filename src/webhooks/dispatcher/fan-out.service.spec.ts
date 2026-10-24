@@ -8,6 +8,7 @@ import { WebhookDeliveryRepository } from '../delivery/repositories/webhook-deli
 import { WEBHOOK_MAX_ATTEMPTS } from '../delivery/backoff.strategy';
 import { WEBHOOK_BACKOFF_TYPE } from '../delivery/delivery.job';
 import { FanOutService, selectMatchedSubscriptions } from './fan-out.service';
+import { NotificationFanOutService } from '../../notifications/fan-out/notification-fan-out.service';
 
 function sub(id: string, eventTypes: string[]): WebhookSubscriptionEntity {
   return { id, bondId: 'bond1', eventTypes } as unknown as WebhookSubscriptionEntity;
@@ -68,6 +69,7 @@ describe('FanOutService (T-W1.18, REQ-DISP-2/3/4)', () => {
   };
   let outbox: { markDispatched: jest.Mock };
   let queue: { add: jest.Mock };
+  let notificationFanOut: { handleOutboxEvent: jest.Mock };
   let service: FanOutService;
   let manager: object;
   let order: string[];
@@ -86,12 +88,14 @@ describe('FanOutService (T-W1.18, REQ-DISP-2/3/4)', () => {
       }),
     };
     queue = { add: jest.fn(async () => undefined) };
+    notificationFanOut = { handleOutboxEvent: jest.fn().mockResolvedValue(undefined) };
 
     service = new FanOutService(
       subscriptions as unknown as WebhookSubscriptionRepository,
       deliveries as unknown as WebhookDeliveryRepository,
       outbox as unknown as OutboxEventRepository,
       queue as unknown as Queue,
+      notificationFanOut as unknown as NotificationFanOutService,
     );
   });
 
@@ -122,6 +126,7 @@ describe('FanOutService (T-W1.18, REQ-DISP-2/3/4)', () => {
       expect.anything(),
     );
     expect(outbox.markDispatched).toHaveBeenCalledWith('evt1', manager);
+    expect(notificationFanOut.handleOutboxEvent).toHaveBeenCalledWith(event(), manager);
   });
 
   it('enqueues after commit with a deterministic jobId, 8 attempts and backoff', async () => {
@@ -168,5 +173,15 @@ describe('FanOutService (T-W1.18, REQ-DISP-2/3/4)', () => {
     queue.add.mockRejectedValue(new Error('redis down'));
 
     await expect(service.dispatch(event())).resolves.toBe(1);
+  });
+
+  it('notification fan-out failure -> rejects and does NOT mark dispatched (relay retries)', async () => {
+    subscriptions.findActiveByBond.mockResolvedValue([sub('s1', ['*'])]);
+    notificationFanOut.handleOutboxEvent.mockRejectedValue(new Error('notif insert failed'));
+
+    await expect(service.dispatch(event())).rejects.toThrow('notif insert failed');
+
+    expect(outbox.markDispatched).not.toHaveBeenCalled();
+    expect(queue.add).not.toHaveBeenCalled();
   });
 });

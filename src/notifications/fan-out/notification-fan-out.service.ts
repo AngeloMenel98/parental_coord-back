@@ -67,26 +67,24 @@ export class NotificationFanOutService {
 
     const { title, body } = renderNotificationText(rule, activity.title);
 
+    // Los duplicados no lanzan: `createFromEvent` devuelve `null` por el
+    // ON CONFLICT DO NOTHING. Cualquier error real debe propagarse para que
+    // `Relay.run` no marque el evento como despachado y lo reintente: tragarse
+    // el fallo aquí perdería la notificación de forma permanente.
     for (const userId of recipientIds) {
-      try {
-        await this.notificationRepository.createFromEvent(
-          {
-            userId,
-            bondId: event.bondId,
-            type: rule.type,
-            title,
-            body,
-            refEntityType: 'activity',
-            refEntityId: activity.id,
-            sourceEventId: event.id,
-          },
-          manager,
-        );
-      } catch (error) {
-        // Never throw - conflicts are expected and handled by createFromEvent returning null
-        // Any other unexpected error should not abort the dispatch transaction
-        this.logger.debug(`Failed to create notification for user ${userId}: ${error}`);
-      }
+      await this.notificationRepository.createFromEvent(
+        {
+          userId,
+          bondId: event.bondId,
+          type: rule.type,
+          title,
+          body,
+          refEntityType: 'activity',
+          refEntityId: activity.id,
+          sourceEventId: event.id,
+        },
+        manager,
+      );
     }
   }
 
@@ -104,19 +102,13 @@ export class NotificationFanOutService {
     return true;
   }
 
+  /** `findById` ya filtra soft-deleted; el fallback sólo distingue "borrada" de "inexistente". */
   private async loadActivity(activityId: string): Promise<ActivityEntity | null> {
-    try {
-      // Try to find with relations if possible
-      const activity = await this.activitiesRepository.findById(activityId);
-      if (activity) {
-        return activity;
-      }
-      // Also check including deleted? The spec says missing activity/soft-deleted -> no inserts
-      return await this.activitiesRepository.findByIdIncludingDeleted(activityId);
-    } catch (error) {
-      this.logger.debug(`Error loading activity ${activityId}: ${error}`);
-      return null;
+    const activity = await this.activitiesRepository.findById(activityId);
+    if (activity) {
+      return activity;
     }
+    return this.activitiesRepository.findByIdIncludingDeleted(activityId);
   }
 
   private async buildRecipientContext(
@@ -124,32 +116,15 @@ export class NotificationFanOutService {
     activity: ActivityEntity,
     actorId: string | null,
   ): Promise<RecipientContext> {
-    const context: RecipientContext = {
+    const coordinator = await this.bondMembersRepository.findCoordinator(bondId);
+    const memberIds = await this.bondMembersRepository.findActiveMemberIds(bondId);
+
+    return {
       assignedTo: activity.assignedTo ?? null,
       createdBy: activity.createdBy ?? null,
       actorId,
+      coordinatorId: coordinator ? coordinator.userId : null,
+      memberIds: memberIds ?? [],
     };
-
-    try {
-      const coordinator = await this.bondMembersRepository.findCoordinator(bondId);
-      if (coordinator) {
-        context.coordinatorId = coordinator.userId;
-      } else {
-        context.coordinatorId = null;
-      }
-    } catch (error) {
-      this.logger.debug(`Error loading coordinator for bond ${bondId}: ${error}`);
-      context.coordinatorId = null;
-    }
-
-    try {
-      const memberIds = await this.bondMembersRepository.findActiveMemberIds(bondId);
-      context.memberIds = memberIds ?? [];
-    } catch (error) {
-      this.logger.debug(`Error loading active members for bond ${bondId}: ${error}`);
-      context.memberIds = [];
-    }
-
-    return context;
   }
 }
