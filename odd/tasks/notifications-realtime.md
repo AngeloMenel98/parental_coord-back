@@ -50,9 +50,9 @@ subscription management from the client.
 
 | ID  | Specs   | Route  | Status  | Commit |
 | --- | ------- | ------ | ------- | ------ |
-| T1  | S1-S3   | inline | done    | — (hash en el commit de cierre) |
-| T2  | S4-S5   | inline | done    | — (hash en el commit de cierre) |
-| T3  | S6-S7   | inline | pending | — (front) |
+| T1  | S1-S3   | inline | done    | `3ce43fb` |
+| T2  | S4-S5   | inline | done    | `9660811` |
+| T3  | S6-S7   | inline | done    | `58a9611` (front) |
 
 ## Log
 
@@ -74,3 +74,18 @@ subscription management from the client.
   `realtime.gateway.ts` en stash: 5 tests fallan (frame desconocido reemitido, y los
   cuatro de entrega por usuario). GREEN después: `npx jest src/realtime` → 7 suites,
   54 tests verdes; `pnpm build` → exit 0.
+- **L6 (evidencia T3, front).** RED observado simulando el ruteo viejo (todo frame al
+  coalescer de actividades): el test nuevo falla en
+  `RealtimeConnectionManagerTest.kt:206` ("una notificación no debe recargar
+  actividades"). GREEN después: `./gradlew :shared:testDebugUnitTest` → 153 tests,
+  0 fallos (8 nuevos de parseo + 1 de ruteo); `:androidApp:assembleDebug` →
+  BUILD SUCCESSFUL.
+- **L7 (cierre back).** `pnpm test` → 69 suites, 755 tests, 0 fallos.
+- **Pendiente (slice 3, follow-up).** `notificationSignals` todavía no tiene consumidor:
+  el manager del front vive dentro de la pestaña Actividades y el badge está en Home, así
+  que suscribirlo exige subir el manager al scope de sesión en `App.kt`. Hasta entonces la
+  slice elimina el refetch espurio y deja el punto de extensión probado, pero el badge
+  sigue actualizándose sólo por su poll de 30 s y su recarga al abrir.
+- **Riesgo.** Item 3 (contrato consumido): el frame `notification.created` y el sobre por
+  `type` son un contrato entre back y front; un cliente viejo los descarta (no rompe), pero
+  cambiar la forma después exige versionar `v`.
