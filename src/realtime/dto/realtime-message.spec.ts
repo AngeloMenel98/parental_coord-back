@@ -50,12 +50,14 @@ describe('parseRealtimeFrame', () => {
   });
 
   it('drops an activity frame without a bondId (nothing to resolve an audience from)', () => {
-    const { bondId, ...withoutBond } = ACTIVITY;
+    const withoutBond = { ...ACTIVITY } as Record<string, unknown>;
+    delete withoutBond.bondId;
     expect(parseRealtimeFrame(JSON.stringify(withoutBond))).toBeNull();
   });
 
   it('drops a notification frame without the recipient (nothing to route it to)', () => {
-    const { userId, ...withoutUser } = NOTIFICATION;
+    const withoutUser = { ...NOTIFICATION } as Record<string, unknown>;
+    delete withoutUser.userId;
     expect(parseRealtimeFrame(JSON.stringify(withoutUser))).toBeNull();
   });
 

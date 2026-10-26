@@ -293,15 +293,13 @@ describe('NotificationFanOutService', () => {
     });
 
     it('a deduplicated insert (null) contributes no frame', async () => {
-      notificationRepository.createFromEvent
-        .mockResolvedValueOnce(null)
-        .mockResolvedValueOnce({
-          id: 'n-u3',
-          userId: 'u3',
-          type: 'activity_assigned',
-          refEntityType: 'activity',
-          refEntityId: 'a1',
-        });
+      notificationRepository.createFromEvent.mockResolvedValueOnce(null).mockResolvedValueOnce({
+        id: 'n-u3',
+        userId: 'u3',
+        type: 'activity_assigned',
+        refEntityType: 'activity',
+        refEntityId: 'a1',
+      });
       const event = makeEvent({ eventType: ACTIVITY_EVENT.ASSIGNED });
 
       const created = await service.handleOutboxEvent(event, manager);

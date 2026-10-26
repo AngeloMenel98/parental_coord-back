@@ -73,7 +73,9 @@ export class RealtimePublisher implements OnModuleInit, OnModuleDestroy {
 
   /** Single publish path shared by every frame type; swallows Redis failures. */
   private async send(
-    message: ReturnType<typeof buildActivityChangedMessage> | ReturnType<typeof buildNotificationCreatedMessage>,
+    message:
+      | ReturnType<typeof buildActivityChangedMessage>
+      | ReturnType<typeof buildNotificationCreatedMessage>,
     label: string,
   ): Promise<void> {
     if (!this.enabled || !this.redis) return;
