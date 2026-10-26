@@ -4,7 +4,7 @@ import Redis, { RedisOptions } from 'ioredis';
 import { Observable, Subject } from 'rxjs';
 
 import { buildBullConnection } from '../queues/redis.config';
-import { ActivityChangedMessageV1 } from './dto/activity-changed-message';
+import { RealtimeMessageV1, parseRealtimeFrame } from './dto/realtime-message';
 import { REALTIME_CHANNEL } from './realtime.constants';
 
 /**
@@ -20,18 +20,19 @@ import { REALTIME_CHANNEL } from './realtime.constants';
  * explicit call is belt-and-braces per design). `onModuleDestroy` calls
  * `disconnect()` to release the open handle (design open-question note).
  *
- * Parsed frames are emitted through the `messages$` observable; a malformed
- * JSON frame is logged and dropped (pub/sub is at-most-once — the client
- * resyncs via REST anyway, REQ-5).
+ * Parsed frames are emitted through the `messages$` observable. Every frame type
+ * on the channel is validated before it is forwarded: invalid JSON, an unknown
+ * `type`, or a known type missing its identity fields is logged and dropped
+ * (pub/sub is at-most-once — the client resyncs via REST anyway, REQ-5).
  */
 @Injectable()
 export class RealtimeSubscriberService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(RealtimeSubscriberService.name);
   private readonly redis: Redis;
-  private readonly subject = new Subject<ActivityChangedMessageV1>();
+  private readonly subject = new Subject<RealtimeMessageV1>();
 
-  /** Parsed `activity.changed` frames pulled off the Redis channel. */
-  readonly messages$: Observable<ActivityChangedMessageV1> = this.subject.asObservable();
+  /** Parsed, validated frames pulled off the Redis channel. */
+  readonly messages$: Observable<RealtimeMessageV1> = this.subject.asObservable();
 
   constructor(config: ConfigService) {
     // Dedicated client: own connection options built from the same REDIS_* env.
@@ -39,13 +40,23 @@ export class RealtimeSubscriberService implements OnModuleInit, OnModuleDestroy 
 
     this.redis.on('message', (channel: string, raw: string) => {
       if (channel !== REALTIME_CHANNEL) return;
+
+      let message: RealtimeMessageV1 | null;
       try {
-        this.subject.next(JSON.parse(raw) as ActivityChangedMessageV1);
+        message = parseRealtimeFrame(raw);
       } catch (error) {
         this.logger.warn(
           `Dropped malformed realtime frame: ${error instanceof Error ? error.message : String(error)}`,
         );
+        return;
       }
+
+      if (!message) {
+        this.logger.warn('Dropped unrecognised realtime frame (unknown type or missing fields)');
+        return;
+      }
+
+      this.subject.next(message);
     });
 
     this.redis.on('ready', () => {

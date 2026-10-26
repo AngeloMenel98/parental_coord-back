@@ -51,7 +51,7 @@ subscription management from the client.
 | ID  | Specs   | Route  | Status  | Commit |
 | --- | ------- | ------ | ------- | ------ |
 | T1  | S1-S3   | inline | done    | — (hash en el commit de cierre) |
-| T2  | S4-S5   | inline | pending | —      |
+| T2  | S4-S5   | inline | done    | — (hash en el commit de cierre) |
 | T3  | S6-S7   | inline | pending | — (front) |
 
 ## Log
@@ -70,3 +70,7 @@ subscription management from the client.
   `npx jest src/realtime src/notifications/fan-out src/webhooks/dispatcher` → 14 suites,
   135 tests verdes; `pnpm build` → exit 0. El spec del DTO nuevo pasa en ambos estados
   porque el builder sólo depende del archivo nuevo (no había código previo que romper).
+- **L5 (evidencia T2).** RED observado con `realtime-subscriber.service.ts` y
+  `realtime.gateway.ts` en stash: 5 tests fallan (frame desconocido reemitido, y los
+  cuatro de entrega por usuario). GREEN después: `npx jest src/realtime` → 7 suites,
+  54 tests verdes; `pnpm build` → exit 0.
