@@ -1,10 +1,15 @@
 # NetworkPolicy — default deny all, allow only what's needed.
 #
-# Ingress: only the nginx ingress controller can reach the app (port 3000).
-# Egress:
-#   - app → postgres (port 5432)
-#   - app → kube-dns (port 53 TCP+UDP)
-# Everything else is denied by the default deny-all policy.
+# Policies in this file:
+#   - default-deny-all ................ every pod, ingress and egress
+#   - parental-coordination-back-allow  API: ingress from ingress-nginx :3000;
+#                                       egress to postgres :5432, redis :6379, DNS
+#   - parental-coordination-worker-allow worker: egress to postgres :5432,
+#                                       redis :6379, DNS (no ingress at all)
+#   - redis-allow ..................... Redis: ingress from API and worker :6379
+#
+# Postgres and Redis have no egress rules beyond DNS by default (default-deny
+# covers them); that is intentional — they are leaf data stores.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -48,6 +53,14 @@ spec:
       ports:
         - protocol: TCP
           port: 5432
+    # Allow app → redis (port 6379): BullMQ enqueue + realtime pub/sub
+    - to:
+        - podSelector:
+            matchLabels:
+              app: redis
+      ports:
+        - protocol: TCP
+          port: 6379
     # Allow app → DNS (port 53 TCP and UDP)
     - to:
         - namespaceSelector: {}
@@ -56,3 +69,64 @@ spec:
           port: 53
         - protocol: UDP
           port: 53
+---
+# The worker accepts no inbound traffic (consumers only), so this policy
+# declares egress only.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: parental-coordination-worker-allow
+  labels:
+    app: parental-coordination-worker
+spec:
+  podSelector:
+    matchLabels:
+      app: parental-coordination-worker
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app: postgres
+      ports:
+        - protocol: TCP
+          port: 5432
+    - to:
+        - podSelector:
+            matchLabels:
+              app: redis
+      ports:
+        - protocol: TCP
+          port: 6379
+    - to:
+        - namespaceSelector: {}
+      ports:
+        - protocol: TCP
+          port: 53
+        - protocol: UDP
+          port: 53
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: redis-allow
+  labels:
+    app: redis
+spec:
+  podSelector:
+    matchLabels:
+      app: redis
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: parental-coordination-back
+        - podSelector:
+            matchLabels:
+              app: parental-coordination-worker
+      ports:
+        - protocol: TCP
+          port: 6379
