@@ -9,6 +9,7 @@ import { WEBHOOK_MAX_ATTEMPTS } from '../delivery/backoff.strategy';
 import { WEBHOOK_BACKOFF_TYPE } from '../delivery/delivery.job';
 import { FanOutService, selectMatchedSubscriptions } from './fan-out.service';
 import { NotificationFanOutService } from '../../notifications/fan-out/notification-fan-out.service';
+import { RealtimePublisher } from '../../realtime/realtime-publisher.service';
 
 function sub(id: string, eventTypes: string[]): WebhookSubscriptionEntity {
   return { id, bondId: 'bond1', eventTypes } as unknown as WebhookSubscriptionEntity;
@@ -70,6 +71,7 @@ describe('FanOutService (T-W1.18, REQ-DISP-2/3/4)', () => {
   let outbox: { markDispatched: jest.Mock };
   let queue: { add: jest.Mock };
   let notificationFanOut: { handleOutboxEvent: jest.Mock };
+  let realtime: { publishNotificationCreated: jest.Mock };
   let service: FanOutService;
   let manager: object;
   let order: string[];
@@ -79,7 +81,11 @@ describe('FanOutService (T-W1.18, REQ-DISP-2/3/4)', () => {
     manager = { id: 'tx-manager' };
     subscriptions = { findActiveByBond: jest.fn().mockResolvedValue([]) };
     deliveries = {
-      transaction: jest.fn(async (fn: (m: object) => Promise<unknown>) => fn(manager)),
+      transaction: jest.fn(async (fn: (m: object) => Promise<unknown>) => {
+        const result = await fn(manager);
+        order.push('commit');
+        return result;
+      }),
       insertOnConflictDoNothing: jest.fn().mockResolvedValue(true),
     };
     outbox = {
@@ -88,7 +94,12 @@ describe('FanOutService (T-W1.18, REQ-DISP-2/3/4)', () => {
       }),
     };
     queue = { add: jest.fn(async () => undefined) };
-    notificationFanOut = { handleOutboxEvent: jest.fn().mockResolvedValue(undefined) };
+    notificationFanOut = { handleOutboxEvent: jest.fn().mockResolvedValue([]) };
+    realtime = {
+      publishNotificationCreated: jest.fn(async () => {
+        order.push('publish');
+      }),
+    };
 
     service = new FanOutService(
       subscriptions as unknown as WebhookSubscriptionRepository,
@@ -96,6 +107,7 @@ describe('FanOutService (T-W1.18, REQ-DISP-2/3/4)', () => {
       outbox as unknown as OutboxEventRepository,
       queue as unknown as Queue,
       notificationFanOut as unknown as NotificationFanOutService,
+      realtime as unknown as RealtimePublisher,
     );
   });
 
@@ -183,5 +195,65 @@ describe('FanOutService (T-W1.18, REQ-DISP-2/3/4)', () => {
 
     expect(outbox.markDispatched).not.toHaveBeenCalled();
     expect(queue.add).not.toHaveBeenCalled();
+  });
+
+  describe('notification.created frames (S1-S3)', () => {
+    const ref = (id: string, userId: string) => ({
+      id,
+      userId,
+      type: 'activity_done',
+      refEntityType: 'activity',
+      refEntityId: 'a1',
+    });
+
+    it('publishes one frame per created notification, only after commit', async () => {
+      subscriptions.findActiveByBond.mockResolvedValue([sub('s1', ['*'])]);
+      notificationFanOut.handleOutboxEvent.mockResolvedValue([ref('n1', 'u2'), ref('n2', 'u3')]);
+
+      await service.dispatch(event());
+
+      expect(realtime.publishNotificationCreated).toHaveBeenCalledTimes(2);
+      expect(realtime.publishNotificationCreated).toHaveBeenNthCalledWith(1, ref('n1', 'u2'));
+      expect(realtime.publishNotificationCreated).toHaveBeenNthCalledWith(2, ref('n2', 'u3'));
+      // El commit precede a cualquier frame: un rollback no puede emitirlos.
+      expect(order.indexOf('commit')).toBeGreaterThanOrEqual(0);
+      expect(order.indexOf('commit')).toBeLessThan(order.indexOf('publish'));
+    });
+
+    it('publishes nothing when the fan-out created no notification', async () => {
+      subscriptions.findActiveByBond.mockResolvedValue([sub('s1', ['*'])]);
+      notificationFanOut.handleOutboxEvent.mockResolvedValue([]);
+
+      await service.dispatch(event());
+
+      expect(realtime.publishNotificationCreated).not.toHaveBeenCalled();
+    });
+
+    it('publishes nothing when the transaction rolls back', async () => {
+      subscriptions.findActiveByBond.mockResolvedValue([sub('s1', ['*'])]);
+      notificationFanOut.handleOutboxEvent.mockResolvedValue([ref('n1', 'u2')]);
+      deliveries.transaction.mockRejectedValueOnce(new Error('commit failed'));
+
+      await expect(service.dispatch(event())).rejects.toThrow('commit failed');
+
+      expect(realtime.publishNotificationCreated).not.toHaveBeenCalled();
+    });
+
+    it('dispatches and enqueues when the optional publisher is absent', async () => {
+      subscriptions.findActiveByBond.mockResolvedValue([sub('s1', ['*'])]);
+      notificationFanOut.handleOutboxEvent.mockResolvedValue([ref('n1', 'u2')]);
+      const withoutRealtime = new FanOutService(
+        subscriptions as unknown as WebhookSubscriptionRepository,
+        deliveries as unknown as WebhookDeliveryRepository,
+        outbox as unknown as OutboxEventRepository,
+        queue as unknown as Queue,
+        notificationFanOut as unknown as NotificationFanOutService,
+      );
+
+      await expect(withoutRealtime.dispatch(event())).resolves.toBe(1);
+
+      expect(queue.add).toHaveBeenCalledTimes(1);
+      expect(outbox.markDispatched).toHaveBeenCalled();
+    });
   });
 });

@@ -5,15 +5,20 @@ import Redis, { RedisOptions } from 'ioredis';
 import { OutboxEventEntity } from '../outbox/entities/outbox-event.entity';
 import { buildBullConnection } from '../queues/redis.config';
 import { buildActivityChangedMessage } from './dto/activity-changed-message';
+import {
+  buildNotificationCreatedMessage,
+  CreatedNotificationRef,
+} from './dto/notification-created-message';
 import { REALTIME_CHANNEL } from './realtime.constants';
 
 /**
  * Worker-side realtime publisher (REQ-4, design #1471).
  *
- * Owns a dedicated ioredis client (separate from BullMQ's) and publishes one
- * `activity.changed` frame per dispatched outbox event to `REALTIME_CHANNEL`.
- * Keeping the client separate means a realtime hiccup can never touch the
- * webhook delivery pipeline.
+ * Owns a dedicated ioredis client (separate from BullMQ's) and publishes to
+ * `REALTIME_CHANNEL`: one `activity.changed` frame per dispatched outbox event,
+ * plus one `notification.created` frame per notification the fan-out actually
+ * inserted. Keeping the client separate means a realtime hiccup can never touch
+ * the webhook delivery pipeline.
  *
  * Failure policy: `publish` NEVER throws — a Redis failure is logged and
  * swallowed so it cannot abort the webhook fan-out that already ran before it.
@@ -44,16 +49,40 @@ export class RealtimePublisher implements OnModuleInit, OnModuleDestroy {
     this.redis?.disconnect();
   }
 
-  /** Publishes one frame to the realtime channel; no-op when disabled; never throws. */
+  /** Publishes one `activity.changed` frame; no-op when disabled; never throws. */
   async publish(event: OutboxEventEntity): Promise<void> {
+    await this.send(buildActivityChangedMessage(event), `outbox event ${event.id}`);
+  }
+
+  /**
+   * Publishes one `notification.created` frame for a row the fan-out created.
+   *
+   * Called AFTER the dispatch transaction commits, so a rollback can never emit
+   * a frame for a notification that does not exist. No-op when disabled; never
+   * throws.
+   */
+  async publishNotificationCreated(
+    notification: CreatedNotificationRef,
+    occurredAt: string = new Date().toISOString(),
+  ): Promise<void> {
+    await this.send(
+      buildNotificationCreatedMessage(notification, occurredAt),
+      `notification ${notification.id}`,
+    );
+  }
+
+  /** Single publish path shared by every frame type; swallows Redis failures. */
+  private async send(
+    message: ReturnType<typeof buildActivityChangedMessage> | ReturnType<typeof buildNotificationCreatedMessage>,
+    label: string,
+  ): Promise<void> {
     if (!this.enabled || !this.redis) return;
 
     try {
-      const message = buildActivityChangedMessage(event);
       await this.redis.publish(REALTIME_CHANNEL, JSON.stringify(message));
     } catch (error) {
       this.logger.error(
-        `Realtime publish failed for outbox event ${event.id}: ${
+        `Realtime publish failed for ${label}: ${
           error instanceof Error ? error.message : String(error)
         }`,
       );

@@ -18,6 +18,8 @@ import {
 } from '../delivery/delivery.job';
 import { WebhookDeliveryRepository } from '../delivery/repositories/webhook-delivery.repository';
 import { NotificationFanOutService } from '../../notifications/fan-out/notification-fan-out.service';
+import { CreatedNotificationRef } from '../../realtime/dto/notification-created-message';
+import { RealtimePublisher } from '../../realtime/realtime-publisher.service';
 
 /**
  * Selección PURA de suscripciones que matchean un evento (REQ-DISP-2, AC-9).
@@ -67,6 +69,10 @@ export class FanOutService {
     private readonly queue: Queue<WebhookDeliveryJobData>,
     @Optional()
     private readonly notificationFanOut?: NotificationFanOutService,
+    // Presente sólo en el worker (RealtimeWorkerModule); opcional para no romper
+    // los call-sites y tests que construyen el servicio sin realtime.
+    @Optional()
+    private readonly realtime?: RealtimePublisher,
   ) {}
 
   /** Despacha un evento; devuelve cuántas entregas nuevas se encolaron. */
@@ -75,6 +81,7 @@ export class FanOutService {
     const matched = selectMatchedSubscriptions(active, event.eventType);
 
     const enqueued: WebhookDeliveryJobData[] = [];
+    let createdNotifications: CreatedNotificationRef[] = [];
     await this.deliveries.transaction(async (manager) => {
       for (const subscription of matched) {
         const created = await this.deliveries.insertOnConflictDoNothing(
@@ -86,10 +93,16 @@ export class FanOutService {
         }
       }
       if (this.notificationFanOut) {
-        await this.notificationFanOut.handleOutboxEvent(event, manager);
+        createdNotifications = await this.notificationFanOut.handleOutboxEvent(event, manager);
       }
       await this.outbox.markDispatched(event.id, manager);
     });
+
+    // Recién tras el commit: un rollback no puede emitir frames de
+    // notificaciones que no existen. El publisher nunca lanza.
+    for (const notification of createdNotifications) {
+      await this.realtime?.publishNotificationCreated(notification);
+    }
 
     // Encolar SÓLO tras el commit: si la tx falla, nada queda en Redis.
     for (const data of enqueued) {

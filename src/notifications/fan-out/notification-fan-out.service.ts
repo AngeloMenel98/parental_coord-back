@@ -7,6 +7,7 @@ import { BondsRepository } from '../../bonds/repositories/bonds.repository';
 import { BondMembersRepository } from '../../bonds/repositories/bond-members.repository';
 import { AppConfig } from '../../config/app-config';
 import { ActivityEntity } from '../../activities/entities/activity.entity';
+import { CreatedNotificationRef } from '../../realtime/dto/notification-created-message';
 import {
   buildRecipientIds,
   RecipientContext,
@@ -27,20 +28,23 @@ export class NotificationFanOutService {
     private readonly appConfig: AppConfig,
   ) {}
 
-  async handleOutboxEvent(event: OutboxEventEntity, manager: any): Promise<void> {
+  async handleOutboxEvent(
+    event: OutboxEventEntity,
+    manager: any,
+  ): Promise<CreatedNotificationRef[]> {
     const enabled = this.isFanOutEnabled();
     if (!enabled) {
       if (!this.flagLogged) {
         this.logger.log('Notifications fan-out disabled via NOTIFICATIONS_FANOUT_ENABLED=false');
         this.flagLogged = true;
       }
-      return;
+      return [];
     }
 
     const rule = resolveNotificationRule(event.eventType);
     if (!rule) {
       this.logger.debug(`No notification rule for event_type=${event.eventType}; skipping`);
-      return;
+      return [];
     }
 
     const activity = await this.loadActivity(event.aggregateId);
@@ -48,7 +52,7 @@ export class NotificationFanOutService {
       this.logger.debug(
         `Activity not found or deleted for aggregateId=${event.aggregateId}; skipping notifications`,
       );
-      return;
+      return [];
     }
 
     const payload = (event.payload ?? {}) as Record<string, unknown>;
@@ -62,7 +66,7 @@ export class NotificationFanOutService {
       this.logger.debug(
         `No recipients resolved for event=${event.eventType}, activity=${activity.id}`,
       );
-      return;
+      return [];
     }
 
     const { title, body } = renderNotificationText(rule, activity.title);
@@ -71,8 +75,13 @@ export class NotificationFanOutService {
     // ON CONFLICT DO NOTHING. Cualquier error real debe propagarse para que
     // `Relay.run` no marque el evento como despachado y lo reintente: tragarse
     // el fallo aquí perdería la notificación de forma permanente.
+    //
+    // Sólo las filas REALMENTE creadas vuelven al llamador: es la lista que
+    // `FanOutService` convierte en frames `notification.created` tras el commit,
+    // así que un re-dispatch deduplicado no emite ningún frame.
+    const created: CreatedNotificationRef[] = [];
     for (const userId of recipientIds) {
-      await this.notificationRepository.createFromEvent(
+      const row = await this.notificationRepository.createFromEvent(
         {
           userId,
           bondId: event.bondId,
@@ -85,7 +94,17 @@ export class NotificationFanOutService {
         },
         manager,
       );
+      if (!row) continue;
+      created.push({
+        id: row.id,
+        userId: row.userId,
+        type: row.type,
+        refEntityType: row.refEntityType,
+        refEntityId: row.refEntityId,
+      });
     }
+
+    return created;
   }
 
   private isFanOutEnabled(): boolean {

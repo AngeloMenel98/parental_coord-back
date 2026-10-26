@@ -239,7 +239,7 @@ describe('NotificationFanOutService', () => {
     appConfig.NOTIFICATIONS_FANOUT_ENABLED = 'false';
     const logSpy = jest.spyOn((service as any).logger, 'log').mockImplementation(() => undefined);
     const event = makeEvent({ eventType: ACTIVITY_EVENT.ASSIGNED });
-    await expect(service.handleOutboxEvent(event, manager)).resolves.toBeUndefined();
+    await expect(service.handleOutboxEvent(event, manager)).resolves.toEqual([]);
     expect(notificationRepository.createFromEvent).not.toHaveBeenCalled();
     expect(logSpy).toHaveBeenCalledTimes(1);
     expect(logSpy.mock.calls[0][0]).toMatch(/NOTIFICATIONS_FANOUT_ENABLED=false/);
@@ -254,9 +254,70 @@ describe('NotificationFanOutService', () => {
   it('conflict (createFromEvent null) -> no throw and dispatch unaffected', async () => {
     notificationRepository.createFromEvent.mockResolvedValue(null);
     const event = makeEvent({ eventType: ACTIVITY_EVENT.ASSIGNED });
-    await expect(service.handleOutboxEvent(event, manager)).resolves.toBeUndefined();
+    await expect(service.handleOutboxEvent(event, manager)).resolves.toEqual([]);
     // should have attempted for both recipients
     expect(notificationRepository.createFromEvent).toHaveBeenCalledTimes(2);
+  });
+
+  describe('created refs for the realtime frame (S2)', () => {
+    it('returns one ref per row that was REALLY inserted', async () => {
+      notificationRepository.createFromEvent.mockImplementation((input: any) =>
+        Promise.resolve({
+          id: `n-${input.userId}`,
+          userId: input.userId,
+          type: input.type,
+          refEntityType: input.refEntityType,
+          refEntityId: input.refEntityId,
+        }),
+      );
+      const event = makeEvent({ eventType: ACTIVITY_EVENT.ASSIGNED });
+
+      const created = await service.handleOutboxEvent(event, manager);
+
+      expect(created).toEqual([
+        {
+          id: 'n-u2',
+          userId: 'u2',
+          type: 'activity_assigned',
+          refEntityType: 'activity',
+          refEntityId: 'a1',
+        },
+        {
+          id: 'n-u3',
+          userId: 'u3',
+          type: 'activity_assigned',
+          refEntityType: 'activity',
+          refEntityId: 'a1',
+        },
+      ]);
+    });
+
+    it('a deduplicated insert (null) contributes no frame', async () => {
+      notificationRepository.createFromEvent
+        .mockResolvedValueOnce(null)
+        .mockResolvedValueOnce({
+          id: 'n-u3',
+          userId: 'u3',
+          type: 'activity_assigned',
+          refEntityType: 'activity',
+          refEntityId: 'a1',
+        });
+      const event = makeEvent({ eventType: ACTIVITY_EVENT.ASSIGNED });
+
+      const created = await service.handleOutboxEvent(event, manager);
+
+      expect(created).toHaveLength(1);
+      expect(created[0].userId).toBe('u3');
+    });
+
+    it('a skipped event (unknown type) returns no refs', async () => {
+      const created = await service.handleOutboxEvent(
+        makeEvent({ eventType: 'activity.teleported' }),
+        manager,
+      );
+
+      expect(created).toEqual([]);
+    });
   });
 
   describe('unexpected failures propagate so the outbox event is retried', () => {
