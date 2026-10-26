@@ -46,8 +46,26 @@ describe('NotificationRepository (T-W1.33, REQ-SUB-5, D11)', () => {
       body: 'Your endpoint kept failing.',
       refEntityType: 'webhook_subscription',
       refEntityId: 's1',
+      sourceEventId: null,
       isRead: false,
     });
+  });
+
+  it('maps an explicit sourceEventId through createNotification', async () => {
+    await repo.createNotification({
+      userId: 'u1',
+      bondId: 'b1',
+      type: 'activity_assigned',
+      title: 't',
+      body: 'b',
+      refEntityType: 'activity',
+      refEntityId: 'a1',
+      sourceEventId: 'e1',
+    });
+
+    expect(notifRepo.create).toHaveBeenCalledWith(
+      expect.objectContaining({ sourceEventId: 'e1', isRead: false }),
+    );
   });
 
   it('keeps createForActivity as a thin wrapper (refEntityType=activity)', async () => {
@@ -86,6 +104,160 @@ describe('NotificationRepository (T-W1.33, REQ-SUB-5, D11)', () => {
 
     expect(manager.getRepository).toHaveBeenCalledWith(NotificationEntity);
     expect(notifRepo.save).not.toHaveBeenCalled();
+  });
+});
+
+describe('NotificationRepository — createFromEvent (notifications-fanout T1.2/T1.3)', () => {
+  let repo: NotificationRepository;
+  let notifRepo: jest.Mocked<Repository<NotificationEntity>>;
+  let insertQb: {
+    insert: jest.Mock;
+    into: jest.Mock;
+    values: jest.Mock;
+    orIgnore: jest.Mock;
+    returning: jest.Mock;
+    execute: jest.Mock;
+  };
+  /** Orden real de las llamadas del QueryBuilder (assert de orIgnore < returning). */
+  let callOrder: string[];
+
+  const input = {
+    userId: 'u1',
+    bondId: 'b1',
+    type: 'activity_assigned',
+    title: 'Pick up kids',
+    body: 'New activity assigned: Pick up kids',
+    refEntityType: 'activity',
+    refEntityId: 'a1',
+    sourceEventId: 'e1',
+  };
+
+  beforeEach(async () => {
+    callOrder = [];
+    insertQb = {
+      insert: jest.fn(() => {
+        callOrder.push('insert');
+        return insertQb;
+      }),
+      into: jest.fn(() => {
+        callOrder.push('into');
+        return insertQb;
+      }),
+      values: jest.fn(() => {
+        callOrder.push('values');
+        return insertQb;
+      }),
+      orIgnore: jest.fn(() => {
+        callOrder.push('orIgnore');
+        return insertQb;
+      }),
+      returning: jest.fn(() => {
+        callOrder.push('returning');
+        return insertQb;
+      }),
+      execute: jest.fn(async () => ({ raw: [{ id: 'n1' }] })),
+    };
+
+    notifRepo = {
+      create: jest.fn((data: object) => data),
+      save: jest.fn(async (data: object) => data),
+      createQueryBuilder: jest.fn(() => insertQb),
+      target: NotificationEntity,
+      manager: {},
+    } as unknown as jest.Mocked<Repository<NotificationEntity>>;
+
+    const module: TestingModule = await Test.createTestingModule({
+      providers: [
+        NotificationRepository,
+        { provide: getRepositoryToken(NotificationEntity), useValue: notifRepo },
+      ],
+    }).compile();
+
+    repo = module.get(NotificationRepository);
+  });
+
+  it('inserts the full row shape with isRead=false and the outbox event id', async () => {
+    await repo.createFromEvent(input);
+
+    expect(insertQb.insert).toHaveBeenCalled();
+    expect(insertQb.into).toHaveBeenCalledWith(NotificationEntity);
+    expect(insertQb.values).toHaveBeenCalledWith({
+      userId: 'u1',
+      bondId: 'b1',
+      type: 'activity_assigned',
+      title: 'Pick up kids',
+      body: 'New activity assigned: Pick up kids',
+      refEntityType: 'activity',
+      refEntityId: 'a1',
+      sourceEventId: 'e1',
+      isRead: false,
+    });
+  });
+
+  it('chains orIgnore() BEFORE returning(id) and never calls save()', async () => {
+    await repo.createFromEvent(input);
+
+    expect(insertQb.orIgnore).toHaveBeenCalled();
+    expect(insertQb.returning).toHaveBeenCalledWith('id');
+    expect(callOrder).toEqual(['insert', 'into', 'values', 'orIgnore', 'returning']);
+    expect(notifRepo.save).not.toHaveBeenCalled();
+  });
+
+  it('returns null (not throw) when the partial unique index collapses the insert', async () => {
+    insertQb.execute.mockResolvedValueOnce({ raw: [] });
+
+    await expect(repo.createFromEvent(input)).resolves.toBeNull();
+    expect(notifRepo.save).not.toHaveBeenCalled();
+  });
+
+  it('returns null when the driver omits raw entirely', async () => {
+    insertQb.execute.mockResolvedValueOnce({});
+
+    await expect(repo.createFromEvent(input)).resolves.toBeNull();
+  });
+
+  it('returns a detached minimal entity with the returned id on success', async () => {
+    const entity = await repo.createFromEvent(input);
+
+    expect(entity).toEqual(
+      expect.objectContaining({
+        id: 'n1',
+        userId: 'u1',
+        sourceEventId: 'e1',
+        isRead: false,
+      }),
+    );
+    expect(notifRepo.create).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'n1', sourceEventId: 'e1' }),
+    );
+    expect(notifRepo.save).not.toHaveBeenCalled();
+  });
+
+  it('defaults refEntityId to null when omitted', async () => {
+    await repo.createFromEvent({
+      ...input,
+      refEntityId: undefined,
+    });
+
+    expect(insertQb.values).toHaveBeenCalledWith(expect.objectContaining({ refEntityId: null }));
+  });
+
+  it('uses the EntityManager repository instead of the injected one', async () => {
+    const managerRepo = {
+      createQueryBuilder: jest.fn(() => insertQb),
+      create: jest.fn((data: object) => data),
+      save: jest.fn(async (data: object) => data),
+    };
+    const manager = { getRepository: jest.fn().mockReturnValue(managerRepo) };
+
+    await repo.createFromEvent(input, manager as never);
+
+    expect(manager.getRepository).toHaveBeenCalledWith(NotificationEntity);
+    expect(notifRepo.createQueryBuilder).not.toHaveBeenCalled();
+    expect(managerRepo.save).not.toHaveBeenCalled();
+    expect(managerRepo.create).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'n1', sourceEventId: 'e1' }),
+    );
   });
 });
 

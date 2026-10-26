@@ -4,7 +4,6 @@ import { DeepPartial, EntityManager, IsNull, QueryDeepPartialEntity, Repository 
 
 import { BaseRepository } from '../../common/repositories/base.repository';
 import { ActivityEntity, ActivityStatus } from '../entities/activity.entity';
-import { NotificationRepository } from '../../notifications/repositories/notification.repository';
 import { OutboxEventRepository } from '../../outbox/repositories/outbox-event.repository';
 import { InitialTransition } from '../activity-transition.map';
 
@@ -29,14 +28,6 @@ export type ApplyTransitionFields = Partial<
   >
 >;
 
-/** Notification written INSIDE the transition tx (T7 coordinator, REQ-ACTOR-3). */
-export interface ApplyTransitionNotification {
-  userId: string;
-  type: string;
-  title: string;
-  body: string;
-}
-
 /** Plain DTO (no typeorm types leak to the service). `null` return = CAS/guard miss. */
 export interface ApplyTransitionInput {
   id: string;
@@ -49,8 +40,6 @@ export interface ApplyTransitionInput {
     eventType: string;
     payload: Record<string, unknown>;
   };
-  /** Optional companion write in the SAME tx (e.g. coordinator overdue notice). */
-  notification?: ApplyTransitionNotification;
 }
 
 /** Create INSERT exception (design D3): v1 + one outbox row. */
@@ -66,7 +55,6 @@ export class ActivitiesRepository extends BaseRepository<ActivityEntity> {
     @InjectRepository(ActivityEntity)
     private readonly activityRepo: Repository<ActivityEntity>,
 
-    private readonly notiRepo: NotificationRepository,
     private readonly outboxRepo: OutboxEventRepository,
   ) {
     super(activityRepo);
@@ -132,7 +120,7 @@ export class ActivitiesRepository extends BaseRepository<ActivityEntity> {
    *
    * `manager` es opcional (patrón `manager?` de ActivitiesAuditRepository.record):
    * con él, la fila de `activity` participa en la MISMA transacción que
-   * `activity_child` y la notificación; sin él, escribe por la conexión normal.
+   * `activity_child`; sin él, escribe por la conexión normal.
    */
   async createInTx(
     data: DeepPartial<ActivityEntity>,
@@ -208,20 +196,6 @@ export class ActivitiesRepository extends BaseRepository<ActivityEntity> {
         },
         em,
       );
-
-      if (input.notification) {
-        await this.notiRepo.createForActivity(
-          {
-            userId: input.notification.userId,
-            bondId: input.outbox.bondId,
-            type: input.notification.type,
-            title: input.notification.title,
-            body: input.notification.body,
-            refEntityId: input.id,
-          },
-          em,
-        );
-      }
 
       return saved;
     };

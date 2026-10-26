@@ -5,14 +5,12 @@ import { Repository } from 'typeorm';
 import { ActivitiesRepository } from '../repositories/activities.repository';
 import { ActsAuditRepository } from '../repositories/activities-audit.repository';
 import { ActivityEntity, ActivityStatus } from '../entities/activity.entity';
-import { NotificationRepository } from '../../notifications/repositories/notification.repository';
 import { OutboxEventRepository } from '../../outbox/repositories/outbox-event.repository';
 
 describe('ActivitiesRepository', () => {
   let repo: ActivitiesRepository;
   let activityRepo: jest.Mocked<Repository<ActivityEntity>>;
   let outboxRepo: { insert: jest.Mock };
-  let notiRepo: { createForActivity: jest.Mock };
 
   let qb: any;
   let lockQb: any;
@@ -64,14 +62,12 @@ describe('ActivitiesRepository', () => {
     } as any;
 
     outboxRepo = { insert: jest.fn().mockResolvedValue({}) };
-    notiRepo = { createForActivity: jest.fn().mockResolvedValue({}) };
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         ActivitiesRepository,
         { provide: getRepositoryToken(ActivityEntity), useValue: activityRepo },
         { provide: ActsAuditRepository, useValue: { record: jest.fn() } },
-        { provide: NotificationRepository, useValue: notiRepo },
         { provide: OutboxEventRepository, useValue: outboxRepo },
       ],
     }).compile();
@@ -190,51 +186,26 @@ describe('ActivitiesRepository', () => {
       expect(outboxRepo.insert).not.toHaveBeenCalled();
     });
 
-    it('writes the optional notification with the SAME tx manager (T7 coordinator)', async () => {
-      lockQb.getOne.mockResolvedValue(baseRow());
-
-      await repo.applyTransition({
-        ...baseInput(),
-        notification: {
-          userId: 'coord-1',
-          type: 'activity_overdue',
-          title: 'T',
-          body: 'Activity overdue: T',
-        },
-      });
-
-      expect(notiRepo.createForActivity).toHaveBeenCalledTimes(1);
-      expect(notiRepo.createForActivity).toHaveBeenCalledWith(
-        {
-          userId: 'coord-1',
-          bondId: 'b1',
-          type: 'activity_overdue',
-          title: 'T',
-          body: 'Activity overdue: T',
-          refEntityId: 'a1',
-        },
-        em,
-      );
-    });
-
-    it('writes NO notification when the input omits one', async () => {
+    it('does NOT write notifications — the in-tx writer was removed (P5)', async () => {
       lockQb.getOne.mockResolvedValue(baseRow());
 
       await repo.applyTransition(baseInput());
 
-      expect(notiRepo.createForActivity).not.toHaveBeenCalled();
+      // REQ-FAN-006: notifications are produced by the worker-only fan-out,
+      // never by `applyTransition`. The repository has no notification dependency.
+      expect((repo as any).notiRepo).toBeUndefined();
+      expect(outboxRepo.insert).toHaveBeenCalledTimes(1);
     });
 
-    it('CAS miss → notification is NOT written (all-or-nothing tx)', async () => {
-      lockQb.getOne.mockResolvedValue({ ...baseRow(), version: 5 });
+    it('ignores any legacy `notification` input — only the outbox row is written', async () => {
+      lockQb.getOne.mockResolvedValue(baseRow());
 
-      const result = await repo.applyTransition({
+      await repo.applyTransition({
         ...baseInput(),
         notification: { userId: 'coord-1', type: 'activity_overdue', title: 'T', body: 'B' },
-      });
+      } as any);
 
-      expect(result).toBeNull();
-      expect(notiRepo.createForActivity).not.toHaveBeenCalled();
+      expect(outboxRepo.insert).toHaveBeenCalledTimes(1);
     });
 
     it('row missing → null, no save, no outbox', async () => {

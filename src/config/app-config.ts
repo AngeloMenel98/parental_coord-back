@@ -178,6 +178,15 @@ export class AppConfig {
   @Type(() => Number)
   @IsInt()
   NOTIFICATIONS_RETENTION_INTERVAL_MS?: number = 86_400_000;
+
+  /**
+   * Emergency brake for outbox → notification fan-out (worker-only, default on).
+   * `'false'` ⇒ the worker still delivers webhooks and marks events dispatched,
+   * but writes zero notifications (events are not paused/replayed).
+   */
+  @IsOptional()
+  @IsString()
+  NOTIFICATIONS_FANOUT_ENABLED?: string = 'true';
 }
 
 export function validateConfig(config: Record<string, unknown>): AppConfig {

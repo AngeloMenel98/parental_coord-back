@@ -11,7 +11,6 @@ import { ActivitiesController } from './activities.controller';
 import { ActivityPolicyService } from './activity-policy.service';
 import { AuditLogEntity } from '../audit/entities/audit-log.entity';
 import { BondsModule } from '../bonds/bonds.module';
-import { NotificationsModule } from '../notifications/notifications.module';
 import { ChildrenModule } from '../children/children.module';
 import { CategoriesModule } from '../categories/categories.module';
 import { OutboxModule } from '../outbox/outbox.module';
@@ -23,7 +22,6 @@ import { Clock } from '../common/clock/clock';
   imports: [
     TypeOrmModule.forFeature([ActivityEntity, ActivityChildEntity, AuditLogEntity]),
     forwardRef(() => BondsModule),
-    NotificationsModule,
     ChildrenModule,
     CategoriesModule,
     OutboxModule,

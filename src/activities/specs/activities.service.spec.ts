@@ -12,7 +12,6 @@ import { CategoriesRepository } from '../../categories/repositories/categories.r
 import { ActivityStatus } from '../entities/activity.entity';
 import { BondsService } from '../../bonds/bonds.service';
 import { BondMembersRepository } from '../../bonds/repositories/bond-members.repository';
-import { NotificationRepository } from '../../notifications/repositories/notification.repository';
 import { Clock } from '../../common/clock/clock';
 import { CodedException } from '../../common/errors/coded.exception';
 import { CreateActivityDto } from '../dto/create-activity.dto';
@@ -27,7 +26,6 @@ describe('ActivitiesService', () => {
   let activityChildRepo: any;
   let bondService: any;
   let bondMembersRepo: any;
-  let notificationRepo: any;
   let config: any;
   let clock: any;
   let producer: any;
@@ -62,9 +60,6 @@ describe('ActivitiesService', () => {
     } as any;
     categoriesRepo = { findActiveById: jest.fn() } as any;
     childrenRepo = { findByIdsAndBond: jest.fn() } as any;
-    // El repo dedicado recibe el input YA compuesto: la aserción mide el payload
-    // que el servicio decide enviar.
-    notificationRepo = { createForActivity: jest.fn() } as any;
     activityChildRepo = { saveChildrenFor: jest.fn() } as any;
     bondService = { isActiveBondForMember: jest.fn().mockResolvedValue(true) } as any;
     // `resolveActorRole` vive en BondMembersRepository.
@@ -97,7 +92,6 @@ describe('ActivitiesService', () => {
         ActivitiesService,
         { provide: ActivitiesRepository, useValue: activityRepo },
         { provide: ActivityChildRepository, useValue: activityChildRepo },
-        { provide: NotificationRepository, useValue: notificationRepo },
         { provide: BondsService, useValue: bondService },
         { provide: BondMembersRepository, useValue: bondMembersRepo },
         { provide: ChildrenRepository, useValue: childrenRepo },
@@ -255,19 +249,16 @@ describe('ActivitiesService', () => {
       expect(res.criticality).toBe('critical');
     });
 
-    it('does not notify when not assigned', async () => {
-      await service.create(bondId, validDto() as any, userId);
-      expect(notificationRepo.createForActivity).not.toHaveBeenCalled();
+    it('does NOT write a notification on create — the worker fan-out owns it (P5)', async () => {
+      await service.create(bondId, { ...validDto(), assignedTo: assignee } as any, userId);
+
+      // REQ-FAN-006: `activity_assigned` is produced by the worker-only fan-out
+      // after dispatch. Create only writes activity + children + outbox.
+      expect(activityChildRepo.saveChildrenFor).toHaveBeenCalledTimes(1);
+      expect((service as any).notificationRepo).toBeUndefined();
     });
 
-    it('rolls back if notification save fails', async () => {
-      notificationRepo.createForActivity.mockRejectedValue(new Error('fail'));
-      await expect(
-        service.create(bondId, { ...validDto(), assignedTo: assignee } as any, userId),
-      ).rejects.toThrow();
-    });
-
-    it('opens EXACTLY ONE transaction and shares the SAME manager across the 3 writes (R3)', async () => {
+    it('opens EXACTLY ONE transaction and shares the SAME manager across the remaining writes (R3)', async () => {
       const dto = { ...validDto(), assignedTo: assignee };
       await service.create(bondId, dto as any, userId);
 
@@ -280,10 +271,6 @@ describe('ActivitiesService', () => {
         fakeManager,
       );
       expect(activityChildRepo.saveChildrenFor).toHaveBeenCalledWith('a1', [childId], fakeManager);
-      expect(notificationRepo.createForActivity).toHaveBeenCalledWith(
-        expect.objectContaining({ userId: assignee, refEntityId: 'a1' }),
-        fakeManager,
-      );
     });
 
     it('404 when the acting user is not an active bond member', async () => {
@@ -502,28 +489,23 @@ describe('ActivitiesService', () => {
     const futureStart = new Date('2026-10-02T10:00:00Z');
     const futureEnd = new Date('2026-10-02T14:00:00Z');
 
-    it('assigned → overdue: coordinator notified in-tx, start+end timers enqueued', async () => {
+    it('assigned → overdue: NO in-tx notification (worker fan-out owns it), start+end timers enqueued', async () => {
       activityRepo.findById.mockResolvedValue(
         futureActivity({ scheduledStart: futureStart, scheduledEnd: futureEnd }),
       );
-      bondMembersRepo.findCoordinator.mockResolvedValue({ userId: 'coord-1' });
       transitionEcho({ scheduledStart: futureStart, scheduledEnd: futureEnd });
 
       const res = await service.markOverdue('a1');
 
       expect(res?.status).toBe(ActivityStatus.OVERDUE);
-      expect(bondMembersRepo.findCoordinator).toHaveBeenCalledWith(bondId);
 
       const input = activityRepo.applyTransition.mock.calls[0][0];
       expect(input.nextStatus).toBe(ActivityStatus.OVERDUE);
       expect(input.outbox.payload.actor).toEqual({ type: 'system' });
-      // The notification is resolved pre-tx and written by the repo inside it.
-      expect(input.notification).toEqual({
-        userId: 'coord-1',
-        type: 'activity_overdue',
-        title: 'Test Activity',
-        body: 'Activity overdue: Test Activity',
-      });
+      // REQ-FAN-006: the coordinator notice now comes from the worker fan-out,
+      // not from the transition tx.
+      expect(input.notification).toBeUndefined();
+      expect(bondMembersRepo.findCoordinator).not.toHaveBeenCalled();
 
       // T7 re-enqueues start+end at the NEW version (design D8).
       expect(producer.enqueue).toHaveBeenCalledTimes(2);
@@ -531,9 +513,8 @@ describe('ActivitiesService', () => {
       expect(producer.enqueue).toHaveBeenCalledWith(TimerKind.END, 'a1', 2, futureEnd, NOW);
     });
 
-    it('no coordinator → NO notification, still transitions (no throw)', async () => {
+    it('no in-tx notification regardless of coordinator lookup (P5 regression)', async () => {
       activityRepo.findById.mockResolvedValue(futureActivity());
-      bondMembersRepo.findCoordinator.mockResolvedValue(null);
       transitionEcho();
 
       const res = await service.markOverdue('a1');
@@ -541,6 +522,7 @@ describe('ActivitiesService', () => {
       expect(res?.status).toBe(ActivityStatus.OVERDUE);
       const input = activityRepo.applyTransition.mock.calls[0][0];
       expect(input.notification).toBeUndefined();
+      expect(bondMembersRepo.findCoordinator).not.toHaveBeenCalled();
     });
 
     it('from non-assigned (done) → silent no-op, NO notification, NO timers', async () => {

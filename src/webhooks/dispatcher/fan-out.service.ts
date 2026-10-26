@@ -1,5 +1,5 @@
 import { InjectQueue } from '@nestjs/bullmq';
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, Optional } from '@nestjs/common';
 import { Queue } from 'bullmq';
 
 import { OutboxEventEntity } from '../../outbox/entities/outbox-event.entity';
@@ -17,6 +17,7 @@ import {
   buildDeliveryJobId,
 } from '../delivery/delivery.job';
 import { WebhookDeliveryRepository } from '../delivery/repositories/webhook-delivery.repository';
+import { NotificationFanOutService } from '../../notifications/fan-out/notification-fan-out.service';
 
 /**
  * Selección PURA de suscripciones que matchean un evento (REQ-DISP-2, AC-9).
@@ -64,6 +65,8 @@ export class FanOutService {
     private readonly outbox: OutboxEventRepository,
     @InjectQueue(WEBHOOK_DELIVERY_QUEUE)
     private readonly queue: Queue<WebhookDeliveryJobData>,
+    @Optional()
+    private readonly notificationFanOut?: NotificationFanOutService,
   ) {}
 
   /** Despacha un evento; devuelve cuántas entregas nuevas se encolaron. */
@@ -81,6 +84,9 @@ export class FanOutService {
         if (created) {
           enqueued.push({ eventId: event.id, subscriptionId: subscription.id });
         }
+      }
+      if (this.notificationFanOut) {
+        await this.notificationFanOut.handleOutboxEvent(event, manager);
       }
       await this.outbox.markDispatched(event.id, manager);
     });

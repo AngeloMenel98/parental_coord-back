@@ -37,9 +37,10 @@ export interface NotificationsRetentionResult {
  * onlyRead: false })`). El repositorio ya expone el `options.onlyRead` para
  * eso; este servicio sólo resuelve el corte/política y registra el recuento.
  *
- * `source_event_id` es irrelevante para la retención: en esta slice la columna
- * es NULL en todas las filas (nadie la escribe todavía) ⇒ no puede cambiar el
- * resultado del borrado. El criterio es exclusivamente TEMPORAL.
+ * `source_event_id` es irrelevante para la retención: el fan-out del worker ya
+ * escribe un UUID en las filas nuevas, pero el criterio de borrado es
+ * exclusivamente TEMPORAL (`created_at`), así que la columna —NULL en las filas
+ * legadas y no-NULL en las del fan-out— no cambia el resultado.
  *
  * El SQL vive en `NotificationRepository.purgeOlderThan` (regla de casa: los
  * servicios nunca tocan TypeORM). Los errores NO se silencian aquí: los captura

@@ -9,11 +9,7 @@ import {
 } from '@nestjs/common';
 import { plainToInstance } from 'class-transformer';
 
-import {
-  ActivitiesRepository,
-  ApplyTransitionFields,
-  ApplyTransitionNotification,
-} from './repositories/activities.repository';
+import { ActivitiesRepository, ApplyTransitionFields } from './repositories/activities.repository';
 import {
   resolveInitial,
   resolveTransition,
@@ -24,7 +20,6 @@ import { TimerKind } from '../queues/activity-timers/activity-timers.constants';
 import { timerOpsForTransition } from '../queues/activity-timers/activity-timers.ops';
 import { ActivityChildRepository } from './repositories/activity-child.repository';
 import { ActivityEntity, ActivityStatus, ActivityType } from './entities/activity.entity';
-import { NotificationRepository } from '../notifications/repositories/notification.repository';
 import {
   BondMembersRepository,
   ComplianceMemberRow,
@@ -70,7 +65,6 @@ export class ActivitiesService {
   constructor(
     private readonly activitiesRepo: ActivitiesRepository,
     private readonly activityChildRepo: ActivityChildRepository,
-    private readonly notificationRepo: NotificationRepository,
 
     @Inject(forwardRef(() => BondsService))
     private readonly bondService: BondsService,
@@ -199,10 +193,6 @@ export class ActivitiesService {
     });
     if (req.fields) Object.assign(fields, req.fields);
 
-    // T7 notifies the parental coordinator; resolved pre-tx so the write joins
-    // the SAME transaction as the status change (REQ-ACTOR-3, design D9).
-    const notification = await this.resolveOverdueNotification(rule, activity);
-
     const updated = await this.activitiesRepo.applyTransition({
       id: activity.id,
       expectedFrom: activity.status,
@@ -222,7 +212,6 @@ export class ActivitiesService {
           ...req.payloadExtra,
         },
       },
-      notification,
     });
 
     if (!updated) {
@@ -266,30 +255,6 @@ export class ActivitiesService {
         `System transition ${activityId} → ${to} no-op: ${(error as Error).message}`,
       );
     }
-  }
-
-  /**
-   * T7 coordinator notice, resolved before the tx and written by the repository
-   * inside it. No coordinator ⇒ skip + log (normal, not an error, REQ-ACTOR-3).
-   */
-  private async resolveOverdueNotification(
-    rule: { id: string },
-    activity: ActivityEntity,
-  ): Promise<ApplyTransitionNotification | undefined> {
-    if (rule.id !== 'T7') return undefined;
-
-    const coordinator = await this.bondMembersRepo.findCoordinator(activity.bondId);
-    if (!coordinator) {
-      this.logger.warn(`No coordinator in bond ${activity.bondId}; T7 notification skipped`);
-      return undefined;
-    }
-
-    return {
-      userId: coordinator.userId,
-      type: 'activity_overdue',
-      title: activity.title,
-      body: `Activity overdue: ${activity.title}`,
-    };
   }
 
   /** Bond-scoped actor role (REQ-ACTOR-1, design D2); `null` for system. */
@@ -437,20 +402,6 @@ export class ActivitiesService {
       );
 
       await this.activityChildRepo.saveChildrenFor(created.id, dto.childrenIds, manager);
-
-      if (assignedTo) {
-        await this.notificationRepo.createForActivity(
-          {
-            userId: assignedTo,
-            bondId,
-            type: 'activity_assigned',
-            title: dto.title,
-            body: `New activity assigned: ${dto.title}`,
-            refEntityId: created.id,
-          },
-          manager,
-        );
-      }
 
       return created;
     });
