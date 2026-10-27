@@ -5,6 +5,9 @@
   "description": "Sistema de Coordinación Parental — Backend API",
   "author": "",
   "private": true,
+  "engines": {
+    "node": ">=22"
+  },
   "license": "UNLICENSED",
   "scripts": {
     "build": "nest build",
@@ -42,6 +45,7 @@
     "@nestjs/throttler": "^6.5.0",
     "@nestjs/typeorm": "10.0.2",
     "@nestjs/websockets": "^10.4.22",
+    "@supabase/supabase-js": "^2.118.0",
     "bcryptjs": "^3.0.3",
     "bullmq": "^5.81.5",
     "class-transformer": "^0.5.1",

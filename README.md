@@ -11,6 +11,12 @@ Backend API del **Sistema de Coordinación Parental** — una plataforma para la
 
 ## Setup
 
+Requiere **Node 22** (`nvm use` lee el `.nvmrc`). No es opcional: `@supabase/supabase-js`
+construye su cliente de Realtime dentro de `createClient()` y tira en Node 20, que
+no tiene `WebSocket` global. `StorageService` envuelve esa llamada en un `try/catch`,
+así que el síntoma no es un crash sino `400 Storage not configured` en cada presign
+de adjunto.
+
 ```bash
 # 1. Instalar dependencias
 pnpm install
@@ -50,6 +56,65 @@ Variables de entorno (ver `.env.example`, todas opcionales con defaults):
 > ⚠️ **Pin de peers**: NO subir `bullmq` a v6 ni `@nestjs/bullmq` a v11.
 > Ambos exigen `@nestjs/core ^11` y rompen el peer de Nest 10. Mantener
 > `bullmq@^5.81.5` + `@nestjs/bullmq@^10.2.3` + `ioredis@^5.11.1`.
+
+## Supabase Storage local (adjuntos de actividades)
+
+El backend firma URLs de subida contra Supabase Storage y el cliente móvil hace
+el `PUT` directo contra esa URL. Para probarlo sin depender de la nube hay un
+stack local mínimo, colgado de un profile de compose para que
+`docker compose up -d` siga levantando exactamente lo mismo que antes:
+
+```bash
+docker compose --profile storage up -d
+docker compose --profile storage ps   # esperar healthy en db/storage/gateway
+```
+
+Levanta cinco servicios: `supabase-db` (imagen `supabase/postgres`, puerto
+`54322`), `supabase-rest` (PostgREST, dependencia de arranque de storage-api),
+`supabase-storage` (`STORAGE_BACKEND=file`, sin S3 ni MinIO), `supabase-gateway`
+(Caddy en `54321`) y `supabase-init`, que crea el bucket `activity-attachments`
+de forma idempotente.
+
+No están Studio, GoTrue, Realtime, Edge Runtime ni el pooler: no participan del
+flujo `presign -> PUT -> confirm`.
+
+Variables en `.env` (las mismas que lee la API, así la service-role key no puede
+desincronizarse entre los dos lados):
+
+- `SUPABASE_URL` — default `http://localhost:54321`
+- `SUPABASE_JWT_SECRET` — HS256 con el que storage-api valida los tokens
+- `SUPABASE_ANON_KEY` / `SUPABASE_SERVICE_ROLE_KEY` — firmadas con ese secreto
+- `SUPABASE_STORAGE_BUCKET_ACTIVITY_ATTACHMENTS` — default `activity-attachments`
+- `ATTACHMENTS_MAX_SIZE_BYTES` — default `10485760`
+
+> ⚠️ El secreto y las keys de `.env.example` son **sólo para desarrollo local**
+> y están commiteadas a propósito para que un clone nuevo arranque sin generar
+> JWTs. Cualquiera con ese secreto puede firmar un token `service_role`.
+
+### Emulador de Android
+
+`createSignedUploadUrl` devuelve una URL absoluta construida a partir del
+`SUPABASE_URL` **del backend**, y el emulador hace el `PUT` contra ella. Ese
+mismo valor lo usa el backend para sus propias llamadas (list, signed download,
+delete), así que no puede ser `10.0.2.2` (el host no lo resuelve) ni dejar de
+serlo (el emulador no alcanza el `localhost` del host).
+
+La salida es redirigir el `localhost` del dispositivo al del host:
+
+```bash
+adb reverse tcp:54321 tcp:54321
+```
+
+Los dos lados usan `http://localhost:54321` y no hay que tocar código. Lo mismo
+aplica al `viewUrl` de descarga, que se abre en el navegador del dispositivo.
+
+### Verificar el stack
+
+```bash
+curl -s http://localhost:54321/storage/v1/status          # gateway -> storage
+docker compose --profile storage exec supabase-db \
+  psql -U postgres -d postgres -c "select id, name from storage.buckets;"
+```
 
 ## Endpoints
 

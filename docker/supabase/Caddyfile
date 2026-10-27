@@ -1,0 +1,17 @@
+# Gateway for the local storage-only Supabase stack.
+#
+# supabase-js prefixes every storage call with `/storage/v1`, while storage-api
+# serves its routes without that prefix (`/object/...`, `/bucket/...`). In the
+# official self-hosted stack Envoy does the stripping; here Caddy does it with a
+# single rule so the backend can keep one SUPABASE_URL for both its own
+# server-side calls and the URL it hands to the mobile client.
+#
+# The trailing fallback proxy covers any absolute URL storage-api builds from
+# STORAGE_PUBLIC_URL without the prefix, which would otherwise 404.
+:5000 {
+	handle_path /storage/v1/* {
+		reverse_proxy supabase-storage:5000
+	}
+
+	reverse_proxy supabase-storage:5000
+}

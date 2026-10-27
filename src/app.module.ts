@@ -20,6 +20,7 @@ import { AuditModule } from './audit/audit.module';
 import { AdminModule } from './admin/admin.module';
 import { WebhooksModule } from './webhooks/webhooks.module';
 import { RealtimeModule } from './realtime/realtime.module';
+import { StorageModule } from './storage/storage.module';
 import { validateConfig } from './config/app-config';
 import { buildBullConnection } from './queues/redis.config';
 
@@ -79,6 +80,7 @@ import { buildBullConnection } from './queues/redis.config';
     AdminModule,
     WebhooksModule,
     RealtimeModule,
+    StorageModule,
   ],
   providers: [
     {
