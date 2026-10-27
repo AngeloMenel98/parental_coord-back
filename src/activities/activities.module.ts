@@ -17,23 +17,27 @@ import { OutboxModule } from '../outbox/outbox.module';
 import { ActivityTimersModule } from '../queues/activity-timers/activity-timers.module';
 import { SystemClock } from '../common/clock/system-clock';
 import { Clock } from '../common/clock/clock';
+import { ActAttachmentEntity } from './entities/act-attachment.entity';
+import { ActivityAttachmentsService } from './attachments/activity-attachments.service';
+import { ActivityAttachmentsController } from './attachments/activity-attachments.controller';
 
 @Module({
   imports: [
-    TypeOrmModule.forFeature([ActivityEntity, ActivityChildEntity, AuditLogEntity]),
+    TypeOrmModule.forFeature([ActivityEntity, ActivityChildEntity, AuditLogEntity, ActAttachmentEntity]),
     forwardRef(() => BondsModule),
     ChildrenModule,
     CategoriesModule,
     OutboxModule,
     ActivityTimersModule,
   ],
-  controllers: [ActivitiesController],
+  controllers: [ActivitiesController, ActivityAttachmentsController],
   providers: [
     ActivitiesRepository,
     ActsAuditRepository,
     ActivityChildRepository,
     ActivitiesService,
     ActivityPolicyService,
+    ActivityAttachmentsService,
     SystemClock,
     { provide: Clock, useExisting: SystemClock },
   ],
