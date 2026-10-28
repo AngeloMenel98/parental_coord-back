@@ -8,8 +8,9 @@ Test runner: `pnpm test` (jest) + `pnpm build` + `docker compose config`.
 ## Specs
 
 S1 — **Cloud Postgres.** The API and worker connect to Supabase Cloud Postgres
-with SSL enabled. Runtime connections use the Supavisor pooler; TypeORM
-migrations use the direct connection. No schema rewrite: the 13 existing
+with SSL enabled. Everything (runtime, migrations, seed) uses the Supavisor
+**session** pooler on `5432`; the direct host is IPv6-only and unreachable from
+an IPv4-only machine (correction in L14). No schema rewrite: the 13 existing
 migrations must apply unchanged.
 
 S2 — **Cloud Storage.** Activity attachments keep the existing
@@ -55,7 +56,7 @@ PR.
 | T1  | S3       | inline | done    | 9b3715d |
 | T2  | S1, S2, S5 | inline | done  | c65c7a5 |
 | T3  | S6       | inline | done    | este commit |
-| T4  | all      | inline | partial (DB rebuilt + admin seed; bucket and smoke need credentials) | — |
+| T4  | all      | inline | done  | este commit |
 
 ## Log
 
@@ -139,3 +140,58 @@ id instead. Re-check a stash's columns after dropping enum types, or use
 L13 — Still open: `SUPABASE_SERVICE_ROLE_KEY`, the Supavisor session URI plus DB
 password (the direct host is IPv6-only here), `pnpm storage:init`, and the
 presign → PUT → confirm smoke.
+
+L14 — The runbook was wrong on one point and it is now fixed. It said runtime
+goes through the transaction pooler (`6543`) and migrations through the direct
+host. In practice: `db.nagiwqmtomybacvcqojq.supabase.co` is **IPv6-only**, so on
+this IPv4-only machine it neither resolves nor connects; and `6543` breaks
+TypeORM because the transaction pooler does not keep prepared statements. So
+everything — API, worker, `typeorm migration:run`, `seed:admin`,
+`storage:init` — uses the **session** pooler on `5432`
+(`aws-0-eu-west-1.pooler.supabase.com`, user `postgres.nagiwqmtomybacvcqojq`,
+`DB_NAME=postgres`, `DB_SSL=true`). S1, `README.md` and `.env.example` were
+corrected.
+
+L15 — Credentials arrived (service-role key + pooler password, placed in `.env`,
+gitignored). Proof, in order:
+`pnpm typeorm migration:run` → **"No migrations are pending"** (the history
+written in L10 is honest); `pnpm seed:admin` → admin exists, skipped;
+`pnpm storage:init` → `Bucket "activity-attachments" created (private, 10485760
+bytes max)`; API booted from `dist/src/main.js` with local Redis;
+`GET /api/health` → `{"status":"ok","db":"ok"}`.
+
+L16 — End-to-end storage smoke against the cloud, all green:
+1. `POST /api/auth/login` (`admin@admin.com`) → JWT.
+2. Fixtures: category, bond (`informal`, 2 members + admin added afterwards —
+   creating the activity requires the caller to be a bond member), child,
+   activity. The created activity came back with `status: "assigned"` and
+   `version: 1`, confirming the L9 invariant on the rebuilt schema.
+3. `POST /api/activities/:id/attachments/presign` → `uploadUrl` on
+   `https://nagiwqmtomybacvcqojq.supabase.co/storage/v1/object/upload/sign/...`,
+   `path: activities/<bondId>/<activityId>/<uuid>.pdf`, `method: PUT`,
+   `expiresIn: 300`.
+4. `PUT` of a 300-byte PDF to the signed URL → `200`, `{"Key": "activity-attachments/..."}`.
+5. `POST .../attachments/confirm` → row created, `viewUrl` absolute with a
+   download token. Downloading that `viewUrl` returned `200` and the bytes were
+   byte-identical to the uploaded file.
+6. Database check: `act_attachment.file_url` = `activities/<bondId>/<activityId>/<uuid>.pdf`
+   (the **path**, not a URL — S2 holds); `storage.buckets` has
+   `activity-attachments` private with `file_size_limit = 10485760`;
+   `storage.objects` has the object with `image/pdf` metadata and `size = 300`.
+
+L17 — Cleanup and two observations.
+- All smoke fixtures were deleted (attachments, outbox rows, activity, bond
+  membership, child, bond, the extra category) and the stored object was removed
+  through the Storage API (`DELETE`, `200 Successfully deleted`). The DB is back
+  to its post-rebuild baseline: 3 users, 3 `personal_data`, the 5 categories the
+  migrations seed, 0 rows elsewhere, 0 storage objects. API and Redis stopped.
+- **Observation, not fixed (out of scope):** `ActivityAttachmentsService.confirm`
+  has no idempotency guard. Calling it twice with the same `path` inserts two
+  `act_attachment` rows pointing at the same object — I reproduced it during the
+  smoke. A re-delivered `confirm` (client retry after a timeout) would duplicate
+  the file in every attachment list.
+- **Correction to L9:** I said no DTO exposes `version`. That is true for
+  `ActivitySummaryDto`/`ActivityDetailDto`, but `POST /api/activities/:bondId/create`
+  returns the raw `ActivityEntity`, so `version` **does** appear in that one
+  response. Not a security issue (it is the caller's own activity), just not
+  what the log claimed.

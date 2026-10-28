@@ -81,11 +81,14 @@ Crear un proyecto en Supabase y tomar de **Project Settings**:
 cp .env.example .env
 ```
 
-- **Runtime** (API + worker): pooler de Supavisor, puerto `6543`, usuario
-  `postgres.<project-ref>`, `DB_SSL=true`.
-- **Migraciones y seed**: conexión directa,
-  `db.<project-ref>.supabase.co:5432`, usuario `postgres`. El pooler en modo
-  transacción no es un lugar sano para DDL.
+- **Todo el proceso** (API, worker, migraciones, seed): pooler de Supavisor en
+  **modo sesión**, puerto `5432`, usuario `postgres.<project-ref>`,
+  `DB_SSL=true`.
+- No uses el puerto `6543` (modo transacción): TypeORM prepara sentencias y el
+  pooler transaccional las rompe.
+- La conexión directa `db.<project-ref>.supabase.co:5432` existe, pero es
+  **solo IPv6**: en una máquina sin IPv6 (esta, por ejemplo) no resuelve ni
+  conecta. El modo sesión acepta DDL, así que alcanza para migrar.
 
 Si hay datos locales que conservar:
 
