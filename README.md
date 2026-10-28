@@ -36,13 +36,18 @@ pnpm typeorm migration:run
 pnpm start:dev
 ```
 
+> Para Supabase Cloud no hace falta `createdb`: ver
+> [Supabase Cloud](#supabase-cloud-postgres--storage). El resto del flujo (env,
+> migraciones, arranque) es el mismo.
+
 ## Redis local (timers)
 
-Los timers de activities usan Redis + BullMQ. Para levantar un Redis de desarrollo:
+Los timers de activities usan Redis + BullMQ. Para levantar sólo la
+infraestructura local:
 
 ```bash
-docker compose up -d        # redis:7-alpine con AOF en localhost:6379
-docker compose ps           # verificar que el contenedor está healthy
+docker compose up -d postgres redis
+docker compose ps           # verificar que los contenedores están healthy
 ```
 
 Variables de entorno (ver `.env.example`, todas opcionales con defaults):
@@ -57,64 +62,81 @@ Variables de entorno (ver `.env.example`, todas opcionales con defaults):
 > Ambos exigen `@nestjs/core ^11` y rompen el peer de Nest 10. Mantener
 > `bullmq@^5.81.5` + `@nestjs/bullmq@^10.2.3` + `ioredis@^5.11.1`.
 
-## Supabase Storage local (adjuntos de actividades)
+## Supabase Cloud (Postgres + Storage)
 
-El backend firma URLs de subida contra Supabase Storage y el cliente móvil hace
-el `PUT` directo contra esa URL. Para probarlo sin depender de la nube hay un
-stack local mínimo, colgado de un profile de compose para que
-`docker compose up -d` siga levantando exactamente lo mismo que antes:
+Un solo proyecto de Supabase Cloud es dueño de la base y del bucket de adjuntos.
+El backend NestJS y el worker siguen igual: no hay Auth ni Realtime de Supabase
+en juego.
+
+### 1. Proyecto
+
+Crear un proyecto en Supabase y tomar de **Project Settings**:
+
+- `SUPABASE_URL` y `SUPABASE_SERVICE_ROLE_KEY` (API)
+- host, puerto, usuario y contraseña de la base (Database)
+
+### 2. Variables
 
 ```bash
-docker compose --profile storage up -d
-docker compose --profile storage ps   # esperar healthy en db/storage/gateway
+cp .env.example .env
 ```
 
-Levanta cinco servicios: `supabase-db` (imagen `supabase/postgres`, puerto
-`54322`), `supabase-rest` (PostgREST, dependencia de arranque de storage-api),
-`supabase-storage` (`STORAGE_BACKEND=file`, sin S3 ni MinIO), `supabase-gateway`
-(Caddy en `54321`) y `supabase-init`, que crea el bucket `activity-attachments`
-de forma idempotente.
+- **Runtime** (API + worker): pooler de Supavisor, puerto `6543`, usuario
+  `postgres.<project-ref>`, `DB_SSL=true`.
+- **Migraciones y seed**: conexión directa,
+  `db.<project-ref>.supabase.co:5432`, usuario `postgres`. El pooler en modo
+  transacción no es un lugar sano para DDL.
 
-No están Studio, GoTrue, Realtime, Edge Runtime ni el pooler: no participan del
-flujo `presign -> PUT -> confirm`.
+Si hay datos locales que conservar:
 
-Variables en `.env` (las mismas que lee la API, así la service-role key no puede
-desincronizarse entre los dos lados):
+```bash
+pg_dump -h localhost -U parental -d parental_coordination \
+  --no-owner --no-privileges -Fc -f parental.dump
+pg_restore --no-owner --no-privileges \
+  -d "postgresql://postgres:<password>@db.<project-ref>.supabase.co:5432/postgres" \
+  parental.dump
+```
 
-- `SUPABASE_URL` — default `http://localhost:54321`
-- `SUPABASE_JWT_SECRET` — HS256 con el que storage-api valida los tokens
-- `SUPABASE_ANON_KEY` / `SUPABASE_SERVICE_ROLE_KEY` — firmadas con ese secreto
-- `SUPABASE_STORAGE_BUCKET_ACTIVITY_ATTACHMENTS` — default `activity-attachments`
-- `ATTACHMENTS_MAX_SIZE_BYTES` — default `10485760`
+Si no hay datos que conservar, alcanza con correr las migraciones sobre la base
+vacía:
 
-> ⚠️ El secreto y las keys de `.env.example` son **sólo para desarrollo local**
-> y están commiteadas a propósito para que un clone nuevo arranque sin generar
-> JWTs. Cualquiera con ese secreto puede firmar un token `service_role`.
+```bash
+DB_SSL=true pnpm typeorm migration:run
+```
+
+### 3. Bucket
+
+```bash
+pnpm storage:init
+```
+
+Crea o ajusta el bucket privado `activity-attachments` con el límite de tamaño y
+los MIME types `image/jpeg`, `image/png`, `application/pdf`. Es idempotente y
+reemplaza al viejo servicio `supabase-init`.
+
+### 4. Verificar
+
+- `GET /api/health`
+- Un presign de adjunto devuelve una URL absoluta de
+  `<project-ref>.supabase.co`, así que el cliente móvil ya no necesita
+  `adb reverse`.
+- `act_attachment.file_url` sigue guardando el path del objeto, no la URL.
 
 ### Emulador de Android
 
-`createSignedUploadUrl` devuelve una URL absoluta construida a partir del
-`SUPABASE_URL` **del backend**, y el emulador hace el `PUT` contra ella. Ese
-mismo valor lo usa el backend para sus propias llamadas (list, signed download,
-delete), así que no puede ser `10.0.2.2` (el host no lo resuelve) ni dejar de
-serlo (el emulador no alcanza el `localhost` del host).
+Las URLs firmadas son absolutas y apuntan a la nube: el
+`adb reverse tcp:54321 tcp:54321` que hacía falta con el stack local ya no
+aplica. Cualquier dispositivo con red puede subir y descargar.
 
-La salida es redirigir el `localhost` del dispositivo al del host:
+### k8s
 
-```bash
-adb reverse tcp:54321 tcp:54321
-```
+Los manifiestos de `k8s/` siguen apuntando a un Postgres dentro del clúster
+(`k8s/app-configmap.yaml`, `k8s/postgres-statefulset.yaml`). Para usar Supabase
+Cloud hay que cambiar `DB_HOST`/`DB_PORT`/`DB_USER`/`DB_SSL` y el secreto de la
+base, y retirar el StatefulSet. Eso no está hecho en este cambio.
 
-Los dos lados usan `http://localhost:54321` y no hay que tocar código. Lo mismo
-aplica al `viewUrl` de descarga, que se abre en el navegador del dispositivo.
-
-### Verificar el stack
-
-```bash
-curl -s http://localhost:54321/storage/v1/status          # gateway -> storage
-docker compose --profile storage exec supabase-db \
-  psql -U postgres -d postgres -c "select id, name from storage.buckets;"
-```
+> ⚠️ Plan free: el proyecto se pausa tras ~1 semana sin actividad y no tiene
+> backups. Para producción hace falta Pro.
 
 ## Endpoints
 
