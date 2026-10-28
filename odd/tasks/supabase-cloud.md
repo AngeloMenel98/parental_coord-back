@@ -55,7 +55,7 @@ PR.
 | T1  | S3       | inline | done    | 9b3715d |
 | T2  | S1, S2, S5 | inline | done  | c65c7a5 |
 | T3  | S6       | inline | done    | este commit |
-| T4  | all      | inline | pending (needs cloud credentials) | — |
+| T4  | all      | inline | partial (DB rebuilt + admin seed; bucket and smoke need credentials) | — |
 
 ## Log
 
@@ -90,3 +90,52 @@ deletion plus docs, there is no runnable behavior to pin in RED, and `scripts/`
 is outside jest's `rootDir`. Not verified: the real cloud cutover (project
 creation, `pg_dump`/`pg_restore`, `migration:run`, bucket creation) — no Supabase
 credentials were available.
+
+L7 — Cloud DB inspection through the Supabase MCP server (project
+`nagiwqmtomybacvcqojq`). The database was **not empty**: it carried a drifted
+schema from an older build. Evidence: `public.migrations` held a single row
+`InitialSchema1791312997492` — a timestamp no migration in this repo uses; the
+enum types were `synchronize`-shaped (`user_system_role_enum`,
+`activity_status_enum`, `bond_agreement_type_enum`) while
+`1785503810000-initial-schema.ts` creates `system_role`, `activity_status`,
+`agreement_type`; `outbox_event`, `webhook_*`, `activity.version` and
+`notification.source_event_id` did not exist; `activity.assigned_confirmed` was
+still there; and the only data was three Oct-6 test accounts
+(`admin@admin.com`, `progenitor@test.com`, `progenitora@test.com`) plus their
+`personal_data` rows.
+
+L8 (verbatim): "ye drop those, but first tell me what are the version in activity, what are there versions?"
+
+L9 — Rebuild. `activity.version` is the optimistic-lock counter added by
+`1791859200000-AddActivityVersionAndOutbox`: `integer NOT NULL DEFAULT 0`, rows
+born at `version = 1` with their first `outbox_event` (`aggregate_version = 1`),
+and `+1` per accepted transition inside the same transaction as that transition's
+outbox row; `applyTransition` compares it against `expectedVersion` under
+`SELECT … FOR UPDATE` and returns `null` on mismatch. It is internal: no DTO
+exposes it, and it feeds the deterministic timer job ids.
+
+L10 — Execution. Stashed `user`/`personal_data` in `_bak_*` tables, dropped the
+17 drifted tables and 11 enum types, then replayed the 13 migrations
+statement-for-statement: each `up()` was run against a stub QueryRunner that
+records `query()` calls, the statements were applied through MCP, and the 13
+`(timestamp, name)` rows were inserted into `public."migrations"` so TypeORM's
+history matches reality. The three accounts were restored and the admin password
+hash was reset to the seed's `admin123` (bcrypt cost 10), because the restored
+row carried a hash of unknown origin.
+
+L11 — Verified on the cloud DB: 21 tables in `public` (20 domain + `migrations`),
+13 history rows ending at `1792646400000`, `activity.version` and
+`activity.category_id` present, `assigned_confirmed` gone, `notification.source_event_id`
+plus `IDX_notification_source_event` / `IDX_notification_user_created`,
+`IDX_outbox_pending`, the four `webhook_*` tables, and `activity_status` =
+`created,assigned,assisting,in_progress,verify,done,overdue,not_assisting,cancelled`
+— exactly the `ActivityStatus` enum in `activity.entity.ts`.
+
+L12 — Gotcha: `DROP TYPE … CASCADE` silently dropped `_bak_user.system_role`
+(the stash column used the old enum type), so the restore mapped roles by user
+id instead. Re-check a stash's columns after dropping enum types, or use
+`text`-cast copies for enum columns.
+
+L13 — Still open: `SUPABASE_SERVICE_ROLE_KEY`, the Supavisor session URI plus DB
+password (the direct host is IPv6-only here), `pnpm storage:init`, and the
+presign → PUT → confirm smoke.
