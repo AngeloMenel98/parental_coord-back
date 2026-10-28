@@ -80,6 +80,12 @@ services:
       - JWT_SECRET=dev-secret
       - JWT_EXPIRES_IN=7d
       - REALTIME_PUBLISH_ENABLED=true
+      # Cloud storage. Read from the same .env the host uses; empty values keep
+      # StorageService disabled (attachments return "Storage not configured").
+      - SUPABASE_URL=${SUPABASE_URL:-}
+      - SUPABASE_SERVICE_ROLE_KEY=${SUPABASE_SERVICE_ROLE_KEY:-}
+      - SUPABASE_STORAGE_BUCKET_ACTIVITY_ATTACHMENTS=${SUPABASE_STORAGE_BUCKET_ACTIVITY_ATTACHMENTS:-activity-attachments}
+      - ATTACHMENTS_MAX_SIZE_BYTES=${ATTACHMENTS_MAX_SIZE_BYTES:-10485760}
     ports:
       - '3000:3000'
     depends_on:
@@ -119,6 +125,10 @@ services:
       - JWT_SECRET=dev-secret
       - JWT_EXPIRES_IN=7d
       - REALTIME_PUBLISH_ENABLED=true
+      - SUPABASE_URL=${SUPABASE_URL:-}
+      - SUPABASE_SERVICE_ROLE_KEY=${SUPABASE_SERVICE_ROLE_KEY:-}
+      - SUPABASE_STORAGE_BUCKET_ACTIVITY_ATTACHMENTS=${SUPABASE_STORAGE_BUCKET_ACTIVITY_ATTACHMENTS:-activity-attachments}
+      - ATTACHMENTS_MAX_SIZE_BYTES=${ATTACHMENTS_MAX_SIZE_BYTES:-10485760}
     depends_on:
       postgres:
         condition: service_healthy
@@ -134,147 +144,6 @@ services:
       start_period: 20s
     restart: unless-stopped
 
-  # ---------------------------------------------------------------------------
-  # Local Supabase Storage for activity attachments.
-  #
-  # Opt-in via profile so `docker compose up -d` keeps starting exactly the same
-  # set of services as before:
-  #
-  #   docker compose --profile storage up -d
-  #
-  # Only the pieces storage actually needs are here. The official self-hosted
-  # stack also runs Studio, GoTrue, Realtime, Edge Runtime, postgres-meta, imgproxy,
-  # Logflare, Vector and Supavisor; none of them participate in the
-  # presign -> PUT -> confirm flow this backend implements.
-  #
-  # Files land on the `storage-data` volume (`STORAGE_BACKEND: file`), so no S3
-  # or MinIO is involved. The gateway strips the `/storage/v1` prefix that
-  # supabase-js prepends; see docker/supabase/Caddyfile.
-  #
-  # The bucket is created by the one-shot `supabase-init` service. All values
-  # that must agree with the backend come from .env (same file the API reads),
-  # so the service-role key cannot drift between the two.
-  # ---------------------------------------------------------------------------
-  supabase-db:
-    image: supabase/postgres:17.6.1.136
-    container_name: parental-supabase-db
-    profiles: ['storage']
-    environment:
-      - POSTGRES_PASSWORD=${SUPABASE_DEV_DB_PASSWORD:-supabase_dev_secret}
-      - POSTGRES_DB=postgres
-      - POSTGRES_HOST=/var/run/postgresql
-    command: ['postgres', '-c', 'config_file=/etc/postgresql/postgresql.conf']
-    volumes:
-      - supabase-db-data:/var/lib/postgresql/data
-      - ./docker/supabase/init/99-roles.sql:/docker-entrypoint-initdb.d/init-scripts/99-roles.sql:ro
-    ports:
-      - '54322:5432'
-    healthcheck:
-      test: ['CMD', 'pg_isready', '-U', 'postgres', '-h', 'localhost']
-      interval: 5s
-      timeout: 5s
-      retries: 10
-    restart: unless-stopped
-
-  # Only used because storage-api requires POSTGREST_URL at boot. It is not
-  # part of the attachment flow.
-  supabase-rest:
-    image: postgrest/postgrest:v14.18
-    container_name: parental-supabase-rest
-    profiles: ['storage']
-    environment:
-      - PGRST_DB_URI=postgres://authenticator:${SUPABASE_DEV_DB_PASSWORD:-supabase_dev_secret}@supabase-db:5432/postgres
-      - PGRST_DB_SCHEMAS=public
-      - PGRST_DB_ANON_ROLE=anon
-      - PGRST_JWT_SECRET=${SUPABASE_JWT_SECRET}
-    depends_on:
-      supabase-db:
-        condition: service_healthy
-    restart: unless-stopped
-
-  supabase-storage:
-    image: supabase/storage-api:v1.81.0
-    container_name: parental-supabase-storage
-    profiles: ['storage']
-    environment:
-      - ANON_KEY=${SUPABASE_ANON_KEY}
-      - SERVICE_KEY=${SUPABASE_SERVICE_ROLE_KEY}
-      - AUTH_JWT_SECRET=${SUPABASE_JWT_SECRET}
-      - POSTGREST_URL=http://supabase-rest:3000
-      - DATABASE_URL=postgres://supabase_storage_admin:${SUPABASE_DEV_DB_PASSWORD:-supabase_dev_secret}@supabase-db:5432/postgres
-      - STORAGE_PUBLIC_URL=${SUPABASE_URL:-http://localhost:54321}
-      - REQUEST_ALLOW_X_FORWARDED_PATH=true
-      - STORAGE_BACKEND=file
-      - FILE_STORAGE_BACKEND_PATH=/var/lib/storage
-      - GLOBAL_S3_BUCKET=stub
-      - TENANT_ID=stub
-      - REGION=stub
-      - FILE_SIZE_LIMIT=${ATTACHMENTS_MAX_SIZE_BYTES:-10485760}
-      # Attachments are stored as uploaded; compression happens client-side.
-      - ENABLE_IMAGE_TRANSFORMATION=false
-      - S3_PROTOCOL_ACCESS_KEY_ID=625729a08b95bf1b7ff351a663f3a23c
-      - S3_PROTOCOL_ACCESS_KEY_SECRET=850181e4652dd023b7a98c58ae0d2d34bd487ee0cc3254aed6eda37307425907
-    volumes:
-      - storage-data:/var/lib/storage
-    depends_on:
-      supabase-db:
-        condition: service_healthy
-      supabase-rest:
-        condition: service_started
-    healthcheck:
-      # 127.0.0.1, not localhost: storage-api listens on IPv4 only while the
-      # container resolves localhost to ::1, so the check would never pass.
-      test: ['CMD', 'wget', '--no-verbose', '--tries=1', '--spider', 'http://127.0.0.1:5000/status']
-      interval: 5s
-      timeout: 5s
-      retries: 10
-      start_period: 10s
-    restart: unless-stopped
-
-  supabase-gateway:
-    image: caddy:2-alpine
-    container_name: parental-supabase-gateway
-    profiles: ['storage']
-    ports:
-      - '54321:5000'
-    volumes:
-      - ./docker/supabase/Caddyfile:/etc/caddy/Caddyfile:ro
-    depends_on:
-      supabase-storage:
-        condition: service_healthy
-    healthcheck:
-      test: ['CMD', 'wget', '--no-verbose', '--tries=1', '--spider', 'http://127.0.0.1:5000/storage/v1/status']
-      interval: 5s
-      timeout: 5s
-      retries: 10
-      start_period: 5s
-    restart: unless-stopped
-
-  # One-shot bucket bootstrap. Mirrors the `migrate` service pattern: it must
-  # exit 0, not loop. Idempotent, so re-running the stack is harmless.
-  supabase-init:
-    image: postgres:16-alpine
-    container_name: parental-supabase-init
-    profiles: ['storage']
-    environment:
-      - PGPASSWORD=${SUPABASE_DEV_DB_PASSWORD:-supabase_dev_secret}
-    command:
-      - sh
-      - -c
-      - >
-        psql -h supabase-db -U postgres -d postgres -v ON_ERROR_STOP=1 -c
-        "INSERT INTO storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
-        VALUES ('activity-attachments', 'activity-attachments', false,
-        ${ATTACHMENTS_MAX_SIZE_BYTES:-10485760},
-        ARRAY['image/jpeg','image/png','application/pdf'])
-        ON CONFLICT (id) DO NOTHING;"
-    depends_on:
-      supabase-storage:
-        condition: service_healthy
-    restart: 'no'
-
 volumes:
   postgres-data:
   redis-data:
-  supabase-db-data:
-  storage-data:
