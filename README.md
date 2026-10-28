@@ -62,11 +62,60 @@ Variables de entorno (ver `.env.example`, todas opcionales con defaults):
 > Ambos exigen `@nestjs/core ^11` y rompen el peer de Nest 10. Mantener
 > `bullmq@^5.81.5` + `@nestjs/bullmq@^10.2.3` + `ioredis@^5.11.1`.
 
+## Entornos: dev local, prod en Supabase Cloud
+
+Producción es **Supabase Cloud**. Desarrollo es **docker compose**, en tu
+máquina. No hay un tercer entorno y k8s queda fuera por ahora.
+
+| | Dónde corre la API | Base | Redis | Bucket |
+| --- | --- | --- | --- | --- |
+| **dev** | `pnpm start:dev` en tu máquina | `docker compose postgres` | `docker compose redis` | `activity-attachments-dev` |
+| **prod** | donde deployes (`node dist/src/main`) | Supabase Cloud (pooler de sesión) | el que uses | `activity-attachments` |
+
+Los dos archivos de entorno:
+
+- **`.env`** → dev. `DB_HOST=127.0.0.1`, `DB_SSL=false`, bucket `-dev`.
+- **`.env.prod`** → prod. Pooler de Supavisor, `DB_SSL=true`, bucket
+  `activity-attachments`.
+
+Los dos están gitignoreados. `.env.example` es el único archivo versionado.
+
+### Regla que evita el accidente
+
+**`git push` no toca Supabase.** No hay CI en este repo. La base cloud cambia
+sólo cuando alguien corre una migración a mano o cuando un proceso vivo conectado
+a ella escribe filas. Por eso dev y prod se separan en el archivo, no en la
+memoria de quien escribe el comando.
+
+### Dev
+
+```bash
+docker compose up -d postgres redis
+pnpm typeorm migration:run     # .env -> localhost
+pnpm seed:admin                # .env -> localhost
+pnpm start:dev
+```
+
+### Prod
+
+```bash
+pnpm typeorm:prod              # ENV_FILE=.env.prod migration:run
+pnpm seed:admin:prod           # ENV_FILE=.env.prod
+pnpm storage:init:prod         # ENV_FILE=.env.prod, bucket activity-attachments
+```
+
+Las tres son idempotentes: `migration:run` responde "No migrations are pending"
+si no hay nada nuevo, el seed saltea el admin existente y el bootstrap del bucket
+converge al límite declarado.
+
 ## Supabase Cloud (Postgres + Storage)
 
 Un solo proyecto de Supabase Cloud es dueño de la base y del bucket de adjuntos.
 El backend NestJS y el worker siguen igual: no hay Auth ni Realtime de Supabase
-en juego.
+en juego. Dev y prod **comparten el proyecto** (y por lo tanto la service-role
+key), pero no la base ni el bucket: dev usa `docker compose postgres` y
+`activity-attachments-dev`. Aislamiento real del todo requiere un segundo
+proyecto de Supabase.
 
 ### 1. Proyecto
 
@@ -78,7 +127,8 @@ Crear un proyecto en Supabase y tomar de **Project Settings**:
 ### 2. Variables
 
 ```bash
-cp .env.example .env
+cp .env.example .env        # dev
+cp .env.example .env.prod   # prod, y completar con los valores de la nube
 ```
 
 - **Todo el proceso** (API, worker, migraciones, seed): pooler de Supavisor en

@@ -42,8 +42,18 @@ idempotent against a cloud project, using `SUPABASE_URL` +
 S6 — **Runbook.** README documents: project creation, env values, pooler vs
 direct ports, migration run, bucket bootstrap, data dump/restore, and the fact
 that cloud signed URLs are absolute (the Android `adb reverse` step disappears).
-Record that k8s still runs an in-cluster Postgres and what must change to point
-it at Supabase.
+k8s is out of scope for now (L18): the manifests still point at an in-cluster
+Postgres and were deliberately left alone.
+
+S7 — **Environment split.** Production is Supabase Cloud; development is docker
+compose on the developer machine; no third environment, and k8s is out of scope
+for now (user: "olvidate de k8s, usemos por ahora Supabase como prod y
+comopose/local como dev"). Two env files selected by `ENV_FILE`: `.env` for dev
+(local Postgres, `DB_SSL=false`, bucket `activity-attachments-dev`) and
+`.env.prod` for production (Supavisor session pooler, `DB_SSL=true`, bucket
+`activity-attachments`). Both are gitignored and `.env.example` is the only
+tracked env file; `typeorm:prod`, `seed:admin:prod` and `storage:init:prod` are
+the explicit production entry points.
 
 Out of scope: Supabase Auth, Supabase Realtime, Edge Functions, RLS policies,
 rewriting k8s manifests, deleting existing Docker volumes, pushing or opening a
@@ -55,8 +65,9 @@ PR.
 | --- | -------- | ----- | ------- | ------ |
 | T1  | S3       | inline | done    | 9b3715d |
 | T2  | S1, S2, S5 | inline | done  | c65c7a5 |
-| T3  | S6       | inline | done    | este commit |
-| T4  | all      | inline | done  | este commit |
+| T3  | S6       | inline | done    | 1febdaa |
+| T4  | all      | inline | done  | ba1c379 |
+| T5  | S7       | inline | done  | este commit |
 
 ## Log
 
@@ -195,3 +206,38 @@ L17 — Cleanup and two observations.
   returns the raw `ActivityEntity`, so `version` **does** appear in that one
   response. Not a security issue (it is the caller's own activity), just not
   what the log claimed.
+
+L18 — User correction: "olvidate de k8s, usemos por ahora Supabase como prod y
+comopose/local como dev". That closes the ambiguity L10 left open: there is no
+third environment, and k8s stops being a target for now. It also exposed a real
+hole.
+
+- **Hole: `.env.prod` was not gitignored.** `.gitignore` had `.env`,
+  `.env.test`, `.env.*.local` — `.env.prod` matched none of them, so the file
+  holding the production DB password and the service-role key was one `git add
+  .` away from being committed. Replaced with `.env`, `.env.*`,
+  `!.env.example`. Checked with `git check-ignore`: `.env`, `.env.prod`,
+  `.env.test` are ignored, `.env.example` is tracked.
+- **Split.** `.env` is now dev only: `DB_HOST=127.0.0.1`, `DB_SSL=false`, bucket
+  `activity-attachments-dev`. `.env.prod` is an exact copy of the previous cloud
+  file: pooler, `DB_SSL=true`, bucket `activity-attachments`. Both `chmod 600`.
+  Verified the key sets are identical — only the values differ.
+- **Scripts.** `typeorm:prod`, `seed:admin:prod`, `storage:init:prod` all set
+  `ENV_FILE=.env.prod`. The existing `ENV_FILE` plumbing in
+  `data-source.ts`, `app.module.ts`, `seed-admin.ts` and
+  `create-storage-bucket.ts` needed no change, which is why the split was this
+  small.
+- **Dev bucket created:** `Bucket "activity-attachments-dev" created (private,
+  10485760 bytes max)`. The cloud project now has both buckets, both private,
+  same limit.
+- **Verified.** `pnpm typeorm migration:run` (dev) → "No migrations are
+  pending"; `pnpm typeorm:prod` → "No migrations are pending". Local DB has 21
+  tables / 13 migration rows / 16 users. The API started from `.env`, answered
+  `GET /api/health` → `{"status":"ok","db":"ok"}`, and the only app connection
+  in the local Postgres was `parental@parental_coordination state=idle` — proof
+  that dev never touched the cloud. Prod still has 3 users, 0 activities, 13
+  migration rows. API, Redis and Postgres stopped afterwards.
+- **Honest limit.** Dev and prod share the Supabase *project*, therefore the
+  service-role key. They are separated in DB and bucket, not in credentials.
+  Real isolation requires a second project; the README says so instead of
+  pretending otherwise.
