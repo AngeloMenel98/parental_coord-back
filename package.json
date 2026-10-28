@@ -29,7 +29,8 @@
     "smoke:db:migrate": "ENV_FILE=.env.test pnpm typeorm migration:run",
     "smoke:db:seed": "ENV_FILE=.env.test pnpm seed:admin",
     "typeorm": "typeorm-ts-node-commonjs -d src/database/data-source.ts",
-    "seed:admin": "ts-node scripts/seed-admin.ts"
+    "seed:admin": "ts-node scripts/seed-admin.ts",
+    "storage:init": "ts-node scripts/create-storage-bucket.ts"
   },
   "dependencies": {
     "@nestjs/bullmq": "^10.2.3",
