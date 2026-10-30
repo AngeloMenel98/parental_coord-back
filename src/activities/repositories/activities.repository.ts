@@ -116,6 +116,22 @@ export class ActivitiesRepository extends BaseRepository<ActivityEntity> {
   }
 
   /**
+   * Detalle de activity con los `childrenIds` resueltos igual que en el listado
+   * (REQ-T09 D-5). Excluye filas soft-deleted.
+   */
+  async findByIdWithChildren(id: string): Promise<ActivityEntity | null> {
+    return this.activityRepo
+      .createQueryBuilder('a')
+      .where('a.id = :id', { id })
+      .andWhere('a.deleted_at IS NULL')
+      .addSelect(
+        "(SELECT COALESCE(array_agg(ac.child_id ORDER BY ac.created_at), '{}'::uuid[]) FROM activity_child ac WHERE ac.activity_id = a.id)",
+        'childrenIds',
+      )
+      .getOne();
+  }
+
+  /**
    * Crea una actividad dentro de una transacción abierta por `transaction()`.
    *
    * `manager` es opcional (patrón `manager?` de ActivitiesAuditRepository.record):

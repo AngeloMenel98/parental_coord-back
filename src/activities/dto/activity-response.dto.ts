@@ -61,4 +61,6 @@ export class ActivityDetailDto {
   @Expose() isPast!: boolean;
 
   @Expose() declinedReason!: string | null;
+
+  @Expose() childrenIds: string[] = [];
 }

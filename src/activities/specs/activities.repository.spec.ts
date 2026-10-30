@@ -32,6 +32,7 @@ describe('ActivitiesRepository', () => {
       addSelect: jest.fn().mockReturnThis(),
       limit: jest.fn().mockReturnThis(),
       getMany: jest.fn().mockResolvedValue([]),
+      getOne: jest.fn().mockResolvedValue(null),
       getRawMany: jest.fn().mockResolvedValue([]),
       execute: jest.fn().mockResolvedValue({ affected: 1 }),
     };
@@ -112,6 +113,19 @@ describe('ActivitiesRepository', () => {
       const where = activityRepo.findOne.mock.calls[0][0].where as Record<string, unknown>;
       expect(where.deletedAt).toBeUndefined();
       expect(where.id).toBe('a1');
+    });
+
+    it('findByIdWithChildren filters on deleted_at and selects the childrenIds subquery', async () => {
+      await repo.findByIdWithChildren('a1');
+
+      expect(activityRepo.createQueryBuilder).toHaveBeenCalledWith('a');
+      expect(qb.where).toHaveBeenCalledWith('a.id = :id', { id: 'a1' });
+      expect(qb.andWhere).toHaveBeenCalledWith(softDeleteClause);
+      expect(qb.addSelect).toHaveBeenCalledWith(
+        expect.stringContaining('activity_child'),
+        'childrenIds',
+      );
+      expect(qb.getOne).toHaveBeenCalled();
     });
 
     it('exposes NO purge/GC method — ruling A4 deleted the 30-day retention entirely', () => {

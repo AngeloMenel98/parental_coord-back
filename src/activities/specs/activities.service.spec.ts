@@ -86,6 +86,9 @@ describe('ActivitiesService', () => {
 
     fakeManager = {} as any;
     activityRepo.transaction = jest.fn(async (fn: any) => fn(fakeManager));
+    // getDetail now uses the children-enriched path; default to the same fixture
+    // so existing getDetail specs keep working without per-test rewrites.
+    activityRepo.findByIdWithChildren = jest.fn((id: string) => activityRepo.findById(id));
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -1047,6 +1050,14 @@ describe('ActivitiesService', () => {
       const detail = await service.getDetail('a1', creator);
       expect(detail.declinedReason).toBeNull();
       expect('declinedReason' in detail).toBe(true);
+    });
+
+    it('getDetail exposes childrenIds linked to the activity (D-5)', async () => {
+      activityRepo.findByIdWithChildren.mockResolvedValue(
+        futureActivity({ childrenIds: [childId, 'c2'] }),
+      );
+      const detail = await service.getDetail('a1', creator);
+      expect(detail.childrenIds).toEqual([childId, 'c2']);
     });
   });
 

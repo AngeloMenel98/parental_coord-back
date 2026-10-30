@@ -425,7 +425,8 @@ export class ActivitiesService {
   }
 
   async getDetail(id: string, userId: string): Promise<ActivityDetailDto> {
-    const activity = await this.findById(id);
+    const activity = await this.activitiesRepo.findByIdWithChildren(id);
+    if (!activity) throw activityNotFound();
 
     await this.assertActivityMember(activity, userId);
 
