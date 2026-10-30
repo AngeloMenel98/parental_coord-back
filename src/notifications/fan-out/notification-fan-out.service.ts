@@ -69,7 +69,10 @@ export class NotificationFanOutService {
       return [];
     }
 
-    const { title, body } = renderNotificationText(rule, activity.title);
+    const { title, body } = renderNotificationText(rule, {
+      activityTitle: activity.title,
+      scheduledStart: activity.scheduledStart,
+    });
 
     // Los duplicados no lanzan: `createFromEvent` devuelve `null` por el
     // ON CONFLICT DO NOTHING. Cualquier error real debe propagarse para que

@@ -18,6 +18,7 @@ describe('NotificationFanOutService', () => {
     title: 'Ir al pediatra',
     createdBy: 'u3',
     assignedTo: 'u2',
+    scheduledStart: new Date('2026-10-05T10:00:00Z'),
     deletedAt: null,
     ...overrides,
   });
@@ -73,8 +74,8 @@ describe('NotificationFanOutService', () => {
         userId: 'u3',
         bondId: 'b1',
         type: 'activity_created',
-        title: 'New activity: Ir al pediatra',
-        body: 'New activity: Ir al pediatra',
+        title: 'Nueva actividad',
+        body: expect.stringContaining('Ir al pediatra'),
         refEntityType: 'activity',
         refEntityId: 'a1',
         sourceEventId: 'e1',
@@ -132,7 +133,10 @@ describe('NotificationFanOutService', () => {
     await service.handleOutboxEvent(event, manager);
 
     expect(notificationRepository.createFromEvent.mock.calls[0][0].title).toBe(
-      'Activity overdue: Ir al pediatra',
+      'Actividad vencida',
+    );
+    expect(notificationRepository.createFromEvent.mock.calls[0][0].body).toContain(
+      'Ir al pediatra',
     );
     expect(notificationRepository.createFromEvent.mock.calls[0][0].type).toBe('activity_overdue');
     const userIds = notificationRepository.createFromEvent.mock.calls

@@ -10,7 +10,7 @@ import {
 interface ExpectedRule {
   eventType: string;
   type: string;
-  template: string;
+  title: string;
   recipients: string[];
   excludeCoordinator: boolean;
   needsCoordinator: boolean;
@@ -21,7 +21,7 @@ const EXPECTED_RULES: ExpectedRule[] = [
   {
     eventType: 'activity.created',
     type: 'activity_created',
-    template: 'New activity: {title}',
+    title: 'Nueva actividad',
     recipients: ['members'],
     excludeCoordinator: true,
     needsCoordinator: true,
@@ -30,7 +30,7 @@ const EXPECTED_RULES: ExpectedRule[] = [
   {
     eventType: 'activity.assigned',
     type: 'activity_assigned',
-    template: 'New activity assigned: {title}',
+    title: 'Nueva actividad asignada',
     recipients: ['assignee', 'creator'],
     excludeCoordinator: true,
     needsCoordinator: true,
@@ -39,7 +39,7 @@ const EXPECTED_RULES: ExpectedRule[] = [
   {
     eventType: 'activity.assisting',
     type: 'activity_assisting',
-    template: 'Activity accepted: {title}',
+    title: 'Actividad aceptada',
     recipients: ['creator', 'coordinator'],
     excludeCoordinator: false,
     needsCoordinator: true,
@@ -48,7 +48,7 @@ const EXPECTED_RULES: ExpectedRule[] = [
   {
     eventType: 'activity.in_progress',
     type: 'activity_in_progress',
-    template: 'Activity started: {title}',
+    title: 'Actividad en curso',
     recipients: ['assignee', 'creator'],
     excludeCoordinator: false,
     needsCoordinator: false,
@@ -57,7 +57,7 @@ const EXPECTED_RULES: ExpectedRule[] = [
   {
     eventType: 'activity.overdue',
     type: 'activity_overdue',
-    template: 'Activity overdue: {title}',
+    title: 'Actividad vencida',
     recipients: ['assignee', 'creator', 'coordinator'],
     excludeCoordinator: false,
     needsCoordinator: true,
@@ -66,7 +66,7 @@ const EXPECTED_RULES: ExpectedRule[] = [
   {
     eventType: 'activity.not_assisting',
     type: 'activity_not_assisting',
-    template: 'Activity declined: {title}',
+    title: 'Actividad declinada',
     recipients: ['creator', 'coordinator'],
     excludeCoordinator: false,
     needsCoordinator: true,
@@ -75,7 +75,7 @@ const EXPECTED_RULES: ExpectedRule[] = [
   {
     eventType: 'activity.done',
     type: 'activity_done',
-    template: 'Activity completed: {title}',
+    title: 'Actividad finalizada',
     recipients: ['assignee', 'creator', 'coordinator'],
     excludeCoordinator: false,
     needsCoordinator: true,
@@ -84,7 +84,7 @@ const EXPECTED_RULES: ExpectedRule[] = [
   {
     eventType: 'activity.cancelled',
     type: 'activity_cancelled',
-    template: 'Activity cancelled: {title}',
+    title: 'Actividad cancelada',
     recipients: ['assignee', 'creator'],
     excludeCoordinator: false,
     needsCoordinator: false,
@@ -98,7 +98,11 @@ function ruleOf(eventType: string): NotificationFanOutRule {
   return rule;
 }
 
-describe('activity-notification map (notifications-fanout T2.1/T2.2)', () => {
+const SAMPLE_TITLE = 'Clases de natación';
+const LONG_TITLE = 'A'.repeat(80);
+const SAMPLE_DATE = new Date('2026-10-05T10:00:00Z');
+
+describe('activity-notification map (notifications-fanout T2.1/T2.2 + T10)', () => {
   describe('resolveNotificationRule', () => {
     it.each(EXPECTED_RULES)('maps $eventType to $type', (expected) => {
       const rule = resolveNotificationRule(expected.eventType);
@@ -107,7 +111,7 @@ describe('activity-notification map (notifications-fanout T2.1/T2.2)', () => {
       expect(rule).toMatchObject({
         eventType: expected.eventType,
         type: expected.type,
-        template: expected.template,
+        title: expected.title,
         recipients: expected.recipients,
         excludeCoordinator: expected.excludeCoordinator,
         needsCoordinator: expected.needsCoordinator,
@@ -139,13 +143,20 @@ describe('activity-notification map (notifications-fanout T2.1/T2.2)', () => {
       );
     });
 
-    it('uses the R-10 template for overdue (not the legacy bare activity title)', () => {
-      expect(ruleOf(ACTIVITY_EVENT.OVERDUE).template).toBe('Activity overdue: {title}');
+    it('uses the Spanish title for overdue', () => {
+      expect(ruleOf(ACTIVITY_EVENT.OVERDUE).title).toBe('Actividad vencida');
     });
 
     it('reuses the already-shipped notification types for assigned and overdue', () => {
       expect(ruleOf(ACTIVITY_EVENT.ASSIGNED).type).toBe('activity_assigned');
       expect(ruleOf(ACTIVITY_EVENT.OVERDUE).type).toBe('activity_overdue');
+    });
+
+    it('every rule title is Spanish and ≤ 40 characters', () => {
+      for (const rule of NOTIFICATION_FAN_OUT_RULES) {
+        expect(rule.title.length).toBeLessThanOrEqual(40);
+        expect(rule.title).not.toMatch(/^[A-Z][a-z]+ [a-z]+:/); // no legacy "X: title"
+      }
     });
   });
 
@@ -330,25 +341,87 @@ describe('activity-notification map (notifications-fanout T2.1/T2.2)', () => {
     });
   });
 
-  describe('renderNotificationText', () => {
-    it.each(EXPECTED_RULES)('renders $template as BOTH title and body', (expected) => {
-      const rendered = renderNotificationText(ruleOf(expected.eventType), 'Fix the sink');
+  describe('renderNotificationText (T10 contract)', () => {
+    it.each(EXPECTED_RULES)(
+      'renders a Spanish title and body that differ for $eventType',
+      (expected) => {
+        const rendered = renderNotificationText(ruleOf(expected.eventType), {
+          activityTitle: SAMPLE_TITLE,
+        });
 
-      const text = expected.template.replace('{title}', 'Fix the sink');
-      expect(rendered).toEqual({ title: text, body: text });
+        expect(rendered.title).toBe(expected.title);
+        expect(rendered.body).toContain(SAMPLE_TITLE);
+        expect(rendered.title).not.toBe(rendered.body);
+      },
+    );
+
+    it('title is always ≤ 40 chars and body ≤ 100 chars for a normal title', () => {
+      for (const rule of NOTIFICATION_FAN_OUT_RULES) {
+        const rendered = renderNotificationText(rule, {
+          activityTitle: SAMPLE_TITLE,
+          scheduledStart: SAMPLE_DATE,
+        });
+        expect(rendered.title.length).toBeLessThanOrEqual(40);
+        expect(rendered.body.length).toBeLessThanOrEqual(100);
+      }
     });
 
-    it('produces the exact R-10 title for overdue', () => {
-      const rendered = renderNotificationText(ruleOf(ACTIVITY_EVENT.OVERDUE), 'Pick up kids');
+    it('body stays ≤ 100 chars even when the activity title is 80 characters', () => {
+      for (const rule of NOTIFICATION_FAN_OUT_RULES) {
+        const rendered = renderNotificationText(rule, {
+          activityTitle: LONG_TITLE,
+          scheduledStart: SAMPLE_DATE,
+        });
+        expect(rendered.body.length).toBeLessThanOrEqual(100);
+      }
+    });
 
-      expect(rendered.title).toBe('Activity overdue: Pick up kids');
-      expect(rendered.body).toBe('Activity overdue: Pick up kids');
+    it('includes date/time when scheduledStart is provided (assigned example)', () => {
+      const rendered = renderNotificationText(ruleOf(ACTIVITY_EVENT.ASSIGNED), {
+        activityTitle: SAMPLE_TITLE,
+        scheduledStart: SAMPLE_DATE,
+      });
+
+      expect(rendered.body).toContain(SAMPLE_TITLE);
+      expect(rendered.body).toMatch(/\d{2}\/\d{2} a las \d{2}:\d{2}/);
+    });
+
+    it('falls back to a copy without date/time when scheduledStart is missing', () => {
+      const rendered = renderNotificationText(ruleOf(ACTIVITY_EVENT.ASSIGNED), {
+        activityTitle: SAMPLE_TITLE,
+      });
+
+      expect(rendered.body).toContain(SAMPLE_TITLE);
+      expect(rendered.body).not.toMatch(/\d{2}\/\d{2}/);
+    });
+
+    it('matches the approved reference wording for assigned, overdue and done', () => {
+      expect(
+        renderNotificationText(ruleOf(ACTIVITY_EVENT.ASSIGNED), {
+          activityTitle: 'Clases de natación',
+          scheduledStart: new Date('2026-11-05T17:00:00Z'),
+        }).title,
+      ).toBe('Nueva actividad asignada');
+
+      expect(
+        renderNotificationText(ruleOf(ACTIVITY_EVENT.OVERDUE), {
+          activityTitle: 'Reunión escolar',
+        }).title,
+      ).toBe('Actividad vencida');
+
+      expect(
+        renderNotificationText(ruleOf(ACTIVITY_EVENT.DONE), {
+          activityTitle: 'Entrega de documentos',
+        }).title,
+      ).toBe('Actividad finalizada');
     });
 
     it('inserts $ replacement patterns in the activity title literally', () => {
-      const rendered = renderNotificationText(ruleOf(ACTIVITY_EVENT.DONE), 'Cost $& and $1');
+      const rendered = renderNotificationText(ruleOf(ACTIVITY_EVENT.DONE), {
+        activityTitle: 'Cost $& and $1',
+      });
 
-      expect(rendered.title).toBe('Activity completed: Cost $& and $1');
+      expect(rendered.body).toContain('Cost $& and $1');
     });
   });
 });

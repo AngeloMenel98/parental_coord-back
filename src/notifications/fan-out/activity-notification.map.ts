@@ -4,7 +4,7 @@ import { ACTIVITY_EVENT } from '../../activities/activity-transition.map';
  * Mapping PURO `outbox_event.event_type` → notificación (REQ-FAN-004).
  *
  * Este módulo no toca TypeORM ni Nest: no consulta la activity, ni el bond, ni
- * escribe nada. El futuro `NotificationFanOutService` resuelve los datos y usa
+ * escribe nada. El `NotificationFanOutService` resuelve los datos y usa
  * `buildRecipientIds()` para decidir destinatarios ANTES del primer INSERT
  * (defensivo, design D6). Así una regla mal escrita falla sin abrir SQL.
  */
@@ -31,16 +31,29 @@ export type ActivityNotificationType =
  */
 export type RecipientSlot = 'assignee' | 'creator' | 'coordinator' | 'members';
 
+/** Datos de la activity ya disponibles para renderizar el cuerpo. */
+export interface RenderContext {
+  /** `activity.title` (máx. 80 caracteres en el DTO de creación). */
+  activityTitle: string;
+  /** `activity.scheduled_start`, cuando la activity lo tiene. */
+  scheduledStart?: Date | null;
+}
+
 export interface NotificationFanOutRule {
   eventType: ActivityNotificationEventType;
   /** `notification.type` — un único tipo por evento (límite del índice único). */
   type: ActivityNotificationType;
   /**
-   * Plantilla de título Y cuerpo (`title = body`). `{title}` se sustituye por
-   * `activity.title`. `activity.title` ≤ 80 caracteres en el DTO de creación,
-   * así que el resultado siempre cabe en `notification.title` (varchar 255).
+   * Título de la notificación: QUÉ pasó (≤ 40 caracteres).
+   *
+   * N-2: title y body son cadenas DISTINTAS; el front las renderiza tal cual.
    */
-  template: string;
+  title: string;
+  /**
+   * Cuerpo de la notificación: quién/qué/cuándo + siguiente paso (≤ 100
+   * caracteres). Recibe el contexto resuelto por el servicio.
+   */
+  body: (ctx: RenderContext) => string;
   /** Slots candidatos, todavía sin deduplicar ni excluir al actor. */
   recipients: readonly RecipientSlot[];
   /**
@@ -55,6 +68,65 @@ export interface NotificationFanOutRule {
   needsMembers: boolean;
 }
 
+const TITLE_CREATED = 'Nueva actividad';
+const TITLE_ASSIGNED = 'Nueva actividad asignada';
+const TITLE_ASSISTING = 'Actividad aceptada';
+const TITLE_IN_PROGRESS = 'Actividad en curso';
+const TITLE_OVERDUE = 'Actividad vencida';
+const TITLE_NOT_ASSISTING = 'Actividad declinada';
+const TITLE_DONE = 'Actividad finalizada';
+const TITLE_CANCELLED = 'Actividad cancelada';
+
+/** Todos los títulos deben cumplir el límite de 40 caracteres (N-2). */
+const RULE_TITLES = [
+  TITLE_CREATED,
+  TITLE_ASSIGNED,
+  TITLE_ASSISTING,
+  TITLE_IN_PROGRESS,
+  TITLE_OVERDUE,
+  TITLE_NOT_ASSISTING,
+  TITLE_DONE,
+  TITLE_CANCELLED,
+] as const;
+
+// Verificación estática en tiempo de compilación: si algún título supera los
+// 40 caracteres, este tipo falla y el build se detiene.
+type AssertTitleLength<T extends string> = T extends `${string}${string}${string}${string}${string}${string}${string}${string}${string}${string}${string}${string}${string}${string}${string}${string}${string}${string}${string}${string}${string}${string}${string}${string}${string}${string}${string}${string}${string}${string}${string}${string}${string}${string}${string}${string}${string}${string}${string}${string}${string}`
+  ? never
+  : T;
+type _TitleLengthCheck = AssertTitleLength<(typeof RULE_TITLES)[number]>;
+
+function formatActivityDateTime(date: Date): string {
+  // Se usa la zona horaria de Argentina porque el producto está pensado para
+  // ese contexto; el formato es determinista y no depende del TZ del servidor.
+  const local = new Date(
+    date.toLocaleString('en-US', { timeZone: 'America/Argentina/Buenos_Aires' }),
+  );
+  const day = String(local.getDate()).padStart(2, '0');
+  const month = String(local.getMonth() + 1).padStart(2, '0');
+  const hour = String(local.getHours()).padStart(2, '0');
+  const minute = String(local.getMinutes()).padStart(2, '0');
+  return `${day}/${month} a las ${hour}:${minute}`;
+}
+
+/**
+ * Inserta el título de la actividad en la plantilla garantizando que el
+ * resultado no supere `maxLength`. Si el título es demasiado largo se trunca
+ * con ellipsis; nunca se inventa texto.
+ */
+function renderWithTitle(template: string, ctx: RenderContext, maxLength = 100): string {
+  const maxTitleLength = maxLength - template.replace('{title}', '').length;
+  const rawTitle = ctx.activityTitle;
+  const title =
+    maxTitleLength >= rawTitle.length
+      ? rawTitle
+      : `${rawTitle.slice(0, Math.max(0, maxTitleLength - 1))}…`;
+
+  // Función de reemplazo (no string): un título con `$&`/`$1` se inserta
+  // literalmente en vez de interpretarse como patrón de `String.replace`.
+  return template.replace('{title}', () => title);
+}
+
 /**
  * Las 8 reglas entregables. `activity.unassigned` NO está aquí a propósito:
  * no existe productor y el payload aún no lleva `previousAssignedTo`, así que
@@ -65,7 +137,13 @@ export const NOTIFICATION_FAN_OUT_RULES: readonly NotificationFanOutRule[] = [
   {
     eventType: ACTIVITY_EVENT.CREATED,
     type: 'activity_created',
-    template: 'New activity: {title}',
+    title: TITLE_CREATED,
+    body: (ctx) => {
+      const date = ctx.scheduledStart ? formatActivityDateTime(ctx.scheduledStart) : null;
+      return date
+        ? renderWithTitle(`Se creó "{title}" para el ${date}.`, ctx)
+        : renderWithTitle('Se creó "{title}".', ctx);
+    },
     recipients: ['members'],
     excludeCoordinator: true,
     needsCoordinator: true,
@@ -74,7 +152,13 @@ export const NOTIFICATION_FAN_OUT_RULES: readonly NotificationFanOutRule[] = [
   {
     eventType: ACTIVITY_EVENT.ASSIGNED,
     type: 'activity_assigned',
-    template: 'New activity assigned: {title}',
+    title: TITLE_ASSIGNED,
+    body: (ctx) => {
+      const date = ctx.scheduledStart ? formatActivityDateTime(ctx.scheduledStart) : null;
+      return date
+        ? renderWithTitle(`Te asignaron "{title}" para el ${date}.`, ctx)
+        : renderWithTitle('Te asignaron "{title}".', ctx);
+    },
     recipients: ['assignee', 'creator'],
     excludeCoordinator: true,
     needsCoordinator: true,
@@ -83,7 +167,13 @@ export const NOTIFICATION_FAN_OUT_RULES: readonly NotificationFanOutRule[] = [
   {
     eventType: ACTIVITY_EVENT.ASSISTING,
     type: 'activity_assisting',
-    template: 'Activity accepted: {title}',
+    body: (ctx) => {
+      const date = ctx.scheduledStart ? formatActivityDateTime(ctx.scheduledStart) : null;
+      return date
+        ? renderWithTitle(`Se confirmó "{title}" para el ${date}.`, ctx)
+        : renderWithTitle('Se confirmó "{title}".', ctx);
+    },
+    title: TITLE_ASSISTING,
     recipients: ['creator', 'coordinator'],
     excludeCoordinator: false,
     needsCoordinator: true,
@@ -92,7 +182,13 @@ export const NOTIFICATION_FAN_OUT_RULES: readonly NotificationFanOutRule[] = [
   {
     eventType: ACTIVITY_EVENT.IN_PROGRESS,
     type: 'activity_in_progress',
-    template: 'Activity started: {title}',
+    title: TITLE_IN_PROGRESS,
+    body: (ctx) => {
+      const date = ctx.scheduledStart ? formatActivityDateTime(ctx.scheduledStart) : null;
+      return date
+        ? renderWithTitle(`Comenzó "{title}" el ${date}.`, ctx)
+        : renderWithTitle('Comenzó "{title}".', ctx);
+    },
     recipients: ['assignee', 'creator'],
     excludeCoordinator: false,
     needsCoordinator: false,
@@ -101,7 +197,12 @@ export const NOTIFICATION_FAN_OUT_RULES: readonly NotificationFanOutRule[] = [
   {
     eventType: ACTIVITY_EVENT.OVERDUE,
     type: 'activity_overdue',
-    template: 'Activity overdue: {title}',
+    title: TITLE_OVERDUE,
+    body: (ctx) =>
+      renderWithTitle(
+        '"{title}" venció. Reprográmala o márcala como finalizada.',
+        ctx,
+      ),
     recipients: ['assignee', 'creator', 'coordinator'],
     excludeCoordinator: false,
     needsCoordinator: true,
@@ -110,7 +211,8 @@ export const NOTIFICATION_FAN_OUT_RULES: readonly NotificationFanOutRule[] = [
   {
     eventType: ACTIVITY_EVENT.NOT_ASSISTING,
     type: 'activity_not_assisting',
-    template: 'Activity declined: {title}',
+    title: TITLE_NOT_ASSISTING,
+    body: (ctx) => renderWithTitle('El responsable declinó "{title}".', ctx),
     recipients: ['creator', 'coordinator'],
     excludeCoordinator: false,
     needsCoordinator: true,
@@ -119,7 +221,8 @@ export const NOTIFICATION_FAN_OUT_RULES: readonly NotificationFanOutRule[] = [
   {
     eventType: ACTIVITY_EVENT.DONE,
     type: 'activity_done',
-    template: 'Activity completed: {title}',
+    title: TITLE_DONE,
+    body: (ctx) => renderWithTitle('Se finalizó "{title}".', ctx),
     recipients: ['assignee', 'creator', 'coordinator'],
     excludeCoordinator: false,
     needsCoordinator: true,
@@ -128,7 +231,8 @@ export const NOTIFICATION_FAN_OUT_RULES: readonly NotificationFanOutRule[] = [
   {
     eventType: ACTIVITY_EVENT.CANCELLED,
     type: 'activity_cancelled',
-    template: 'Activity cancelled: {title}',
+    title: TITLE_CANCELLED,
+    body: (ctx) => renderWithTitle('Se canceló "{title}".', ctx),
     recipients: ['assignee', 'creator'],
     excludeCoordinator: false,
     needsCoordinator: false,
@@ -217,16 +321,18 @@ export interface RenderedNotificationText {
 }
 
 /**
- * Renderiza la plantilla. `title` y `body` son idénticos por diseño (spec
- * REQ-FAN-004), pero se devuelven por separado para que el servicio no tenga
- * que saberlo.
+ * Renderiza el par title/body en español a partir del contexto resuelto.
+ *
+ * N-2: title y body son siempre cadenas diferentes. N-3: incluye el nombre de
+ * la actividad y, cuando el dato está disponible, la fecha/hora. El actor se
+ * omite si sólo se dispone de su UUID (no se inventan nombres).
  */
 export function renderNotificationText(
-  rule: Pick<NotificationFanOutRule, 'template'>,
-  activityTitle: string,
+  rule: Pick<NotificationFanOutRule, 'title' | 'body'>,
+  ctx: RenderContext,
 ): RenderedNotificationText {
-  // Función de reemplazo (no string): un título con `$&`/`$1` se inserta
-  // literalmente en vez de interpretarse como patrón de `String.replace`.
-  const text = rule.template.replace('{title}', () => activityTitle);
-  return { title: text, body: text };
+  return {
+    title: rule.title,
+    body: rule.body(ctx),
+  };
 }
