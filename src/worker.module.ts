@@ -5,6 +5,7 @@ import { BullModule } from '@nestjs/bullmq';
 
 import { ActivitiesModule } from './activities/activities.module';
 import { UsersModule } from './users/users.module';
+import { StorageModule } from './storage/storage.module';
 import { ActivityTimersWorkerModule } from './queues/activity-timers/activity-timers-worker.module';
 import { WebhooksWorkerModule } from './webhooks/webhooks-worker.module';
 import { NotificationsWorkerModule } from './notifications/notifications-worker.module';
@@ -15,7 +16,10 @@ import { buildBullConnection } from './queues/redis.config';
   imports: [
     ConfigModule.forRoot({
       isGlobal: true,
-      envFilePath: '.env',
+      // 🔴 `ENV_FILE` se respeta como en `AppModule`: sin esta línea el worker leía
+      // SIEMPRE `.env` (el Postgres local) y no había forma de apuntarlo al mismo
+      // entorno que la API — con `ENV_FILE=.env.prod` seguía conectando a 127.0.0.1.
+      envFilePath: process.env.ENV_FILE ?? '.env',
       validate: validateConfig,
     }),
     TypeOrmModule.forRootAsync({
@@ -38,6 +42,12 @@ import { buildBullConnection } from './queues/redis.config';
       useFactory: (cs: ConfigService) => ({ connection: buildBullConnection(cs) }),
     }),
     ActivitiesModule,
+    // 🔴 `StorageModule` es `@Global()`, pero un módulo global sólo EXISTE si alguien lo
+    // importa: sin esta línea el worker no arrancaba ("Nest can't resolve dependencies of
+    // the ActivityAttachmentsService ... StorageService") y, por lo tanto, el relay de
+    // notifications y el motor de timers NUNCA se ejecutaron en ningún host — tampoco en
+    // el de Vercel. La API no lo sufría porque `AppModule` sí lo importa.
+    StorageModule,
     UsersModule,
     ActivityTimersWorkerModule,
     WebhooksWorkerModule,
