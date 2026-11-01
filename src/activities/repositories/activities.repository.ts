@@ -204,7 +204,8 @@ export class ActivitiesRepository extends BaseRepository<ActivityEntity> {
 
       await this.outboxRepo.insert(
         {
-          activityId: input.id,
+          aggregateType: 'activity',
+          aggregateId: input.id,
           bondId: input.outbox.bondId,
           eventType: input.outbox.eventType,
           aggregateVersion: nextVersion,
@@ -239,7 +240,8 @@ export class ActivitiesRepository extends BaseRepository<ActivityEntity> {
 
       await this.outboxRepo.insert(
         {
-          activityId: saved.id,
+          aggregateType: 'activity',
+          aggregateId: saved.id,
           bondId: saved.bondId,
           eventType: input.initial.event,
           aggregateVersion: 1,

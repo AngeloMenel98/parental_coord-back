@@ -180,7 +180,8 @@ describe('ActivitiesRepository', () => {
       expect(outboxRepo.insert).toHaveBeenCalledTimes(1);
       expect(outboxRepo.insert).toHaveBeenCalledWith(
         {
-          activityId: 'a1',
+          aggregateType: 'activity',
+          aggregateId: 'a1',
           bondId: 'b1',
           eventType: 'activity.assigned',
           aggregateVersion: 1,
@@ -300,7 +301,8 @@ describe('ActivitiesRepository', () => {
       expect(outboxRepo.insert).toHaveBeenCalledTimes(1);
       expect(outboxRepo.insert).toHaveBeenCalledWith(
         {
-          activityId: 'new-id',
+          aggregateType: 'activity',
+          aggregateId: 'new-id',
           bondId: 'b1',
           eventType: 'activity.assigned',
           aggregateVersion: 1,

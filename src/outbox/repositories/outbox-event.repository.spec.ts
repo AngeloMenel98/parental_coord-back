@@ -97,4 +97,54 @@ describe('OutboxEventRepository — read side', () => {
       expect(outboxRepo.update).not.toHaveBeenCalled();
     });
   });
+
+  describe('insert (REQ-TX-3, T23 polymorphic aggregate)', () => {
+    it('writes the discriminator and the aggregate id side by side', async () => {
+      outboxRepo.create.mockImplementation((v: any) => v as any);
+      outboxRepo.save.mockImplementation(async (v: any) => v);
+
+      await repo.insert({
+        aggregateType: 'expense',
+        aggregateId: 'x1',
+        bondId: 'b1',
+        eventType: 'expense.created',
+        aggregateVersion: 1,
+        payload: { amount: 100 },
+      });
+
+      expect(outboxRepo.create).toHaveBeenCalledWith({
+        aggregateType: 'expense',
+        aggregateId: 'x1',
+        bondId: 'b1',
+        eventType: 'expense.created',
+        aggregateVersion: 1,
+        payload: { amount: 100 },
+        dispatchedAt: null,
+      });
+    });
+
+    it('writes through the transaction manager, so the event commits with its aggregate', async () => {
+      const txCreate = jest.fn().mockImplementation((v: any) => v);
+      const txSave = jest.fn().mockImplementation(async (v: any) => v);
+      const manager = {
+        getRepository: jest.fn().mockReturnValue({ create: txCreate, save: txSave }),
+      } as any;
+
+      await repo.insert(
+        {
+          aggregateType: 'activity',
+          aggregateId: 'a1',
+          bondId: 'b1',
+          eventType: 'activity.assigned',
+          aggregateVersion: 2,
+          payload: {},
+        },
+        manager,
+      );
+
+      expect(manager.getRepository).toHaveBeenCalledWith(OutboxEventEntity);
+      expect(txSave).toHaveBeenCalledTimes(1);
+      expect(outboxRepo.save).not.toHaveBeenCalled();
+    });
+  });
 });
