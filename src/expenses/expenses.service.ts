@@ -14,6 +14,7 @@ import { CreateExpenseDto } from './dto/create-expense.dto';
 import { ExpenseResponseDto } from './dto/expense-response.dto';
 import { UpdateExpenseDto } from './dto/update-expense.dto';
 import { ExpenseEntity, ExpenseStatus } from './entities/expense.entity';
+import { selectCounterpartId } from './expense-counterpart';
 import {
   ExpensePolicyDecision,
   ExpensePolicyService,
@@ -338,7 +339,7 @@ export class ExpensesService {
 
   private async counterpartOf(bondId: string, requesterId: string): Promise<string | null> {
     const memberIds = await this.bondMembersRepo.findActiveMemberIds(bondId);
-    return memberIds.find((memberId) => memberId !== requesterId) ?? null;
+    return selectCounterpartId(memberIds, requesterId);
   }
 
   private async verifyCategoryActive(categoryId: string) {

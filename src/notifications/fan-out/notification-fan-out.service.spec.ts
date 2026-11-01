@@ -10,6 +10,7 @@ describe('NotificationFanOutService', () => {
   let bondsRepository: any;
   let bondMembersRepository: any;
   let appConfig: any;
+  let expensesRepository: any;
   let manager: EntityManager;
 
   const makeActivity = (overrides: any = {}) => ({
@@ -26,6 +27,7 @@ describe('NotificationFanOutService', () => {
   const makeEvent = (overrides: any = {}): OutboxEventEntity => {
     const event = new OutboxEventEntity();
     event.id = 'e1';
+    event.aggregateType = 'activity';
     event.aggregateId = 'a1';
     event.bondId = 'b1';
     event.eventType = ACTIVITY_EVENT.CREATED;
@@ -48,6 +50,10 @@ describe('NotificationFanOutService', () => {
       findActiveMemberIds: jest.fn(),
     };
     appConfig = { NOTIFICATIONS_FANOUT_ENABLED: 'true' };
+    // La rama de gastos (T23) no se ejercita en este archivo; vive en
+    // `notification-fan-out.expense.spec.ts`. Acá basta un doble para no
+    // mezclar las dos matrices de destinatarios en un mismo describe.
+    expensesRepository = { findAliveById: jest.fn() };
     manager = {} as EntityManager;
 
     service = new NotificationFanOutService(
@@ -56,6 +62,7 @@ describe('NotificationFanOutService', () => {
       bondsRepository,
       bondMembersRepository,
       appConfig,
+      expensesRepository,
     );
 
     activitiesRepository.findById.mockResolvedValue(makeActivity());
@@ -132,9 +139,7 @@ describe('NotificationFanOutService', () => {
     });
     await service.handleOutboxEvent(event, manager);
 
-    expect(notificationRepository.createFromEvent.mock.calls[0][0].title).toBe(
-      'Actividad vencida',
-    );
+    expect(notificationRepository.createFromEvent.mock.calls[0][0].title).toBe('Actividad vencida');
     expect(notificationRepository.createFromEvent.mock.calls[0][0].body).toContain(
       'Ir al pediatra',
     );
