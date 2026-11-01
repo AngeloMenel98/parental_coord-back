@@ -6,6 +6,7 @@ import { BondsModule } from '../bonds/bonds.module';
 import { CategoriesModule } from '../categories/categories.module';
 import { Clock } from '../common/clock/clock';
 import { SystemClock } from '../common/clock/system-clock';
+import { OutboxModule } from '../outbox/outbox.module';
 import { ExpenseEntity } from './entities/expense.entity';
 import { ExpenseAttachmentEntity } from './entities/expense-attachment.entity';
 import { AuthThirdPartyEntity } from './entities/auth-third-party.entity';
@@ -27,6 +28,7 @@ import { ExpensesController } from './expenses.controller';
     ]),
     BondsModule,
     CategoriesModule,
+    OutboxModule,
   ],
   controllers: [ExpensesController],
   providers: [

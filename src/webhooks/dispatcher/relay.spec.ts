@@ -5,7 +5,7 @@ import { FanOutService } from './fan-out.service';
 import { RELAY_BATCH_LIMIT, Relay } from './relay';
 
 function event(id: string): OutboxEventEntity {
-  return { id } as unknown as OutboxEventEntity;
+  return { id, aggregateType: 'activity' } as unknown as OutboxEventEntity;
 }
 
 describe('Relay (T-W1.19, REQ-DISP-1/4, AC-8)', () => {
@@ -78,6 +78,16 @@ describe('Relay (T-W1.19, REQ-DISP-1/4, AC-8)', () => {
 
     await relay.run();
 
+    expect(realtime.publish).not.toHaveBeenCalled();
+  });
+
+  it('does not publish an activity.changed frame for an expense event', async () => {
+    const expenseEvent = { ...event('expense-event'), aggregateType: 'expense' };
+    outbox.findPending.mockResolvedValue([expenseEvent]);
+
+    await relay.run();
+
+    expect(fanOut.dispatch).toHaveBeenCalledWith(expenseEvent);
     expect(realtime.publish).not.toHaveBeenCalled();
   });
 });

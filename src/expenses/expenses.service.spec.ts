@@ -10,6 +10,7 @@ import { BondMembersRepository } from '../bonds/repositories/bond-members.reposi
 import { BondsService } from '../bonds/bonds.service';
 import { CategoriesRepository } from '../categories/repositories/categories.repository';
 import { Clock } from '../common/clock/clock';
+import { OutboxEventRepository } from '../outbox/repositories/outbox-event.repository';
 import { ExpensePolicyService } from './expense-policy.service';
 import { ExpensesService } from './expenses.service';
 import { ExpenseStatus } from './entities/expense.entity';
@@ -49,6 +50,7 @@ describe('ExpensesService (T24)', () => {
   let categoriesRepo: { findActiveById: jest.Mock };
   let audit: { record: jest.Mock; recordStatusChange: jest.Mock };
   let clock: { now: jest.Mock };
+  let outbox: { insert: jest.Mock };
   const manager = { getRepository: jest.fn() };
 
   /**
@@ -111,6 +113,7 @@ describe('ExpensesService (T24)', () => {
       recordStatusChange: jest.fn().mockResolvedValue(undefined),
     };
     clock = { now: jest.fn().mockReturnValue(NOW) };
+    outbox = { insert: jest.fn().mockResolvedValue(undefined) };
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -122,6 +125,7 @@ describe('ExpensesService (T24)', () => {
         { provide: CategoriesRepository, useValue: categoriesRepo },
         { provide: ExpensesAuditRepository, useValue: audit },
         { provide: Clock, useValue: clock },
+        { provide: OutboxEventRepository, useValue: outbox },
       ],
     }).compile();
 
@@ -224,6 +228,33 @@ describe('ExpensesService (T24)', () => {
           action: 'expense_create',
         }),
         manager,
+      );
+    });
+
+    it('writes expense.created to the outbox in the same transaction', async () => {
+      expensesRepo.insertWithManager.mockResolvedValue(expenseRow());
+
+      await service.create(BOND, createDto(), REQUESTER);
+
+      expect(outbox.insert).toHaveBeenCalledWith(
+        {
+          aggregateType: 'expense',
+          aggregateId: EXPENSE,
+          bondId: BOND,
+          eventType: 'expense.created',
+          aggregateVersion: 1,
+          payload: { actor: { type: 'user', id: REQUESTER }, status: ExpenseStatus.PENDING },
+        },
+        manager,
+      );
+    });
+
+    it('does not complete creation when the outbox write fails', async () => {
+      expensesRepo.insertWithManager.mockResolvedValue(expenseRow());
+      outbox.insert.mockRejectedValue(new Error('outbox unavailable'));
+
+      await expect(service.create(BOND, createDto(), REQUESTER)).rejects.toThrow(
+        'outbox unavailable',
       );
     });
 
@@ -385,6 +416,7 @@ describe('ExpensesService (T24)', () => {
       const call = expensesRepo.markDeleted.mock.calls[0][0];
       expect(call.expectedStatus).toBe(ExpenseStatus.PENDING);
       expect(call.at).toEqual(NOW);
+      expect(outbox.insert).not.toHaveBeenCalled();
     });
 
     it('refuses the counterpart', async () => {
@@ -468,6 +500,24 @@ describe('ExpensesService (T24)', () => {
       );
     });
 
+    it('writes expense.approved with lifecycle version 2 in the same transaction', async () => {
+      givenTransition(ExpenseStatus.PENDING, ExpenseStatus.APPROVED);
+
+      await service.approve(EXPENSE, COUNTERPART);
+
+      expect(outbox.insert).toHaveBeenCalledWith(
+        {
+          aggregateType: 'expense',
+          aggregateId: EXPENSE,
+          bondId: BOND,
+          eventType: 'expense.approved',
+          aggregateVersion: 2,
+          payload: { actor: { type: 'user', id: COUNTERPART }, status: ExpenseStatus.APPROVED },
+        },
+        manager,
+      );
+    });
+
     it('returns 409 when the compare-and-swap finds the row already moved', async () => {
       givenAlive();
       expensesRepo.transitionStatus.mockResolvedValue(false);
@@ -493,6 +543,21 @@ describe('ExpensesService (T24)', () => {
       const result = await service.reject(EXPENSE, COUNTERPART);
 
       expect(result.status).toBe(ExpenseStatus.REJECTED);
+    });
+
+    it('writes expense.rejected with lifecycle version 2', async () => {
+      givenTransition(ExpenseStatus.PENDING, ExpenseStatus.REJECTED);
+
+      await service.reject(EXPENSE, COUNTERPART);
+
+      expect(outbox.insert).toHaveBeenCalledWith(
+        expect.objectContaining({
+          eventType: 'expense.rejected',
+          aggregateVersion: 2,
+          payload: { actor: { type: 'user', id: COUNTERPART }, status: ExpenseStatus.REJECTED },
+        }),
+        manager,
+      );
     });
 
     it('keeps the reason in the audit detail', async () => {
@@ -537,6 +602,14 @@ describe('ExpensesService (T24)', () => {
             nextStatus: ExpenseStatus.PAID,
             fields: { paidAt: NOW },
           }),
+        );
+        expect(outbox.insert).toHaveBeenCalledWith(
+          expect.objectContaining({
+            eventType: 'expense.paid',
+            aggregateVersion: 3,
+            payload: { actor: { type: 'user', id: viewer }, status: ExpenseStatus.PAID },
+          }),
+          manager,
         );
       },
     );

@@ -77,8 +77,15 @@ export class FanOutService {
 
   /** Despacha un evento; devuelve cuántas entregas nuevas se encolaron. */
   async dispatch(event: OutboxEventEntity): Promise<number> {
-    const active = await this.subscriptions.findActiveByBond(event.bondId);
-    const matched = selectMatchedSubscriptions(active, event.eventType);
+    // Los webhooks son un contrato activity-shaped. Los gastos sólo participan
+    // del fan-out de notificaciones, aunque una suscripción use `*`.
+    const matched =
+      event.aggregateType === 'activity'
+        ? selectMatchedSubscriptions(
+            await this.subscriptions.findActiveByBond(event.bondId),
+            event.eventType,
+          )
+        : [];
 
     const enqueued: WebhookDeliveryJobData[] = [];
     let createdNotifications: CreatedNotificationRef[] = [];

@@ -20,6 +20,7 @@ function event(overrides: Partial<OutboxEventEntity> = {}): OutboxEventEntity {
     id: 'evt1',
     bondId: 'bond1',
     eventType: 'activity.done',
+    aggregateType: 'activity',
     ...overrides,
   } as unknown as OutboxEventEntity;
 }
@@ -178,6 +179,19 @@ describe('FanOutService (T-W1.18, REQ-DISP-2/3/4)', () => {
     expect(created).toBe(0);
     expect(outbox.markDispatched).toHaveBeenCalledWith('evt1', manager);
     expect(queue.add).not.toHaveBeenCalled();
+  });
+
+  it('does not create webhook deliveries for expenses, but keeps notifications and dispatch', async () => {
+    const expenseEvent = event({ aggregateType: 'expense', eventType: 'expense.created' });
+    subscriptions.findActiveByBond.mockResolvedValue([sub('wildcard', ['*'])]);
+
+    const created = await service.dispatch(expenseEvent);
+
+    expect(created).toBe(0);
+    expect(deliveries.insertOnConflictDoNothing).not.toHaveBeenCalled();
+    expect(queue.add).not.toHaveBeenCalled();
+    expect(notificationFanOut.handleOutboxEvent).toHaveBeenCalledWith(expenseEvent, manager);
+    expect(outbox.markDispatched).toHaveBeenCalledWith('evt1', manager);
   });
 
   it('does not throw when Redis is down at enqueue time', async () => {

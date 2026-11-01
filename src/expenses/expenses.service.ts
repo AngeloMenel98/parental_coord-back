@@ -10,11 +10,18 @@ import { BondMembersRepository } from '../bonds/repositories/bond-members.reposi
 import { BondsService } from '../bonds/bonds.service';
 import { CategoriesRepository } from '../categories/repositories/categories.repository';
 import { Clock } from '../common/clock/clock';
+import { OutboxEventRepository } from '../outbox/repositories/outbox-event.repository';
 import { CreateExpenseDto } from './dto/create-expense.dto';
 import { ExpenseResponseDto } from './dto/expense-response.dto';
 import { UpdateExpenseDto } from './dto/update-expense.dto';
 import { ExpenseEntity, ExpenseStatus } from './entities/expense.entity';
 import { selectCounterpartId } from './expense-counterpart';
+import {
+  EXPENSE_EVENT,
+  EXPENSE_STATUS_EVENT,
+  ExpenseEventType,
+  expenseAggregateVersion,
+} from './expense-events';
 import {
   ExpensePolicyDecision,
   ExpensePolicyService,
@@ -42,6 +49,8 @@ const PAY_DENIED = 'You are not allowed to mark this expense as paid';
 
 const CONFLICT = 'The expense changed before your action could be applied';
 
+type ExpenseTransactionManager = Parameters<Parameters<ExpensesRepository['transaction']>[0]>[0];
+
 /**
  * T24 · La API de escritura de gastos.
  *
@@ -67,6 +76,7 @@ export class ExpensesService {
     private readonly policy: ExpensePolicyService,
     private readonly audit: ExpensesAuditRepository,
     private readonly clock: Clock,
+    private readonly outbox: OutboxEventRepository,
   ) {}
 
   // ── Alta (FR-8) ───────────────────────────────────────────────────────────
@@ -109,6 +119,16 @@ export class ExpensesService {
         },
         manager,
       );
+
+      // R8: el aviso viaja por el MISMO outbox que las actividades, en la MISMA
+      // transacción que el gasto. Si el INSERT falla, no queda ni gasto ni
+      // evento; si la transacción se cae después, tampoco.
+      await this.emitExpenseEvent(manager, {
+        eventType: EXPENSE_EVENT.CREATED,
+        expense: row,
+        status: ExpenseStatus.PENDING,
+        actorId: viewerId,
+      });
 
       return row;
     });
@@ -261,7 +281,12 @@ export class ExpensesService {
     viewerId: string;
     allowed: (decision: ExpensePolicyDecision) => boolean;
     denial: string;
-    nextStatus: ExpenseStatus;
+    /**
+     * Nunca `pending`: un gasto nace pendiente en el alta, no "transiciona" a
+     * pendiente. El tipo lo dice para que `EXPENSE_STATUS_EVENT` tenga una
+     * clave segura y no haya que castear.
+     */
+    nextStatus: Exclude<ExpenseStatus, ExpenseStatus.PENDING>;
     fields: ExpenseTransitionFields;
     detail?: string | null;
   }): Promise<ExpenseResponseDto> {
@@ -292,6 +317,17 @@ export class ExpensesService {
         manager,
       );
 
+      // La transición y su aviso se confirman juntos o no se confirman: si el
+      // INSERT del evento falla, la transacción entera vuelve atrás y el gasto
+      // sigue en el estado anterior. Un gasto aprobado sin aviso sería peor que
+      // un reintento.
+      await this.emitExpenseEvent(manager, {
+        eventType: EXPENSE_STATUS_EVENT[params.nextStatus],
+        expense: expense,
+        status: params.nextStatus,
+        actorId: params.viewerId,
+      });
+
       return true;
     });
 
@@ -301,6 +337,49 @@ export class ExpensesService {
   }
 
   // ── Helpers ───────────────────────────────────────────────────────────────
+
+  /**
+   * Escribe UNA fila de outbox para un gasto, dentro de la transacción abierta.
+   *
+   * `aggregateType: 'expense'` es el discriminante que el relay necesita para no
+   * confundir un gasto con una actividad (el `aggregate_id` es un uuid sin FK
+   * desde `AddOutboxAggregateType`).
+   *
+   * `aggregateVersion` sale del ORDINAL del ciclo de vida, no de un contador:
+   * `expense` no tiene columna `version` porque T24 resolvió la concurrencia con
+   * compare-and-swap sobre `status`. Ver `expenseAggregateVersion`.
+   *
+   * `cancel()` NO emite: §7 no define un evento de cancelación y el gasto deja
+   * de existir para las lecturas, así que el fan-out no tendría a quién avisar
+   * (el `findAliveById` de la rama de gastos devuelve `null`).
+   */
+  private async emitExpenseEvent(
+    manager: ExpenseTransactionManager,
+    params: {
+      eventType: ExpenseEventType;
+      expense: { id: string; bondId: string };
+      status: ExpenseStatus;
+      actorId: string;
+    },
+  ): Promise<void> {
+    await this.outbox.insert(
+      {
+        aggregateType: 'expense',
+        aggregateId: params.expense.id,
+        bondId: params.expense.bondId,
+        eventType: params.eventType,
+        aggregateVersion: expenseAggregateVersion(params.status),
+        // `actor` es `{ type, id }` igual que en actividades: la regla R2 del
+        // fan-out (el actor nunca recibe el aviso de su propia acción) lee
+        // exactamente este campo. `status` va para trazabilidad del evento.
+        payload: {
+          actor: { type: 'user', id: params.actorId },
+          status: params.status,
+        },
+      },
+      manager,
+    );
+  }
 
   /**
    * Carga el gasto vivo y la decisión para el viewer.

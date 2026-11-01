@@ -24,6 +24,23 @@ export const EXPENSE_EVENT = {
 export type ExpenseEventType = (typeof EXPENSE_EVENT)[keyof typeof EXPENSE_EVENT];
 
 /**
+ * El evento que PRODUCE cada estado al que se llega.
+ *
+ * Es un mapa y no un `if` por método porque `transition()` es un solo camino para
+ * aprobar, rechazar y marcar pagado: con el mapa, cada transición emite sin
+ * duplicar la llamada, y agregar un estado obliga al compilador a pedir su
+ * evento en vez de dejar una transición muda.
+ *
+ * No incluye `PENDING`: el gasto no "transiciona" a pendiente, NACE pendiente, y
+ * eso emite `expense.created` en el alta.
+ */
+export const EXPENSE_STATUS_EVENT: Record<Exclude<ExpenseStatus, 'pending'>, ExpenseEventType> = {
+  [ExpenseStatus.APPROVED]: EXPENSE_EVENT.APPROVED,
+  [ExpenseStatus.REJECTED]: EXPENSE_EVENT.REJECTED,
+  [ExpenseStatus.PAID]: EXPENSE_EVENT.PAID,
+};
+
+/**
  * `aggregate_version` del outbox para un gasto.
  *
  * `expense` NO tiene columna `version` — T24 resolvió la concurrencia con

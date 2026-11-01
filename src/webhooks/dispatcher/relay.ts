@@ -41,7 +41,9 @@ export class Relay {
     for (const event of pending) {
       try {
         dispatched += await this.fanOut.dispatch(event);
-        await this.realtime.publish(event);
+        // `activity.changed` contiene una actividad; el fan-out de gasto ya
+        // publicó `notification.created` para las notificaciones que insertó.
+        if (event.aggregateType === 'activity') await this.realtime.publish(event);
       } catch (error) {
         this.logger.error(
           `Fan-out failed for outbox event ${event.id}: ${error instanceof Error ? error.message : String(error)}`,

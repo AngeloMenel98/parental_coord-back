@@ -4,6 +4,7 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 import { BullModule } from '@nestjs/bullmq';
 
 import { ActivitiesModule } from './activities/activities.module';
+import { ExpensesWorkerModule } from './expenses/stale-reminder/expenses-worker.module';
 import { UsersModule } from './users/users.module';
 import { StorageModule } from './storage/storage.module';
 import { ActivityTimersWorkerModule } from './queues/activity-timers/activity-timers-worker.module';
@@ -42,6 +43,7 @@ import { buildBullConnection } from './queues/redis.config';
       useFactory: (cs: ConfigService) => ({ connection: buildBullConnection(cs) }),
     }),
     ActivitiesModule,
+    ExpensesWorkerModule,
     // 🔴 `StorageModule` es `@Global()`, pero un módulo global sólo EXISTE si alguien lo
     // importa: sin esta línea el worker no arrancaba ("Nest can't resolve dependencies of
     // the ActivityAttachmentsService ... StorageService") y, por lo tanto, el relay de
