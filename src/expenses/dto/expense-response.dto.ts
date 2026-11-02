@@ -93,4 +93,7 @@ export class ExpenseResponseDto {
 
   @ApiProperty({ description: '`paid` y `rejected` no admiten ninguna transición.' })
   isTerminal!: boolean;
+
+  @ApiProperty({ description: 'R6 · derivado: existe al menos un expense_attachment.' })
+  hasDocument!: boolean;
 }

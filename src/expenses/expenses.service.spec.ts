@@ -3,6 +3,7 @@ import {
   ConflictException,
   ForbiddenException,
   NotFoundException,
+  ValidationPipe,
 } from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
 
@@ -17,6 +18,7 @@ import { ExpenseStatus } from './entities/expense.entity';
 import { ExpensesAuditRepository } from './repositories/expenses-audit.repository';
 import { ExpensesRepository } from './repositories/expenses.repository';
 import { CreateExpenseDto } from './dto/create-expense.dto';
+import { ListExpensesQueryDto } from './dto/list-expenses-query.dto';
 import { UpdateExpenseDto } from './dto/update-expense.dto';
 
 /**
@@ -43,6 +45,8 @@ describe('ExpensesService (T24)', () => {
     transitionStatus: jest.Mock;
     editFields: jest.Mock;
     markDeleted: jest.Mock;
+    listForBond: jest.Mock;
+    summaryForBond: jest.Mock;
     transaction: jest.Mock;
   };
   let bondsService: { isActiveBondForMember: jest.Mock };
@@ -80,6 +84,7 @@ describe('ExpensesService (T24)', () => {
       deletedAt: null,
       createdAt: new Date('2026-10-30T10:00:00.000Z'),
       updatedAt: new Date('2026-10-30T10:00:00.000Z'),
+      hasDocument: over.hasDocument ?? false,
       ...over,
     }) as never;
 
@@ -99,6 +104,13 @@ describe('ExpensesService (T24)', () => {
       transitionStatus: jest.fn().mockResolvedValue(true),
       editFields: jest.fn().mockResolvedValue(true),
       markDeleted: jest.fn().mockResolvedValue(true),
+      listForBond: jest.fn().mockResolvedValue({ items: [], total: 0, limit: 20, offset: 0 }),
+      summaryForBond: jest.fn().mockResolvedValue({
+        saldo: 0,
+        porPagar: 0,
+        porCobrar: 0,
+        counts: { pendientes: 0, aprobados: 0, pagados: 0, rechazados: 0 },
+      }),
       transaction: jest.fn(async (fn: (m: unknown) => Promise<unknown>) => fn(manager)),
     };
     bondsService = { isActiveBondForMember: jest.fn().mockResolvedValue(true) };
@@ -325,6 +337,22 @@ describe('ExpensesService (T24)', () => {
 
       expect(result.counterpartId).toBeNull();
       expect(result.canApprove).toBe(false);
+    });
+
+    it('includes the derived hasDocument flag', async () => {
+      givenAlive({ hasDocument: true });
+
+      const result = await service.getDetail(EXPENSE, REQUESTER);
+
+      expect(result.hasDocument).toBe(true);
+    });
+
+    it('defaults hasDocument to false when the repository omits it', async () => {
+      givenAlive();
+
+      const result = await service.getDetail(EXPENSE, REQUESTER);
+
+      expect(result.hasDocument).toBe(false);
     });
   });
 
@@ -585,6 +613,105 @@ describe('ExpensesService (T24)', () => {
     });
   });
 
+  // ── list + summary (T28) ──────────────────────────────────────────────────
+
+  describe('listForBond (T28)', () => {
+    it('checks bond membership and returns the paginated list', async () => {
+      expensesRepo.listForBond.mockResolvedValue({
+        items: [expenseRow({ hasDocument: true })],
+        total: 1,
+        limit: 20,
+        offset: 0,
+      });
+
+      const result = await service.listForBond(BOND, REQUESTER, {});
+
+      expect(bondsService.isActiveBondForMember).toHaveBeenCalledWith(BOND, REQUESTER);
+      expect(result.items[0].hasDocument).toBe(true);
+      expect(result.total).toBe(1);
+    });
+
+    it('resolves the counterpart of the whole page with ONE membership query', async () => {
+      expensesRepo.listForBond.mockResolvedValue({
+        items: [
+          expenseRow({ id: 'e1', requestedBy: REQUESTER }),
+          expenseRow({ id: 'e2', requestedBy: COUNTERPART }),
+        ],
+        total: 2,
+        limit: 20,
+        offset: 0,
+      });
+
+      const result = await service.listForBond(BOND, REQUESTER, {});
+
+      // UNA consulta de miembros para toda la página: la contraparte de cada
+      // gasto sale del mismo conjunto de miembros del vínculo.
+      expect(bondMembersRepo.findActiveMemberIds).toHaveBeenCalledTimes(1);
+      expect(result.items.map((item) => item.counterpartId)).toEqual([COUNTERPART, REQUESTER]);
+    });
+
+    it('hides the bond from a non-member with 404', async () => {
+      bondsService.isActiveBondForMember.mockResolvedValue(false);
+
+      await expect(service.listForBond(BOND, STRANGER, {})).rejects.toBeInstanceOf(
+        NotFoundException,
+      );
+      expect(expensesRepo.listForBond).not.toHaveBeenCalled();
+    });
+
+    it('passes the query filters to the repository', async () => {
+      expensesRepo.listForBond.mockResolvedValue({ items: [], total: 0, limit: 10, offset: 5 });
+
+      await service.listForBond(BOND, REQUESTER, {
+        limit: 10,
+        offset: 5,
+        status: ExpenseStatus.APPROVED,
+        categoryId: 'cat-1',
+        from: '2026-10-01',
+        to: '2026-10-31',
+      });
+
+      expect(expensesRepo.listForBond).toHaveBeenCalledWith(BOND, {
+        limit: 10,
+        offset: 5,
+        status: ExpenseStatus.APPROVED,
+        categoryId: 'cat-1',
+        from: '2026-10-01',
+        to: '2026-10-31',
+      });
+    });
+  });
+
+  describe('summaryForBond (T28)', () => {
+    it('checks bond membership and returns the derived summary', async () => {
+      expensesRepo.summaryForBond.mockResolvedValue({
+        saldo: -100,
+        porPagar: 100,
+        porCobrar: 0,
+        counts: { pendientes: 1, aprobados: 2, pagados: 0, rechazados: 0 },
+      });
+
+      const result = await service.summaryForBond(BOND, REQUESTER);
+
+      expect(bondsService.isActiveBondForMember).toHaveBeenCalledWith(BOND, REQUESTER);
+      expect(result).toEqual({
+        saldo: -100,
+        porPagar: 100,
+        porCobrar: 0,
+        counts: { pendientes: 1, aprobados: 2, pagados: 0, rechazados: 0 },
+      });
+    });
+
+    it('hides the bond from a non-member with 404', async () => {
+      bondsService.isActiveBondForMember.mockResolvedValue(false);
+
+      await expect(service.summaryForBond(BOND, STRANGER)).rejects.toBeInstanceOf(
+        NotFoundException,
+      );
+      expect(expensesRepo.summaryForBond).not.toHaveBeenCalled();
+    });
+  });
+
   // ── pay ───────────────────────────────────────────────────────────────────
 
   describe('pay', () => {
@@ -647,5 +774,71 @@ describe('ExpensesService (T24)', () => {
 
       await expect(service.pay(EXPENSE, REQUESTER)).rejects.toBeInstanceOf(ConflictException);
     });
+  });
+});
+
+describe('ListExpensesQueryDto — 400 through the global ValidationPipe', () => {
+  // Misma configuración que `src/app.module.ts` (whitelist + forbidNonWhitelisted + transform).
+  const pipe = new ValidationPipe({
+    whitelist: true,
+    forbidNonWhitelisted: true,
+    transform: true,
+    transformOptions: { enableImplicitConversion: false },
+  });
+  const metadata = { type: 'query' as const, metatype: ListExpensesQueryDto };
+
+  it('rejects out-of-range pagination with 400', async () => {
+    await expect(pipe.transform({ limit: '0' }, metadata)).rejects.toBeInstanceOf(
+      BadRequestException,
+    );
+    await expect(pipe.transform({ limit: '101' }, metadata)).rejects.toBeInstanceOf(
+      BadRequestException,
+    );
+    await expect(pipe.transform({ offset: '-1' }, metadata)).rejects.toBeInstanceOf(
+      BadRequestException,
+    );
+  });
+
+  it('rejects an unknown query param with 400', async () => {
+    await expect(pipe.transform({ unknownParam: 'x' }, metadata)).rejects.toBeInstanceOf(
+      BadRequestException,
+    );
+  });
+
+  it('rejects an invalid status', async () => {
+    await expect(pipe.transform({ status: 'invalid' }, metadata)).rejects.toBeInstanceOf(
+      BadRequestException,
+    );
+  });
+
+  it('rejects a malformed date', async () => {
+    await expect(pipe.transform({ from: '2026-10-99' }, metadata)).rejects.toBeInstanceOf(
+      BadRequestException,
+    );
+  });
+
+  it('accepts the valid full filter set', async () => {
+    const dto = await pipe.transform(
+      {
+        limit: '10',
+        offset: '5',
+        status: 'approved',
+        categoryId: '11111111-1111-4111-8111-111111111111',
+        from: '2026-10-01',
+        to: '2026-10-31',
+      },
+      metadata,
+    );
+
+    expect(dto).toEqual(
+      expect.objectContaining({
+        limit: 10,
+        offset: 5,
+        status: ExpenseStatus.APPROVED,
+        categoryId: '11111111-1111-4111-8111-111111111111',
+        from: '2026-10-01',
+        to: '2026-10-31',
+      }),
+    );
   });
 });

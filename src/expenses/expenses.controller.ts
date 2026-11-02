@@ -9,6 +9,7 @@ import {
   ParseUUIDPipe,
   Patch,
   Post,
+  Query,
   UseGuards,
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
@@ -20,6 +21,7 @@ import { ExpensesService } from './expenses.service';
 import { CreateExpenseDto } from './dto/create-expense.dto';
 import { UpdateExpenseDto } from './dto/update-expense.dto';
 import { RejectExpenseDto } from './dto/reject-expense.dto';
+import { ListExpensesQueryDto } from './dto/list-expenses-query.dto';
 
 /**
  * T24 · La API de escritura de gastos.
@@ -36,6 +38,35 @@ import { RejectExpenseDto } from './dto/reject-expense.dto';
 @UseGuards(JwtAuthGuard)
 export class ExpensesController {
   constructor(private readonly expensesService: ExpensesService) {}
+
+  @Get('bond/:bondId')
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: 'List expenses of a bond',
+    description:
+      'T28 · lista paginada con filtros. `limit` (1..100, def. 20), `offset` (>=0, def. 0), ' +
+      '`status`, `categoryId`, `from`/`to` (YYYY-MM-DD, inclusive sobre `expense_date`). ' +
+      'Orden: `created_at DESC, id DESC`.',
+  })
+  list(
+    @Param('bondId', ParseUUIDPipe) bondId: string,
+    @CurrentUser() user: AuthUser,
+    @Query() query: ListExpensesQueryDto,
+  ) {
+    return this.expensesService.listForBond(bondId, user.id, query);
+  }
+
+  @Get('bond/:bondId/summary')
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: 'Expense summary/balance of a bond',
+    description:
+      'T28 · `{ saldo, porPagar, porCobrar, counts }` desde la perspectiva de quien consulta. ' +
+      'El saldo se computa en el servidor; el cliente nunca lo recalcula.',
+  })
+  summary(@Param('bondId', ParseUUIDPipe) bondId: string, @CurrentUser() user: AuthUser) {
+    return this.expensesService.summaryForBond(bondId, user.id);
+  }
 
   @Post(':bondId')
   @ApiBearerAuth()

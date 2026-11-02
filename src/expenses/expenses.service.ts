@@ -14,6 +14,9 @@ import { OutboxEventRepository } from '../outbox/repositories/outbox-event.repos
 import { CreateExpenseDto } from './dto/create-expense.dto';
 import { ExpenseResponseDto } from './dto/expense-response.dto';
 import { UpdateExpenseDto } from './dto/update-expense.dto';
+import { ListExpensesQueryDto } from './dto/list-expenses-query.dto';
+import { PaginatedExpensesDto } from './dto/paginated-expenses.dto';
+import { ExpenseSummaryDto } from './dto/expense-summary.dto';
 import { ExpenseEntity, ExpenseStatus } from './entities/expense.entity';
 import { selectCounterpartId } from './expense-counterpart';
 import {
@@ -147,6 +150,43 @@ export class ExpensesService {
   async getDetail(id: string, viewerId: string): Promise<ExpenseResponseDto> {
     const { expense, counterpartId, decision } = await this.loadForViewer(id, viewerId);
     return this.toResponse(expense, decision, counterpartId);
+  }
+
+  async listForBond(
+    bondId: string,
+    viewerId: string,
+    query: ListExpensesQueryDto,
+  ): Promise<PaginatedExpensesDto> {
+    await this.assertBondMember(bondId, viewerId);
+
+    const { items, total, limit, offset } = await this.expensesRepo.listForBond(bondId, {
+      limit: query.limit ?? 20,
+      offset: query.offset ?? 0,
+      status: query.status,
+      categoryId: query.categoryId,
+      from: query.from,
+      to: query.to,
+    });
+
+    // La lista de miembros del vínculo se resuelve UNA vez por página: la
+    // contraparte de cada gasto sale de ese mismo conjunto. Preguntarlo por
+    // gasto sería un N+1 con una consulta idéntica por fila.
+    const memberIds = await this.bondMembersRepo.findActiveMemberIds(bondId);
+    const mapped = items.map((expense) => {
+      const counterpartId = selectCounterpartId(memberIds, expense.requestedBy);
+      const decision = this.policy.evaluate(
+        { status: expense.status, requestedBy: expense.requestedBy, counterpartId },
+        viewerId,
+      );
+      return this.toResponse(expense, decision, counterpartId);
+    });
+
+    return { items: mapped, total, limit, offset };
+  }
+
+  async summaryForBond(bondId: string, viewerId: string): Promise<ExpenseSummaryDto> {
+    await this.assertBondMember(bondId, viewerId);
+    return this.expensesRepo.summaryForBond(bondId, viewerId);
   }
 
   // ── Edición y cancelación (FR-11) ─────────────────────────────────────────
@@ -474,7 +514,7 @@ export class ExpensesService {
   }
 
   private toResponse(
-    expense: ExpenseEntity,
+    expense: ExpenseEntity & { hasDocument?: boolean },
     decision: ExpensePolicyDecision,
     counterpartId: string | null,
     categoryName?: string | null,
@@ -505,6 +545,7 @@ export class ExpensesService {
       canReject: decision.canReject,
       canMarkPaid: decision.canMarkPaid,
       isTerminal: decision.isTerminal,
+      hasDocument: expense.hasDocument ?? false,
     };
   }
 
