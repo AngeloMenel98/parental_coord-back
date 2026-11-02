@@ -11,13 +11,16 @@ function event(id: string): OutboxEventEntity {
 describe('Relay (T-W1.19, REQ-DISP-1/4, AC-8)', () => {
   let outbox: { findPending: jest.Mock };
   let fanOut: { dispatch: jest.Mock };
-  let realtime: { publish: jest.Mock };
+  let realtime: { publish: jest.Mock; publishExpenseChanged: jest.Mock };
   let relay: Relay;
 
   beforeEach(() => {
     outbox = { findPending: jest.fn().mockResolvedValue([]) };
     fanOut = { dispatch: jest.fn().mockResolvedValue(1) };
-    realtime = { publish: jest.fn().mockResolvedValue(undefined) };
+    realtime = {
+      publish: jest.fn().mockResolvedValue(undefined),
+      publishExpenseChanged: jest.fn().mockResolvedValue(undefined),
+    };
     relay = new Relay(
       outbox as unknown as OutboxEventRepository,
       fanOut as unknown as FanOutService,
@@ -81,13 +84,24 @@ describe('Relay (T-W1.19, REQ-DISP-1/4, AC-8)', () => {
     expect(realtime.publish).not.toHaveBeenCalled();
   });
 
-  it('does not publish an activity.changed frame for an expense event', async () => {
+  it('publishes an expense.changed frame for an expense event (S8, T26)', async () => {
     const expenseEvent = { ...event('expense-event'), aggregateType: 'expense' };
     outbox.findPending.mockResolvedValue([expenseEvent]);
 
     await relay.run();
 
     expect(fanOut.dispatch).toHaveBeenCalledWith(expenseEvent);
+    expect(realtime.publishExpenseChanged).toHaveBeenCalledTimes(1);
+    expect(realtime.publishExpenseChanged).toHaveBeenCalledWith(expenseEvent);
+    expect(realtime.publish).not.toHaveBeenCalled();
+  });
+
+  it('does NOT publish an activity frame for an expense event', async () => {
+    const expenseEvent = { ...event('expense-event'), aggregateType: 'expense' };
+    outbox.findPending.mockResolvedValue([expenseEvent]);
+
+    await relay.run();
+
     expect(realtime.publish).not.toHaveBeenCalled();
   });
 });

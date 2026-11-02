@@ -4,6 +4,7 @@ import { WebSocket } from 'ws';
 import { BondsService } from '../bonds/bonds.service';
 import { BondMembersRepository } from '../bonds/repositories/bond-members.repository';
 import { ActivityChangedMessageV1 } from './dto/activity-changed-message';
+import { ExpenseChangedMessageV1 } from './dto/expense-changed-message';
 import { NotificationCreatedMessageV1 } from './dto/notification-created-message';
 import { RealtimeMessageV1 } from './dto/realtime-message';
 import { RealtimeAuthService } from './realtime-auth.service';
@@ -36,6 +37,19 @@ function frame(bondId: string): ActivityChangedMessageV1 {
     from: 'assigned',
     to: 'assisting',
     actor: { type: 'user', id: 'u1', role: 'child' },
+    occurredAt: '2026-10-16T14:22:31.412Z',
+  };
+}
+
+function expenseFrame(bondId: string): ExpenseChangedMessageV1 {
+  return {
+    v: 1,
+    type: 'expense.changed',
+    eventId: `evt-${bondId}-${Math.random().toString(36).slice(2, 8)}`,
+    expenseId: 'exp-1',
+    bondId,
+    status: 'approved',
+    actor: { type: 'user', id: 'u1' },
     occurredAt: '2026-10-16T14:22:31.412Z',
   };
 }
@@ -346,6 +360,24 @@ describe('RealtimeGateway (REQ-1/REQ-3)', () => {
       expect(u1a.send).toHaveBeenCalledTimes(2);
       expect(u2.send).toHaveBeenCalledTimes(1);
       expect(JSON.parse(u2.send.mock.calls[0][0] as string).type).toBe('activity.changed');
+    });
+
+    it('delivers an expense.changed frame to the bond audience (S8, T26)', async () => {
+      const { u1a, u1b, u2 } = await connectBoth();
+      bondMembersRepo.findActiveMemberIds.mockResolvedValue(['u1', 'u2']);
+
+      const message = expenseFrame('b1');
+      subscriber.messages$.next(message);
+      await flushDelivery();
+
+      expect(bondMembersRepo.findActiveMemberIds).toHaveBeenCalledWith('b1');
+      const expected = JSON.stringify(message);
+      expect(u1a.send).toHaveBeenCalledTimes(1);
+      expect(u1a.send).toHaveBeenCalledWith(expected);
+      expect(u1b.send).toHaveBeenCalledTimes(1);
+      expect(u1b.send).toHaveBeenCalledWith(expected);
+      expect(u2.send).toHaveBeenCalledTimes(1);
+      expect(u2.send).toHaveBeenCalledWith(expected);
     });
   });
 });

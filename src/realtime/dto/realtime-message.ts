@@ -1,4 +1,5 @@
 import { ActivityChangedMessageV1 } from './activity-changed-message';
+import { ExpenseChangedMessageV1 } from './expense-changed-message';
 import { NotificationCreatedMessageV1 } from './notification-created-message';
 
 /**
@@ -8,7 +9,8 @@ import { NotificationCreatedMessageV1 } from './notification-created-message';
  * assuming an `activity.changed` shape. That assumption is exactly what made an
  * unknown frame reach the gateway with `bondId === undefined`.
  */
-export type RealtimeMessageV1 = ActivityChangedMessageV1 | NotificationCreatedMessageV1;
+export type RealtimeMessageV1 =
+  ActivityChangedMessageV1 | ExpenseChangedMessageV1 | NotificationCreatedMessageV1;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
@@ -21,6 +23,11 @@ function isString(value: unknown): value is string {
 /** `activity.changed` needs a bond: delivery resolves its audience from that id. */
 function isActivityChanged(value: Record<string, unknown>): boolean {
   return isString(value.bondId) && isString(value.eventId);
+}
+
+/** `expense.changed` needs a bond: delivery resolves its audience from that id. */
+function isExpenseChanged(value: Record<string, unknown>): boolean {
+  return isString(value.bondId) && isString(value.eventId) && isString(value.expenseId);
 }
 
 /** `notification.created` needs the recipient: delivery is per-user, not per-bond. */
@@ -50,6 +57,8 @@ export function parseRealtimeFrame(raw: string): RealtimeMessageV1 | null {
   switch (parsed.type) {
     case 'activity.changed':
       return isActivityChanged(parsed) ? (parsed as unknown as ActivityChangedMessageV1) : null;
+    case 'expense.changed':
+      return isExpenseChanged(parsed) ? (parsed as unknown as ExpenseChangedMessageV1) : null;
     case 'notification.created':
       return isNotificationCreated(parsed)
         ? (parsed as unknown as NotificationCreatedMessageV1)

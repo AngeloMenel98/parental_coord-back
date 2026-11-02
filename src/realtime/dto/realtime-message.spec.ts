@@ -23,6 +23,17 @@ const NOTIFICATION = {
   occurredAt: '2026-10-26T10:00:00.000Z',
 };
 
+const EXPENSE = {
+  v: 1,
+  type: 'expense.changed',
+  eventId: 'e2',
+  expenseId: 'x2',
+  bondId: 'b2',
+  status: 'approved',
+  actor: { type: 'user', id: 'u2' },
+  occurredAt: '2026-10-16T14:22:31.412Z',
+};
+
 /**
  * Frame discriminator (slice 3, S5): one channel carries every frame type, so
  * the subscriber must never forward something the gateway cannot route.
@@ -34,6 +45,10 @@ describe('parseRealtimeFrame', () => {
 
   it('parses a notification.created frame', () => {
     expect(parseRealtimeFrame(JSON.stringify(NOTIFICATION))).toEqual(NOTIFICATION);
+  });
+
+  it('parses an expense.changed frame', () => {
+    expect(parseRealtimeFrame(JSON.stringify(EXPENSE))).toEqual(EXPENSE);
   });
 
   it('accepts a notification without a reference entity', () => {
@@ -51,6 +66,12 @@ describe('parseRealtimeFrame', () => {
 
   it('drops an activity frame without a bondId (nothing to resolve an audience from)', () => {
     const withoutBond = { ...ACTIVITY } as Record<string, unknown>;
+    delete withoutBond.bondId;
+    expect(parseRealtimeFrame(JSON.stringify(withoutBond))).toBeNull();
+  });
+
+  it('drops an expense frame without a bondId', () => {
+    const withoutBond = { ...EXPENSE } as Record<string, unknown>;
     delete withoutBond.bondId;
     expect(parseRealtimeFrame(JSON.stringify(withoutBond))).toBeNull();
   });

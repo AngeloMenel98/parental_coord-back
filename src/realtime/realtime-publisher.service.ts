@@ -5,6 +5,7 @@ import Redis, { RedisOptions } from 'ioredis';
 import { OutboxEventEntity } from '../outbox/entities/outbox-event.entity';
 import { buildBullConnection } from '../queues/redis.config';
 import { buildActivityChangedMessage } from './dto/activity-changed-message';
+import { buildExpenseChangedMessage } from './dto/expense-changed-message';
 import {
   buildNotificationCreatedMessage,
   CreatedNotificationRef,
@@ -54,6 +55,11 @@ export class RealtimePublisher implements OnModuleInit, OnModuleDestroy {
     await this.send(buildActivityChangedMessage(event), `outbox event ${event.id}`);
   }
 
+  /** Publishes one `expense.changed` frame; no-op when disabled; never throws. */
+  async publishExpenseChanged(event: OutboxEventEntity): Promise<void> {
+    await this.send(buildExpenseChangedMessage(event), `expense outbox event ${event.id}`);
+  }
+
   /**
    * Publishes one `notification.created` frame for a row the fan-out created.
    *
@@ -75,6 +81,7 @@ export class RealtimePublisher implements OnModuleInit, OnModuleDestroy {
   private async send(
     message:
       | ReturnType<typeof buildActivityChangedMessage>
+      | ReturnType<typeof buildExpenseChangedMessage>
       | ReturnType<typeof buildNotificationCreatedMessage>,
     label: string,
   ): Promise<void> {

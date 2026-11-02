@@ -7,6 +7,7 @@ import { AuthUser } from '../auth/dto/auth-user.dto';
 import { BondsService } from '../bonds/bonds.service';
 import { BondMembersRepository } from '../bonds/repositories/bond-members.repository';
 import { ActivityChangedMessageV1 } from './dto/activity-changed-message';
+import { ExpenseChangedMessageV1 } from './dto/expense-changed-message';
 import { NotificationCreatedMessageV1 } from './dto/notification-created-message';
 import { RealtimeMessageV1 } from './dto/realtime-message';
 import { RealtimeAuthService } from './realtime-auth.service';
@@ -120,8 +121,10 @@ export class RealtimeGateway implements OnGatewayInit {
     }
   }
 
-  /** Sends an activity frame only to active members' sockets, exactly once each (REQ-3). */
-  private async deliverToBond(message: ActivityChangedMessageV1): Promise<void> {
+  /** Sends a bond-scoped frame only to active members' sockets, exactly once each (REQ-3). */
+  private async deliverToBond(
+    message: ActivityChangedMessageV1 | ExpenseChangedMessageV1,
+  ): Promise<void> {
     try {
       const memberIds = await this.bondMembersRepo.findActiveMemberIds(message.bondId);
 
