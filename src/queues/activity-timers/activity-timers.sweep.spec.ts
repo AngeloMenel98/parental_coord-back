@@ -34,10 +34,22 @@ describe('ActivityTimersSweep', () => {
   });
 
   describe('dueTargetFor (pure)', () => {
+    it('created past deadline → overdue', () => {
+      expect(dueTargetFor(row({ status: ActivityStatus.CREATED, deadline: past }), NOW)).toBe(
+        ActivityStatus.OVERDUE,
+      );
+    });
+
     it('assigned past deadline → overdue', () => {
       expect(dueTargetFor(row({ status: ActivityStatus.ASSIGNED, deadline: past }), NOW)).toBe(
         ActivityStatus.OVERDUE,
       );
+    });
+
+    it('created with a future deadline is not due', () => {
+      expect(
+        dueTargetFor(row({ status: ActivityStatus.CREATED, deadline: future }), NOW),
+      ).toBeNull();
     });
 
     it('assigned with a future deadline is not due', () => {
@@ -52,19 +64,25 @@ describe('ActivityTimersSweep', () => {
       ).toBe(ActivityStatus.IN_PROGRESS);
     });
 
-    it('in_progress past scheduled_end → done', () => {
+    it('in_progress past scheduled_end → verify', () => {
       expect(
         dueTargetFor(
           row({ status: ActivityStatus.IN_PROGRESS, scheduledStart: past, scheduledEnd: past }),
           NOW,
         ),
-      ).toBe(ActivityStatus.DONE);
+      ).toBe(ActivityStatus.VERIFY);
     });
 
-    it('in_progress without scheduled_end falls back to scheduled_start', () => {
+    it('in_progress without scheduled_end falls back to scheduled_start → verify', () => {
       expect(
         dueTargetFor(row({ status: ActivityStatus.IN_PROGRESS, scheduledStart: past }), NOW),
-      ).toBe(ActivityStatus.DONE);
+      ).toBe(ActivityStatus.VERIFY);
+    });
+
+    it('verify past deadline → overdue', () => {
+      expect(dueTargetFor(row({ status: ActivityStatus.VERIFY, deadline: past }), NOW)).toBe(
+        ActivityStatus.OVERDUE,
+      );
     });
   });
 
@@ -80,21 +98,34 @@ describe('ActivityTimersSweep', () => {
 
   it('processes every due activity with its mapped system transition', async () => {
     activitiesRepo.findDueForTransition.mockResolvedValue([
-      row({ id: 'over', status: ActivityStatus.ASSIGNED, deadline: past }),
+      row({ id: 'created-overdue', status: ActivityStatus.CREATED, deadline: past }),
+      row({ id: 'assigned-overdue', status: ActivityStatus.ASSIGNED, deadline: past }),
       row({ id: 'start', status: ActivityStatus.ASSISTING, scheduledStart: past }),
-      row({ id: 'done', status: ActivityStatus.IN_PROGRESS, scheduledStart: past }),
+      row({ id: 'verify', status: ActivityStatus.IN_PROGRESS, scheduledStart: past }),
+      row({ id: 'verify-overdue', status: ActivityStatus.VERIFY, deadline: past }),
     ]);
 
     await sweep.runSweep(NOW);
 
     expect(activitiesRepo.findDueForTransition).toHaveBeenCalledWith(NOW, SWEEP_LIMIT);
-    expect(activities.applySystemTransition).toHaveBeenCalledTimes(3);
-    expect(activities.applySystemTransition).toHaveBeenCalledWith('over', ActivityStatus.OVERDUE);
+    expect(activities.applySystemTransition).toHaveBeenCalledTimes(5);
+    expect(activities.applySystemTransition).toHaveBeenCalledWith(
+      'created-overdue',
+      ActivityStatus.OVERDUE,
+    );
+    expect(activities.applySystemTransition).toHaveBeenCalledWith(
+      'assigned-overdue',
+      ActivityStatus.OVERDUE,
+    );
     expect(activities.applySystemTransition).toHaveBeenCalledWith(
       'start',
       ActivityStatus.IN_PROGRESS,
     );
-    expect(activities.applySystemTransition).toHaveBeenCalledWith('done', ActivityStatus.DONE);
+    expect(activities.applySystemTransition).toHaveBeenCalledWith('verify', ActivityStatus.VERIFY);
+    expect(activities.applySystemTransition).toHaveBeenCalledWith(
+      'verify-overdue',
+      ActivityStatus.OVERDUE,
+    );
   });
 
   it('empty result → no transitions', async () => {

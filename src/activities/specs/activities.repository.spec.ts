@@ -268,13 +268,18 @@ describe('ActivitiesRepository', () => {
       const res = await repo.findDueForTransition(now, 50);
 
       expect(res).toEqual([{ id: 'a1' }]);
-      // The due predicate covers assigned/assisting/in_progress and is parameterized by `now`.
+      // The due predicate covers created/assigned/assisting/in_progress/verify and is parameterized by `now`.
       const [clause, params] = qb.andWhere.mock.calls[0];
+      expect(clause).toContain('a.status = :created');
       expect(clause).toContain('a.status = :assigned');
       expect(clause).toContain('a.status = :assisting');
+      expect(clause).toContain('a.status = :inProgress');
+      expect(clause).toContain('a.status = :verify');
       expect(clause).toContain('COALESCE(a.scheduled_end, a.scheduled_start)');
       expect(params.now).toBe(now);
+      expect(params.created).toBe(ActivityStatus.CREATED);
       expect(params.assigned).toBe(ActivityStatus.ASSIGNED);
+      expect(params.verify).toBe(ActivityStatus.VERIFY);
       expect(qb.limit).toHaveBeenCalledWith(50);
     });
 

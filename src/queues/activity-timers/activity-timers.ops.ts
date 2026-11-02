@@ -11,6 +11,7 @@ const ALL_KINDS: readonly TimerKind[] = [
   TimerKind.RESPONSE_TIMEOUT,
   TimerKind.START,
   TimerKind.END,
+  TimerKind.VERIFY_TIMEOUT,
 ];
 
 const enqueue = (kind: TimerKind): TimerOp => ({ action: 'enqueue', kind });
@@ -27,17 +28,18 @@ const OPS_BY_TARGET: Partial<Record<ActivityStatus, TimerOp[]>> = {
     enqueue(TimerKind.START),
     enqueue(TimerKind.END),
   ],
+  [ActivityStatus.CREATED]: [enqueue(TimerKind.RESPONSE_TIMEOUT)],
   [ActivityStatus.ASSISTING]: [
     cancel(TimerKind.RESPONSE_TIMEOUT),
     enqueue(TimerKind.START),
     enqueue(TimerKind.END),
   ],
   [ActivityStatus.IN_PROGRESS]: [enqueue(TimerKind.END)],
+  [ActivityStatus.VERIFY]: [cancel(TimerKind.END), enqueue(TimerKind.VERIFY_TIMEOUT)],
   [ActivityStatus.OVERDUE]: [enqueue(TimerKind.START), enqueue(TimerKind.END)],
   [ActivityStatus.DONE]: cancelAll(),
   [ActivityStatus.CANCELLED]: cancelAll(),
   [ActivityStatus.NOT_ASSISTING]: cancelAll(),
-  [ActivityStatus.CREATED]: cancelAll(),
 };
 
 export function timerOpsForTransition(to: ActivityStatus): TimerOp[] {

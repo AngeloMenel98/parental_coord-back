@@ -25,6 +25,7 @@ export type ApplyTransitionFields = Partial<
     | 'completedAt'
     | 'deadline'
     | 'deletedAt'
+    | 'verifyAt'
   >
 >;
 
@@ -269,16 +270,20 @@ export class ActivitiesRepository extends BaseRepository<ActivityEntity> {
       .where('a.deleted_at IS NULL')
       .andWhere(
         `(
-          (a.status = :assigned AND a.deadline IS NOT NULL AND a.deadline <= :now)
+          (a.status = :created AND a.deadline IS NOT NULL AND a.deadline <= :now)
+          OR (a.status = :assigned AND a.deadline IS NOT NULL AND a.deadline <= :now)
           OR (a.status = :assisting AND a.scheduled_start IS NOT NULL AND a.scheduled_start <= :now)
           OR (a.status = :inProgress AND COALESCE(a.scheduled_end, a.scheduled_start) IS NOT NULL
               AND COALESCE(a.scheduled_end, a.scheduled_start) <= :now)
+          OR (a.status = :verify AND a.deadline IS NOT NULL AND a.deadline <= :now)
         )`,
         {
           now,
+          created: ActivityStatus.CREATED,
           assigned: ActivityStatus.ASSIGNED,
           assisting: ActivityStatus.ASSISTING,
           inProgress: ActivityStatus.IN_PROGRESS,
+          verify: ActivityStatus.VERIFY,
         },
       )
       .addOrderBy('a.deadline', 'ASC', 'NULLS LAST')

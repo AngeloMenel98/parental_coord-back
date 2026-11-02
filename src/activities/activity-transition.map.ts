@@ -5,7 +5,21 @@ export type TransitionActor = 'assignee' | 'bond_member' | 'system';
 
 /** Closed set of confirmed transitions (REQ-TRANS-1). */
 export type TransitionId =
-  'T1' | 'T2' | 'T3' | 'T4' | 'T5' | 'T6' | 'T7' | 'T8' | 'T9' | 'T10' | 'T11' | 'T15';
+  | 'T1'
+  | 'T2'
+  | 'T3'
+  | 'T5'
+  | 'T6'
+  | 'T7'
+  | 'T8'
+  | 'T9'
+  | 'T10'
+  | 'T11'
+  | 'T12'
+  | 'T13'
+  | 'T14'
+  | 'T15'
+  | 'T16';
 
 /**
  * Column effects applied inside the transition tx.
@@ -18,6 +32,7 @@ export interface TransitionSideEffects {
   cancelledAt?: boolean;
   declinedAt?: boolean;
   completedAt?: boolean;
+  verifyAt?: boolean;
 }
 
 export interface TransitionRule {
@@ -41,6 +56,9 @@ export const ACTIVITY_EVENT = {
   UNASSIGNED: 'activity.unassigned',
   ASSISTING: 'activity.assisting',
   IN_PROGRESS: 'activity.in_progress',
+  VERIFY: 'activity.verify',
+  VERIFY_EXPIRED: 'activity.verify_expired',
+  CREATED_OVERDUE: 'activity.created_overdue',
   OVERDUE: 'activity.overdue',
   NOT_ASSISTING: 'activity.not_assisting',
   DONE: 'activity.done',
@@ -56,6 +74,7 @@ const CANCEL_SOURCES: readonly ActivityStatus[] = [
   ActivityStatus.NOT_ASSISTING,
   ActivityStatus.OVERDUE,
   ActivityStatus.IN_PROGRESS,
+  ActivityStatus.VERIFY,
 ];
 
 /**
@@ -71,14 +90,6 @@ const RULES: readonly TransitionRule[] = [
     actors: ['bond_member'],
     sideEffects: { deadline: 'set' },
     event: ACTIVITY_EVENT.ASSIGNED,
-  },
-  {
-    id: 'T4',
-    from: ActivityStatus.ASSIGNED,
-    to: ActivityStatus.CREATED,
-    actors: ['bond_member'],
-    sideEffects: { deadline: 'clear', confirmedAt: false },
-    event: ACTIVITY_EVENT.UNASSIGNED,
   },
   {
     id: 'T5',
@@ -141,12 +152,48 @@ const RULES: readonly TransitionRule[] = [
     event: ACTIVITY_EVENT.IN_PROGRESS,
   },
   {
+    // T11 · cierre temprano: el miembro puede marcar la actividad como
+    // TERMINADA antes de que termine su horario. El sistema ya NO cierra desde
+    // `in_progress` (el timer END va a `verify`), pero la capacidad que la app
+    // tenía desde antes no se le quita a nadie sin que nadie lo pida.
     id: 'T11',
     from: ActivityStatus.IN_PROGRESS,
     to: ActivityStatus.DONE,
-    actors: ['system', 'bond_member'],
+    actors: ['bond_member'],
     sideEffects: { completedAt: true },
     event: ACTIVITY_EVENT.DONE,
+  },
+  {
+    id: 'T12',
+    from: ActivityStatus.IN_PROGRESS,
+    to: ActivityStatus.VERIFY,
+    actors: ['system'],
+    sideEffects: { deadline: 'set', verifyAt: true },
+    event: ACTIVITY_EVENT.VERIFY,
+  },
+  {
+    id: 'T13',
+    from: ActivityStatus.VERIFY,
+    to: ActivityStatus.DONE,
+    actors: ['bond_member'],
+    sideEffects: { deadline: 'clear', completedAt: true, verifyAt: false },
+    event: ACTIVITY_EVENT.DONE,
+  },
+  {
+    id: 'T14',
+    from: ActivityStatus.VERIFY,
+    to: ActivityStatus.OVERDUE,
+    actors: ['system'],
+    sideEffects: { deadline: 'clear' },
+    event: ACTIVITY_EVENT.VERIFY_EXPIRED,
+  },
+  {
+    id: 'T16',
+    from: ActivityStatus.CREATED,
+    to: ActivityStatus.OVERDUE,
+    actors: ['system'],
+    sideEffects: { deadline: 'clear' },
+    event: ACTIVITY_EVENT.CREATED_OVERDUE,
   },
   ...CANCEL_SOURCES.map<TransitionRule>((from) => ({
     id: 'T15',

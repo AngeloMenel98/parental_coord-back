@@ -175,12 +175,26 @@ export class ActivitiesService {
     if (isSystem) {
       if (!rule.actors.includes('system')) return activity;
     } else {
-      // A user must never trigger a system-only rule (T7/T10).
+      // A user must never trigger a system-only rule (T7/T10/T12/T14/T16).
       if (!rule.actors.includes('bond_member') && !rule.actors.includes('assignee')) {
         throw activityForbidden('This transition is system-only');
       }
       if (rule.requireAssignee && activity.assignedTo !== userId) {
         throw activityForbidden('Only the assignee can perform this action');
+      }
+    }
+
+    // T8 origin guard: late acceptance/decline is only allowed when overdue
+    // originated from `assigned`. Origin is derived from stored data.
+    if (rule.id === 'T8') {
+      const fromCreated = activity.assignedTo == null;
+      const fromVerify = activity.verifyAt != null;
+      if (fromCreated || fromVerify) {
+        throw activityInvalidTransition(
+          activity.status,
+          req.to,
+          'Late response is only allowed when overdue originated from assigned',
+        );
       }
     }
 
@@ -226,10 +240,9 @@ export class ActivitiesService {
   }
 
   /**
-   * SYSTEM entry for the OVERDUE transition (T7). Called by the timer processor
-   * and the reconciliation sweep (E9). A missing row is a 404; a stale/invalid
-   * source state (e.g. no longer `assigned`) is a silent no-op (timers never
-   * surface a conflict).
+   * SYSTEM entry for the OVERDUE transition (T7/T14/T16). Called by the timer
+   * processor and the reconciliation sweep (E9). A missing row is a 404; a
+   * stale/invalid source state is a silent no-op (timers never surface a conflict).
    */
   async markOverdue(activityId: string): Promise<ActivityEntity | null> {
     const activity = await this.activitiesRepo.findById(activityId);
@@ -296,6 +309,12 @@ export class ActivitiesService {
       if (ctx.reason != null) fields.declinedReason = ctx.reason;
     }
 
+    if (effects.verifyAt === true) {
+      fields.verifyAt = ctx.now;
+    } else if (effects.verifyAt === false) {
+      fields.verifyAt = null;
+    }
+
     return fields;
   }
 
@@ -334,6 +353,8 @@ export class ActivitiesService {
         return entity.scheduledStart;
       case TimerKind.END:
         return entity.scheduledEnd ?? entity.scheduledStart;
+      case TimerKind.VERIFY_TIMEOUT:
+        return entity.deadline;
       default:
         return null;
     }
@@ -379,9 +400,8 @@ export class ActivitiesService {
       assignedTo,
       scheduledStart: new Date(dto.scheduledStart),
       scheduledEnd: dto.scheduledEnd ? new Date(dto.scheduledEnd) : null,
-      // T2 side-effect: entering `assigned` sets the response anchor (REQ-MODEL-2).
-      deadline:
-        initial.status === ActivityStatus.ASSIGNED ? this.computeResponseDeadline(now) : null,
+      // T1/T2 side-effect: the response window opens at create for both states.
+      deadline: this.computeResponseDeadline(now),
       notifBefore: NOTIF_BEFORE,
       notifAfter: NOTIF_AFTER,
     };
@@ -446,7 +466,8 @@ export class ActivitiesService {
     const activity = await this.findById(id);
     await this.assertActivityMember(activity, userId);
 
-    // T11: only `in_progress -> done`. Any other source (incl. terminal) => 409.
+    // T11 (cierre temprano desde `in_progress`) y T13 (cierre desde la ventana
+    // de verificación). Cualquier otro origen —terminal incluido— es 409.
     const updated = await this.transition({
       activityId: id,
       to: ActivityStatus.DONE,

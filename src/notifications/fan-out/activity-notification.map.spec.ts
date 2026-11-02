@@ -119,10 +119,6 @@ describe('activity-notification map (notifications-fanout T2.1/T2.2 + T10)', () 
       });
     });
 
-    it('returns null for activity.unassigned (skipped in this change)', () => {
-      expect(resolveNotificationRule(ACTIVITY_EVENT.UNASSIGNED)).toBeNull();
-    });
-
     it('returns null for an unknown event type (no throw)', () => {
       expect(resolveNotificationRule('activity.teleported')).toBeNull();
       expect(resolveNotificationRule('')).toBeNull();

@@ -162,6 +162,10 @@ export class ActivityEntity {
   @Column({ type: 'timestamptz', nullable: true, name: 'completed_at' })
   completedAt!: Date | null;
 
+  /** T25 · momento en que la actividad entró a `verify`; se limpia al salir. */
+  @Column({ type: 'timestamptz', nullable: true, name: 'verify_at' })
+  verifyAt!: Date | null;
+
   @Column({ type: 'enum', enum: ActivityStatus, nullable: true, name: 'resolved_status' })
   resolvedStatus!: ActivityStatus | null;
 

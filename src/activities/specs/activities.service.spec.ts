@@ -341,13 +341,20 @@ describe('ActivitiesService', () => {
       expect(producer.cancel).not.toHaveBeenCalled();
     });
 
-    it('T1: without assignee → created row, deadline null, NO timers', async () => {
+    it('T1: without assignee → created row, deadline=now+36h, response-timeout enqueued', async () => {
       await service.create(bondId, validDto() as any, userId);
 
       const input = activityRepo.insertWithInitialTransition.mock.calls[0][0];
       expect(input.initial).toEqual({ status: ActivityStatus.CREATED, event: 'activity.created' });
-      expect(input.row.deadline).toBeNull();
-      expect(producer.enqueue).not.toHaveBeenCalled();
+      expect(input.row.deadline).toEqual(new Date(NOW.getTime() + 36 * 3600_000));
+      expect(producer.enqueue).toHaveBeenCalledTimes(1);
+      expect(producer.enqueue).toHaveBeenCalledWith(
+        TimerKind.RESPONSE_TIMEOUT,
+        'a1',
+        1,
+        new Date(NOW.getTime() + 36 * 3600_000),
+        NOW,
+      );
       expect(producer.cancel).not.toHaveBeenCalled();
     });
   });
@@ -661,10 +668,8 @@ describe('ActivitiesService', () => {
       );
     });
 
-    it('→done (T11): cancels ALL timers at the previous version; deadline column untouched (REQ-MODEL-2)', async () => {
-      activityRepo.findById.mockResolvedValue(
-        futureActivity({ status: ActivityStatus.IN_PROGRESS }),
-      );
+    it('→done: cancels ALL timers at the previous version; deadline column untouched (REQ-MODEL-2)', async () => {
+      activityRepo.findById.mockResolvedValue(futureActivity({ status: ActivityStatus.VERIFY }));
       transitionEcho();
 
       await service.transition({
@@ -674,9 +679,14 @@ describe('ActivitiesService', () => {
       });
 
       const fields = activityRepo.applyTransition.mock.calls[0][0].fields;
-      expect(fields.deadline).toBeUndefined();
-      expect(producer.cancel).toHaveBeenCalledTimes(3);
-      for (const kind of [TimerKind.RESPONSE_TIMEOUT, TimerKind.START, TimerKind.END]) {
+      expect(fields.deadline).toBeNull();
+      expect(producer.cancel).toHaveBeenCalledTimes(4);
+      for (const kind of [
+        TimerKind.RESPONSE_TIMEOUT,
+        TimerKind.START,
+        TimerKind.END,
+        TimerKind.VERIFY_TIMEOUT,
+      ]) {
         expect(producer.cancel).toHaveBeenCalledWith(kind, 'a1', 1);
       }
       expect(producer.enqueue).not.toHaveBeenCalled();
@@ -736,8 +746,22 @@ describe('ActivitiesService', () => {
   // ══════════════════════════════════════════════════════════════════════════
   // Retargeted write sites (E5.2–E5.4)
   // ══════════════════════════════════════════════════════════════════════════
-  describe('complete → T11 (in_progress → done)', () => {
+  describe('complete → T11 (in_progress → done) / T13 (verify → done)', () => {
     it('routes through transition() and returns done + completedAt', async () => {
+      activityRepo.findById.mockResolvedValue(futureActivity({ status: ActivityStatus.VERIFY }));
+      transitionEcho();
+      const res = await service.complete('a1', creator);
+
+      expect(res.status).toBe(ActivityStatus.DONE);
+      expect(activityRepo.applyTransition).toHaveBeenCalledWith(
+        expect.objectContaining({
+          expectedFrom: ActivityStatus.VERIFY,
+          nextStatus: ActivityStatus.DONE,
+        }),
+      );
+    });
+
+    it('completes from in_progress — the member may close it before its end time', async () => {
       activityRepo.findById.mockResolvedValue(
         futureActivity({ status: ActivityStatus.IN_PROGRESS }),
       );
@@ -753,7 +777,7 @@ describe('ActivitiesService', () => {
       );
     });
 
-    it('409 from assigned (was a raw UPDATE from any status)', async () => {
+    it('409 from assigned', async () => {
       activityRepo.findById.mockResolvedValue(futureActivity({ status: ActivityStatus.ASSIGNED }));
       await expectCode(service.complete('a1', creator), 'ACTIVITY_INVALID_TRANSITION', 409);
       expect(activityRepo.applyTransition).not.toHaveBeenCalled();
@@ -770,9 +794,7 @@ describe('ActivitiesService', () => {
     });
 
     it('404 for a non-member before the transition', async () => {
-      activityRepo.findById.mockResolvedValue(
-        futureActivity({ status: ActivityStatus.IN_PROGRESS }),
-      );
+      activityRepo.findById.mockResolvedValue(futureActivity({ status: ActivityStatus.VERIFY }));
       bondService.isActiveBondForMember.mockResolvedValue(false);
       await expectCode(service.complete('a1', stranger), 'ACTIVITY_NOT_FOUND', 404);
       expect(activityRepo.applyTransition).not.toHaveBeenCalled();
@@ -825,6 +847,42 @@ describe('ActivitiesService', () => {
     it('403 for a non-assignee', async () => {
       activityRepo.findById.mockResolvedValue(futureActivity());
       await expect(service.confirmAssignment('a1', creator)).rejects.toThrow(ForbiddenException);
+      expect(activityRepo.applyTransition).not.toHaveBeenCalled();
+    });
+
+    it('overdue → assisting (T8) when origin is assigned', async () => {
+      activityRepo.findById.mockResolvedValue(
+        futureActivity({ status: ActivityStatus.OVERDUE, assignedTo: assignee, verifyAt: null }),
+      );
+      transitionEcho();
+      const res = await service.confirmAssignment('a1', assignee);
+
+      expect(activityRepo.applyTransition).toHaveBeenCalledWith(
+        expect.objectContaining({
+          expectedFrom: ActivityStatus.OVERDUE,
+          nextStatus: ActivityStatus.ASSISTING,
+        }),
+      );
+      expect(res.assignedConfirmed).toBe(true);
+    });
+
+    it('403 when overdue originated from created (no assignee; not the assignee)', async () => {
+      activityRepo.findById.mockResolvedValue(
+        futureActivity({ status: ActivityStatus.OVERDUE, assignedTo: null, verifyAt: null }),
+      );
+      await expect(service.confirmAssignment('a1', userId)).rejects.toThrow(ForbiddenException);
+      expect(activityRepo.applyTransition).not.toHaveBeenCalled();
+    });
+
+    it('409 when overdue originated from verify', async () => {
+      activityRepo.findById.mockResolvedValue(
+        futureActivity({ status: ActivityStatus.OVERDUE, assignedTo: assignee, verifyAt: NOW }),
+      );
+      await expectCode(
+        service.confirmAssignment('a1', assignee),
+        'ACTIVITY_INVALID_TRANSITION',
+        409,
+      );
       expect(activityRepo.applyTransition).not.toHaveBeenCalled();
     });
 
@@ -955,13 +1013,47 @@ describe('ActivitiesService', () => {
       expect(activityRepo.declineWithAudit).not.toHaveBeenCalled();
     });
 
-    it('overdue → not_assisting (T8)', async () => {
-      activityRepo.findById.mockResolvedValue(futureActivity({ status: ActivityStatus.OVERDUE }));
+    it('overdue → not_assisting (T8) when origin is assigned', async () => {
+      activityRepo.findById.mockResolvedValue(
+        futureActivity({ status: ActivityStatus.OVERDUE, assignedTo: assignee, verifyAt: null }),
+      );
       transitionEcho();
       await service.declineAssignment('a1', assignee, 'no puedo');
       expect(activityRepo.applyTransition.mock.calls[0][0].expectedFrom).toBe(
         ActivityStatus.OVERDUE,
       );
+    });
+
+    it('403 when overdue originated from created (no assignee; not the assignee)', async () => {
+      activityRepo.findById.mockResolvedValue(
+        futureActivity({
+          status: ActivityStatus.OVERDUE,
+          assignedTo: null,
+          verifyAt: null,
+        }),
+      );
+      await expectCode(
+        service.declineAssignment('a1', userId, 'no puedo'),
+        'ACTIVITY_FORBIDDEN',
+        403,
+      );
+      expect(activityRepo.applyTransition).not.toHaveBeenCalled();
+    });
+
+    it('409 when overdue originated from verify', async () => {
+      activityRepo.findById.mockResolvedValue(
+        futureActivity({
+          status: ActivityStatus.OVERDUE,
+          assignedTo: assignee,
+          verifyAt: NOW,
+        }),
+      );
+      await expectCode(
+        service.declineAssignment('a1', assignee, 'no puedo'),
+        'ACTIVITY_INVALID_TRANSITION',
+        409,
+      );
+      expect(activityRepo.applyTransition).not.toHaveBeenCalled();
     });
 
     it('422 when the reason is missing — previously it was optional', async () => {
