@@ -9,7 +9,7 @@ import { ACTIVITY_EVENT } from '../../activities/activity-transition.map';
  * (defensivo, design D6). Así una regla mal escrita falla sin abrir SQL.
  */
 
-/** Los 9 eventos de la actividad (catálogo cerrado, `activity-transition.map.ts`). */
+/** Los 12 eventos de la actividad (catálogo cerrado, `activity-transition.map.ts`). */
 export type ActivityNotificationEventType = (typeof ACTIVITY_EVENT)[keyof typeof ACTIVITY_EVENT];
 
 /** Tipos de notificación que produce el fan-out (columna `notification.type`). */
@@ -18,6 +18,9 @@ export type ActivityNotificationType =
   | 'activity_assigned'
   | 'activity_assisting'
   | 'activity_in_progress'
+  | 'activity_verify'
+  | 'activity_verify_expired'
+  | 'activity_created_overdue'
   | 'activity_overdue'
   | 'activity_not_assisting'
   | 'activity_done'
@@ -72,6 +75,9 @@ const TITLE_CREATED = 'Nueva actividad';
 const TITLE_ASSIGNED = 'Nueva actividad asignada';
 const TITLE_ASSISTING = 'Actividad aceptada';
 const TITLE_IN_PROGRESS = 'Actividad en curso';
+const TITLE_VERIFY = 'Actividad por verificar';
+const TITLE_VERIFY_EXPIRED = 'La verificación venció';
+const TITLE_CREATED_OVERDUE = 'Actividad sin asignar';
 const TITLE_OVERDUE = 'Actividad vencida';
 const TITLE_NOT_ASSISTING = 'Actividad declinada';
 const TITLE_DONE = 'Actividad finalizada';
@@ -83,6 +89,9 @@ const RULE_TITLES = [
   TITLE_ASSIGNED,
   TITLE_ASSISTING,
   TITLE_IN_PROGRESS,
+  TITLE_VERIFY,
+  TITLE_VERIFY_EXPIRED,
+  TITLE_CREATED_OVERDUE,
   TITLE_OVERDUE,
   TITLE_NOT_ASSISTING,
   TITLE_DONE,
@@ -129,10 +138,10 @@ function renderWithTitle(template: string, ctx: RenderContext, maxLength = 100):
 }
 
 /**
- * Las 8 reglas entregables. `activity.unassigned` NO está aquí a propósito:
- * no existe productor y el payload aún no lleva `previousAssignedTo`, así que
- * se omite en este cambio (REQ-FAN-004). `resolveNotificationRule` devuelve
- * `null` para él y para cualquier tipo desconocido.
+ * Las 11 reglas entregables. `activity.unassigned` NO está aquí a propósito:
+ * T4 fue removido y no hay productor, así que se omite (REQ-FAN-004).
+ * `resolveNotificationRule` devuelve `null` para él y para cualquier tipo
+ * desconocido.
  */
 export const NOTIFICATION_FAN_OUT_RULES: readonly NotificationFanOutRule[] = [
   {
@@ -193,6 +202,36 @@ export const NOTIFICATION_FAN_OUT_RULES: readonly NotificationFanOutRule[] = [
     recipients: ['assignee', 'creator'],
     excludeCoordinator: false,
     needsCoordinator: false,
+    needsMembers: false,
+  },
+  {
+    eventType: ACTIVITY_EVENT.VERIFY,
+    type: 'activity_verify',
+    title: TITLE_VERIFY,
+    body: (ctx) => renderWithTitle('"{title}" terminó y espera tu confirmación.', ctx),
+    recipients: ['assignee', 'creator'],
+    excludeCoordinator: false,
+    needsCoordinator: false,
+    needsMembers: false,
+  },
+  {
+    eventType: ACTIVITY_EVENT.VERIFY_EXPIRED,
+    type: 'activity_verify_expired',
+    title: TITLE_VERIFY_EXPIRED,
+    body: (ctx) => renderWithTitle('"{title}" quedó sin confirmar y venció.', ctx),
+    recipients: ['assignee', 'creator', 'coordinator'],
+    excludeCoordinator: false,
+    needsCoordinator: true,
+    needsMembers: false,
+  },
+  {
+    eventType: ACTIVITY_EVENT.CREATED_OVERDUE,
+    type: 'activity_created_overdue',
+    title: TITLE_CREATED_OVERDUE,
+    body: (ctx) => renderWithTitle('"{title}" quedó sin asignar y venció.', ctx),
+    recipients: ['creator', 'coordinator'],
+    excludeCoordinator: false,
+    needsCoordinator: true,
     needsMembers: false,
   },
   {

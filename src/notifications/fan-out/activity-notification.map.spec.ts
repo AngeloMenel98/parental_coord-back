@@ -55,6 +55,33 @@ const EXPECTED_RULES: ExpectedRule[] = [
     needsMembers: false,
   },
   {
+    eventType: 'activity.verify',
+    type: 'activity_verify',
+    title: 'Actividad por verificar',
+    recipients: ['assignee', 'creator'],
+    excludeCoordinator: false,
+    needsCoordinator: false,
+    needsMembers: false,
+  },
+  {
+    eventType: 'activity.verify_expired',
+    type: 'activity_verify_expired',
+    title: 'La verificación venció',
+    recipients: ['assignee', 'creator', 'coordinator'],
+    excludeCoordinator: false,
+    needsCoordinator: true,
+    needsMembers: false,
+  },
+  {
+    eventType: 'activity.created_overdue',
+    type: 'activity_created_overdue',
+    title: 'Actividad sin asignar',
+    recipients: ['creator', 'coordinator'],
+    excludeCoordinator: false,
+    needsCoordinator: true,
+    needsMembers: false,
+  },
+  {
     eventType: 'activity.overdue',
     type: 'activity_overdue',
     title: 'Actividad vencida',
@@ -124,13 +151,16 @@ describe('activity-notification map (notifications-fanout T2.1/T2.2 + T10)', () 
       expect(resolveNotificationRule('')).toBeNull();
     });
 
-    it('defines exactly the 8 deliverable rules (unassigned intentionally absent)', () => {
+    it('defines exactly the 11 deliverable rules (unassigned intentionally absent)', () => {
       expect(NOTIFICATION_FAN_OUT_RULES.map((rule) => rule.eventType).sort()).toEqual(
         [
           ACTIVITY_EVENT.CREATED,
           ACTIVITY_EVENT.ASSIGNED,
           ACTIVITY_EVENT.ASSISTING,
           ACTIVITY_EVENT.IN_PROGRESS,
+          ACTIVITY_EVENT.VERIFY,
+          ACTIVITY_EVENT.VERIFY_EXPIRED,
+          ACTIVITY_EVENT.CREATED_OVERDUE,
           ACTIVITY_EVENT.OVERDUE,
           ACTIVITY_EVENT.NOT_ASSISTING,
           ACTIVITY_EVENT.DONE,
