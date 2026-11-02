@@ -128,6 +128,7 @@ describe('ActivitiesService', () => {
       declinedAt: null,
       declinedReason: null,
       deletedAt: null,
+      verifyAt: null,
       ...overrides,
     } as any;
   }
@@ -239,6 +240,37 @@ describe('ActivitiesService', () => {
       categoriesRepo.findActiveById.mockResolvedValue(null as any);
       await expect(service.create(bondId, validDto() as any, userId)).rejects.toThrow(
         BadRequestException,
+      );
+    });
+
+    it('rejects create when scheduledStart is less than 48 h ahead', async () => {
+      const dto = {
+        ...validDto(),
+        scheduledStart: '2026-10-02T11:00:00Z', // 23 h after NOW
+      };
+      await expect(service.create(bondId, dto as any, userId)).rejects.toThrow(BadRequestException);
+      await expect(service.create(bondId, dto as any, userId)).rejects.toThrow(
+        'La actividad debe programarse con al menos 48 horas de anticipación',
+      );
+      expect(activityRepo.insertWithInitialTransition).not.toHaveBeenCalled();
+    });
+
+    it('accepts create exactly at the 48 h boundary', async () => {
+      const dto = {
+        ...validDto(),
+        scheduledStart: '2026-10-03T12:00:00Z', // exactly 48 h after NOW
+      };
+      await expect(service.create(bondId, dto as any, userId)).resolves.toBeDefined();
+    });
+
+    it('honours MIN_LEAD_TIME_HOURS when overridden', async () => {
+      config.get.mockImplementation((key: string) => (key === 'MIN_LEAD_TIME_HOURS' ? 72 : 36));
+      const dto = {
+        ...validDto(),
+        scheduledStart: '2026-10-04T11:00:00Z', // 47 h after NOW, < 72 h
+      };
+      await expect(service.create(bondId, dto as any, userId)).rejects.toThrow(
+        'La actividad debe programarse con al menos 48 horas de anticipación',
       );
     });
 
@@ -1040,7 +1072,7 @@ describe('ActivitiesService', () => {
       expect(activityRepo.applyTransition).not.toHaveBeenCalled();
     });
 
-    it('409 when overdue originated from verify', async () => {
+    it('403 when overdue originated from verify — policy.canDecline is false', async () => {
       activityRepo.findById.mockResolvedValue(
         futureActivity({
           status: ActivityStatus.OVERDUE,
@@ -1050,8 +1082,8 @@ describe('ActivitiesService', () => {
       );
       await expectCode(
         service.declineAssignment('a1', assignee, 'no puedo'),
-        'ACTIVITY_INVALID_TRANSITION',
-        409,
+        'ACTIVITY_FORBIDDEN',
+        403,
       );
       expect(activityRepo.applyTransition).not.toHaveBeenCalled();
     });
@@ -1109,26 +1141,72 @@ describe('ActivitiesService', () => {
       expect(asCreator[0]).toMatchObject({
         canDelete: true,
         canCancel: true,
+        canConfirm: false,
         canDecline: false,
+        canComplete: false,
       });
 
       const asAssignee = await service.listByBond(bondId, assignee);
       expect(asAssignee[0]).toMatchObject({
         canDelete: false,
         canCancel: false,
+        canConfirm: true,
         canDecline: true,
+        canComplete: false,
       });
     });
 
-    it('getDetail adds isPast and the three flags', async () => {
+    it('getDetail adds isPast and the server flags', async () => {
       activityRepo.findById.mockResolvedValue(futureActivity());
       const detail = await service.getDetail('a1', creator);
       expect(detail).toMatchObject({
         canDelete: true,
         canCancel: true,
+        canConfirm: false,
         canDecline: false,
+        canComplete: false,
         isPast: false,
       });
+    });
+
+    it('listByBond exposes canComplete in `in_progress` for any member', async () => {
+      activityRepo.findByBondIdOrdered.mockResolvedValue([
+        futureActivity({ id: 'a1', status: ActivityStatus.IN_PROGRESS }),
+      ]);
+      const rows = await service.listByBond(bondId, stranger);
+      expect(rows[0].canComplete).toBe(true);
+      expect(rows[0].canConfirm).toBe(false);
+    });
+
+    it('listByBond exposes canConfirm/decline for overdue-from-assigned', async () => {
+      activityRepo.findByBondIdOrdered.mockResolvedValue([
+        futureActivity({
+          id: 'a1',
+          status: ActivityStatus.OVERDUE,
+          assignedTo: assignee,
+          verifyAt: null,
+        }),
+      ]);
+      const rows = await service.listByBond(bondId, assignee);
+      expect(rows[0].canConfirm).toBe(true);
+      expect(rows[0].canDecline).toBe(true);
+    });
+
+    it('getDetail exposes canComplete in `verify`', async () => {
+      activityRepo.findById.mockResolvedValue(
+        futureActivity({ status: ActivityStatus.VERIFY, verifyAt: NOW }),
+      );
+      const detail = await service.getDetail('a1', stranger);
+      expect(detail.canComplete).toBe(true);
+    });
+
+    it('T4 removed: canUnassign is never present in DTOs', async () => {
+      activityRepo.findById.mockResolvedValue(futureActivity());
+      const detail = await service.getDetail('a1', creator);
+      expect('canUnassign' in detail).toBe(false);
+      activityRepo.findByBondIdOrdered.mockResolvedValue([futureActivity({ id: 'a1' })]);
+      const rows = await service.listByBond(bondId, creator);
+      expect('canUnassign' in rows[0]).toBe(false);
     });
 
     it('A3: declinedReason is exposed to ANY bond member, not only the creator', async () => {
@@ -1271,7 +1349,13 @@ describe('ActivitiesService', () => {
     it('member happy path is unchanged (viewer flags still resolved)', async () => {
       activityRepo.findById.mockResolvedValue(futureActivity());
       const detail = await service.getDetail('a1', creator);
-      expect(detail).toMatchObject({ canDelete: true, canCancel: true, canDecline: false });
+      expect(detail).toMatchObject({
+        canDelete: true,
+        canCancel: true,
+        canConfirm: false,
+        canDecline: false,
+        canComplete: false,
+      });
     });
   });
 });

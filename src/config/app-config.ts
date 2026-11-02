@@ -86,6 +86,12 @@ export class AppConfig {
   @IsInt()
   RESPONSE_TIMEOUT_HOURS?: number;
 
+  /** Minimum lead time (hours) between now and scheduledStart on create/edit. */
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  MIN_LEAD_TIME_HOURS?: number;
+
   // --- Webhooks (design D12) — every key optional, defaults applied here. ---
 
   /** Payload-only API version constant; NOT URL versioning. */

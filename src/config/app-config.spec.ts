@@ -53,6 +53,38 @@ describe('AppConfig — webhook keys (D12)', () => {
 });
 
 /**
+ * Activity lead-time / response window keys (R14/R16). Both optional ints,
+ * coerced from env strings; defaults are applied by the service if absent.
+ */
+describe('AppConfig — activity timing keys', () => {
+  const required = {
+    DB_HOST: 'localhost',
+    DB_PORT: '5432',
+    DB_USER: 'u',
+    DB_PASSWORD: 'p',
+    DB_NAME: 'd',
+    JWT_SECRET: 's',
+  };
+
+  it('accepts activity timing keys as optional integers', () => {
+    const cfg = validateConfig({
+      ...required,
+      RESPONSE_TIMEOUT_HOURS: '36',
+      MIN_LEAD_TIME_HOURS: '48',
+    });
+
+    expect(cfg.RESPONSE_TIMEOUT_HOURS).toBe(36);
+    expect(cfg.MIN_LEAD_TIME_HOURS).toBe(48);
+  });
+
+  it('rejects a non-integer activity timing value', () => {
+    expect(() => validateConfig({ ...required, MIN_LEAD_TIME_HOURS: 'abc' })).toThrow(
+      /Config validation failed/,
+    );
+  });
+});
+
+/**
  * Realtime keys (design #1471, spec REQ-1/REQ-4). Both optional with defaults:
  * `WS_PATH='/realtime'` and `REALTIME_PUBLISH_ENABLED='true'`.
  */

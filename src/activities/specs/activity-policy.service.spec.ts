@@ -1,4 +1,5 @@
 import { ActivityPolicyService, PolicySubject } from '../activity-policy.service';
+import { ActivityStatus } from '../entities/activity.entity';
 
 describe('ActivityPolicyService', () => {
   let policy: ActivityPolicyService;
@@ -11,6 +12,8 @@ describe('ActivityPolicyService', () => {
       assignedTo: 'assignee',
       scheduledStart: new Date('2026-10-01T10:00:00Z'),
       scheduledEnd: new Date('2026-10-01T14:00:00Z'),
+      status: ActivityStatus.ASSIGNED,
+      verifyAt: null,
       ...overrides,
     };
   }
@@ -58,57 +61,107 @@ describe('ActivityPolicyService', () => {
       expect(policy.isPast(a, NOW)).toBe(false);
     });
 
-    it('IN PROGRESS keeps every action — the reason is structural, not a special case', () => {
+    it('IN PROGRESS: creator keeps delete/cancel, assignee keeps complete, decline is gone', () => {
       // 10:00 → 14:00, ahora 12:00: empezó y no ha terminado. El visor es creador
       // Y asignado para que las tres acciones le apliquen y la aserción sea sobre
       // el TIEMPO, no sobre el rol.
       const viewer = 'both';
       const inProgress = policy.evaluate(
-        subject({ createdBy: viewer, assignedTo: viewer }),
+        subject({
+          createdBy: viewer,
+          assignedTo: viewer,
+          status: ActivityStatus.IN_PROGRESS,
+        }),
         viewer,
         NOW,
       );
       expect(inProgress.isPast).toBe(false);
       expect(inProgress.canDelete).toBe(true);
       expect(inProgress.canCancel).toBe(true);
-      expect(inProgress.canDecline).toBe(true);
+      expect(inProgress.canConfirm).toBe(false);
+      expect(inProgress.canDecline).toBe(false);
+      expect(inProgress.canComplete).toBe(true);
     });
   });
 
   describe('evaluate — role matrix', () => {
     it('creator gets delete+cancel but NOT decline (creator is not the assignee)', () => {
       const d = policy.evaluate(subject(), 'creator', NOW);
-      expect(d).toEqual({ canDelete: true, canCancel: true, canDecline: false, isPast: false });
+      expect(d).toEqual({
+        canDelete: true,
+        canCancel: true,
+        canConfirm: false,
+        canDecline: false,
+        canComplete: false,
+        isPast: false,
+      });
     });
 
-    it('assignee gets decline but NOT delete/cancel', () => {
+    it('assignee gets confirm+decline but NOT delete/cancel', () => {
       const d = policy.evaluate(subject(), 'assignee', NOW);
-      expect(d).toEqual({ canDelete: false, canCancel: false, canDecline: true, isPast: false });
+      expect(d).toEqual({
+        canDelete: false,
+        canCancel: false,
+        canConfirm: true,
+        canDecline: true,
+        canComplete: false,
+        isPast: false,
+      });
     });
 
     it('a third bond member gets NOTHING', () => {
       const d = policy.evaluate(subject(), 'someone-else', NOW);
-      expect(d).toEqual({ canDelete: false, canCancel: false, canDecline: false, isPast: false });
+      expect(d).toEqual({
+        canDelete: false,
+        canCancel: false,
+        canConfirm: false,
+        canDecline: false,
+        canComplete: false,
+        isPast: false,
+      });
     });
 
-    it('unassigned activity: nobody can decline', () => {
+    it('unassigned activity: nobody can decline/confirm', () => {
       const d = policy.evaluate(subject({ assignedTo: null }), 'creator', NOW);
+      expect(d.canConfirm).toBe(false);
       expect(d.canDecline).toBe(false);
       expect(d.canDelete).toBe(true);
     });
 
-    it('creator who is ALSO the assignee gets all three', () => {
+    it('creator who is ALSO the assignee gets all three creator/assignee flags', () => {
       const both = subject({ createdBy: 'both', assignedTo: 'both' });
       const d = policy.evaluate(both, 'both', NOW);
-      expect(d).toEqual({ canDelete: true, canCancel: true, canDecline: true, isPast: false });
+      expect(d).toEqual({
+        canDelete: true,
+        canCancel: true,
+        canConfirm: true,
+        canDecline: true,
+        canComplete: false,
+        isPast: false,
+      });
     });
 
-    it('past activity kills ALL THREE flags for everyone, creator included', () => {
+    it('past activity kills the creator/assignee flags, but NOT confirm', () => {
+      // `isPast` mata delete/cancel/decline: de una actividad que ya pasó no se
+      // puede deshacer nada, y decir "no asisto" no significa nada. CONFIRMAR es
+      // al revés: confirmar una actividad YA terminada es el caso normal — la
+      // ventana de verificación existe para eso — y es lo que la app ya
+      // permitía (su regla de cliente no miraba la hora).
       const past = subject({ scheduledEnd: new Date('2026-10-01T11:00:00Z') });
       expect(policy.evaluate(past, 'creator', NOW)).toEqual({
         canDelete: false,
         canCancel: false,
+        canConfirm: false,
         canDecline: false,
+        canComplete: false,
+        isPast: true,
+      });
+      expect(policy.evaluate(past, 'assignee', NOW)).toEqual({
+        canDelete: false,
+        canCancel: false,
+        canConfirm: true,
+        canDecline: false,
+        canComplete: false,
         isPast: true,
       });
     });
@@ -116,6 +169,73 @@ describe('ActivityPolicyService', () => {
     it('is deterministic: same input, same output (pure, no hidden state)', () => {
       const a = subject();
       expect(policy.evaluate(a, 'creator', NOW)).toEqual(policy.evaluate(a, 'creator', NOW));
+    });
+  });
+
+  describe('evaluate — verify-window flags (R3)', () => {
+    it('canComplete is true in `in_progress` for any bond member', () => {
+      const a = subject({ status: ActivityStatus.IN_PROGRESS });
+      expect(policy.evaluate(a, 'someone-else', NOW).canComplete).toBe(true);
+    });
+
+    it('canComplete is true in `verify` for any bond member', () => {
+      const a = subject({ status: ActivityStatus.VERIFY, verifyAt: NOW });
+      expect(policy.evaluate(a, 'someone-else', NOW).canComplete).toBe(true);
+    });
+
+    it('canComplete is false in `assigned`', () => {
+      const a = subject({ status: ActivityStatus.ASSIGNED });
+      expect(policy.evaluate(a, 'assignee', NOW).canComplete).toBe(false);
+    });
+
+    it('canComplete is false in terminal states', () => {
+      const done = subject({ status: ActivityStatus.DONE });
+      const overdue = subject({ status: ActivityStatus.OVERDUE });
+      expect(policy.evaluate(done, 'assignee', NOW).canComplete).toBe(false);
+      expect(policy.evaluate(overdue, 'assignee', NOW).canComplete).toBe(false);
+    });
+
+    it('assignee can confirm/decline `overdue` when origin is `assigned`', () => {
+      const a = subject({ status: ActivityStatus.OVERDUE, assignedTo: 'assignee', verifyAt: null });
+      const d = policy.evaluate(a, 'assignee', NOW);
+      expect(d.canConfirm).toBe(true);
+      expect(d.canDecline).toBe(true);
+    });
+
+    it('the LATE acceptance survives a past activity: that is the window', () => {
+      // Una actividad vencida suele tener la hora ya pasada (por eso venció):
+      // si `canConfirm` muriera con `isPast`, el botón "Confirmar" desaparecería
+      // justo en la aceptación tardía, que es el único caso en que la ventana
+      // de verificación sirve de algo.
+      const a = subject({
+        status: ActivityStatus.OVERDUE,
+        assignedTo: 'assignee',
+        verifyAt: null,
+        scheduledEnd: new Date('2026-10-01T11:00:00Z'),
+      });
+      const d = policy.evaluate(a, 'assignee', NOW);
+      expect(d.isPast).toBe(true);
+      expect(d.canConfirm).toBe(true);
+      expect(d.canDecline).toBe(false);
+    });
+
+    it('nobody can confirm/decline `overdue` when origin is `created` (no assignee)', () => {
+      const a = subject({ status: ActivityStatus.OVERDUE, assignedTo: null, verifyAt: null });
+      expect(policy.evaluate(a, 'someone-else', NOW).canConfirm).toBe(false);
+    });
+
+    it('nobody can confirm/decline `overdue` when origin is `verify`', () => {
+      const a = subject({
+        status: ActivityStatus.OVERDUE,
+        assignedTo: 'assignee',
+        verifyAt: NOW,
+      });
+      expect(policy.evaluate(a, 'assignee', NOW).canConfirm).toBe(false);
+    });
+
+    it('T4 removed: canUnassign must NOT exist on the decision', () => {
+      const d = policy.evaluate(subject(), 'creator', NOW);
+      expect('canUnassign' in d).toBe(false);
     });
   });
 });

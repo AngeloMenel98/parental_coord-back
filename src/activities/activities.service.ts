@@ -32,7 +32,7 @@ import { CompleteActivityResponseDto } from './dto/complete-activity-response.dt
 import { parseActivityReason } from './dto/activity-reason.validator';
 import { CategoryEntity } from '../categories/entities/category.entity';
 import { Clock } from '../common/clock/clock';
-import { ActivityPolicyService } from './activity-policy.service';
+import { ActivityPolicyService, overdueOrigin } from './activity-policy.service';
 import {
   activityForbidden,
   activityInvalidTransition,
@@ -127,6 +127,22 @@ export class ActivitiesService {
     }
   }
 
+  /**
+   * R16 · Minimum lead time for writes that change `scheduledStart`. Shared
+   * between create and the future edit route: existing activities are never
+   * re-validated.
+   */
+  private assertMinimumLeadTime(scheduledStart: string): void {
+    const start = new Date(scheduledStart);
+    const now = this.clock.now().getTime();
+    const hours = this.config.get<number>('MIN_LEAD_TIME_HOURS') ?? 48;
+    if (start.getTime() < now + hours * 60 * 60 * 1000) {
+      throw new BadRequestException(
+        'La actividad debe programarse con al menos 48 horas de anticipación',
+      );
+    }
+  }
+
   private async loadForMember(
     id: string,
     userId: string,
@@ -185,17 +201,14 @@ export class ActivitiesService {
     }
 
     // T8 origin guard: late acceptance/decline is only allowed when overdue
-    // originated from `assigned`. Origin is derived from stored data.
-    if (rule.id === 'T8') {
-      const fromCreated = activity.assignedTo == null;
-      const fromVerify = activity.verifyAt != null;
-      if (fromCreated || fromVerify) {
-        throw activityInvalidTransition(
-          activity.status,
-          req.to,
-          'Late response is only allowed when overdue originated from assigned',
-        );
-      }
+    // originated from `assigned`. The origin comes from `overdueOrigin()` — the
+    // SAME function the policy uses, so the two cannot drift apart.
+    if (rule.id === 'T8' && overdueOrigin(activity) !== 'assigned') {
+      throw activityInvalidTransition(
+        activity.status,
+        req.to,
+        'Late response is only allowed when overdue originated from assigned',
+      );
     }
 
     const actorRole = userId ? await this.resolveActorRole(activity.bondId, userId) : null;
@@ -367,6 +380,7 @@ export class ActivitiesService {
 
   async create(bondId: string, dto: CreateActivityDto, userId: string): Promise<ActivityEntity> {
     this.validateSchedules(dto.scheduledStart, dto.scheduledEnd);
+    this.assertMinimumLeadTime(dto.scheduledStart);
 
     await this.assertBondMember(bondId, userId);
 

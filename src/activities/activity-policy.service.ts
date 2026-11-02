@@ -9,17 +9,43 @@ export const UNDO_WINDOW_MS = 5000;
  * `ActivityEntity`: la política es PURA y no toca la base de datos, así que se
  * puede ejercitar sin TypeORM y sin contenedor.
  */
+/**
+ * De dónde llegó una actividad a `overdue` (T8).
+ *
+ * UNA sola definición para sus dos consumidores: la política (¿se puede aceptar
+ * tarde?) y el guard del servicio (¿la transición es válida?). Dos copias de
+ * esta regla es una forma garantizada de que se desincronicen.
+ *
+ * - `created`: nunca tuvo asignado (`assigned_to IS NULL`).
+ * - `verify`: pasó por la ventana de verificación (`verify_at IS NOT NULL`).
+ * - `assigned`: venció esperando una aceptación.
+ */
+export type OverdueOrigin = 'created' | 'assigned' | 'verify';
+
+export function overdueOrigin(subject: {
+  assignedTo: string | null;
+  verifyAt: Date | null;
+}): OverdueOrigin {
+  if (subject.assignedTo == null) return 'created';
+  if (subject.verifyAt != null) return 'verify';
+  return 'assigned';
+}
+
 export interface PolicySubject {
   createdBy: string;
   assignedTo: string | null;
   scheduledStart: Date | null;
   scheduledEnd: Date | null;
+  status: ActivityStatus;
+  verifyAt: Date | null;
 }
 
 export interface ActivityPolicyDecision {
   canDelete: boolean;
   canCancel: boolean;
+  canConfirm: boolean;
   canDecline: boolean;
+  canComplete: boolean;
   isPast: boolean;
 }
 
@@ -35,10 +61,29 @@ export class ActivityPolicyService {
     const isCreator = activity.createdBy === viewerId;
     const isAssignee = activity.assignedTo !== null && activity.assignedTo === viewerId;
 
+    // Origin rule (T8): la aceptación tardía existe SÓLO cuando el `overdue`
+    // viene de `assigned`. La origen la define `overdueOrigin()` — la misma
+    // función que usa el guard del servicio.
+    const origin = overdueOrigin(activity);
+    const canRespond =
+      isAssignee &&
+      (activity.status === ActivityStatus.ASSIGNED ||
+        (activity.status === ActivityStatus.OVERDUE && origin === 'assigned'));
+
     return {
       canDelete: isCreator && !isPast,
       canCancel: isCreator && !isPast,
-      canDecline: isAssignee && !isPast,
+      // CONFIRMAR no lleva `isPast`: confirmar una actividad YA terminada es el
+      // caso normal — la ventana de verificación existe justo para eso — y es lo
+      // que la app ya permitía (su regla de cliente no miraba la hora). Con
+      // `isPast` el botón "Confirmar" desaparecería justo en la aceptación
+      // tardía, que es el único caso en que la ventana sirve de algo.
+      canConfirm: canRespond,
+      // DECLINAR sí lo lleva: decir "no asisto" de una actividad que ya pasó no
+      // significa nada, y es la regla que el flag ya tenía.
+      canDecline: canRespond && !isPast,
+      canComplete:
+        activity.status === ActivityStatus.IN_PROGRESS || activity.status === ActivityStatus.VERIFY,
       isPast,
     };
   }
