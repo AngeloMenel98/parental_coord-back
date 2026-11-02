@@ -124,6 +124,7 @@ describe('activity-transition map — resolveTransition (confirmed rules)', () =
     expect(resolveTransition(ASSIGNED, CANCELLED)?.sideEffects).toEqual({
       deadline: 'clear',
       cancelledAt: true,
+      verifyAt: false,
     });
   });
 

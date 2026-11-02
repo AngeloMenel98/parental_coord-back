@@ -259,10 +259,12 @@ export class ActivitiesRepository extends BaseRepository<ActivityEntity> {
 
   /**
    * Reconciliation source of truth (REQ-TIMER-4, design D9). Returns the live
-   * activities whose timer should already have fired:
+   * activities whose timer should already have fired. FIVE estados barridos (T25):
+   * `created` past its response `deadline` (nunca se asignó a tiempo),
    * `assigned` past its response `deadline`, `assisting` past `scheduled_start`,
-   * `in_progress` past `COALESCE(scheduled_end, scheduled_start)`. Soft-deleted
-   * rows are excluded; results are bounded and ordered by soonest anchor.
+   * `in_progress` past `COALESCE(scheduled_end, scheduled_start)` y `verify` past
+   * el `deadline` de su ventana de verificación. Soft-deleted rows are excluded;
+   * results are bounded and ordered by soonest anchor.
    */
   async findDueForTransition(now: Date, limit = 100): Promise<ActivityEntity[]> {
     return this.activityRepo

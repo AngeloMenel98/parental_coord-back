@@ -243,6 +243,11 @@ describe('ExpensesRepository — read path (T28)', () => {
       expect(selectCall).toMatch(/split_ratio_payer/i);
       expect(selectCall).toMatch(/split_ratio_other/i);
       expect(selectCall).toMatch(/requested_by/i);
+      // El saldo es PLATA: dos decimales, como las columnas `numeric(12,2)`. Sin el
+      // redondeo, el `numeric` de Postgres devuelve 20 decimales (191.1122220000…)
+      // y el endpoint devuelve un número que no es un monto.
+      expect(selectCall).toMatch(/ROUND\(/i);
+      expect(selectCall).toMatch(/,\s*2\s*\)/);
       expect(qb.setParameter).toHaveBeenCalledWith('viewerId', VIEWER);
     });
 

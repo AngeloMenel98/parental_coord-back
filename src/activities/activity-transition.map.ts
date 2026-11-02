@@ -65,7 +65,14 @@ export const ACTIVITY_EVENT = {
   CANCELLED: 'activity.cancelled',
 } as const;
 
-const CANCEL_EFFECTS: TransitionSideEffects = { deadline: 'clear', cancelledAt: true };
+// Cancelar (T15) limpia la ventana que se estaba esperando: `deadline` y también
+// `verify_at`, para que una fila cancelada desde `verify` no conserve la marca de
+// que pasó por la ventana de verificación.
+const CANCEL_EFFECTS: TransitionSideEffects = {
+  deadline: 'clear',
+  cancelledAt: true,
+  verifyAt: false,
+};
 
 const CANCEL_SOURCES: readonly ActivityStatus[] = [
   ActivityStatus.CREATED,

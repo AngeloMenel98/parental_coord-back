@@ -210,15 +210,18 @@ export class ExpensesRepository extends BaseRepository<ExpenseEntity> {
     const raw = await this.expenseRepo
       .createQueryBuilder('e')
       .select(
-        `SUM(
-          CASE
-            WHEN e.requested_by = :viewerId AND e.status IN ('approved', 'paid')
-              THEN e.amount * e.split_ratio_payer / 100 - e.amount * e.split_ratio_other / 100
-            WHEN e.requested_by != :viewerId AND e.status IN ('approved', 'paid')
-              THEN e.amount * e.split_ratio_other / 100 - e.amount * e.split_ratio_payer / 100
-            ELSE 0
-          END
-        )::numeric`,
+        `ROUND(
+          SUM(
+            CASE
+              WHEN e.requested_by = :viewerId AND e.status IN ('approved', 'paid')
+                THEN e.amount * e.split_ratio_payer / 100 - e.amount * e.split_ratio_other / 100
+              WHEN e.requested_by != :viewerId AND e.status IN ('approved', 'paid')
+                THEN e.amount * e.split_ratio_other / 100 - e.amount * e.split_ratio_payer / 100
+              ELSE 0
+            END
+          )::numeric,
+          2
+        )`,
         'saldo',
       )
       .addSelect(`COUNT(*) FILTER (WHERE e.status = 'pending')`, 'pendientes')
