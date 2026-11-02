@@ -91,9 +91,10 @@ const RULE_TITLES = [
 
 // Verificación estática en tiempo de compilación: si algún título supera los
 // 40 caracteres, este tipo falla y el build se detiene.
-type AssertTitleLength<T extends string> = T extends `${string}${string}${string}${string}${string}${string}${string}${string}${string}${string}${string}${string}${string}${string}${string}${string}${string}${string}${string}${string}${string}${string}${string}${string}${string}${string}${string}${string}${string}${string}${string}${string}${string}${string}${string}${string}${string}${string}${string}${string}${string}`
-  ? never
-  : T;
+type AssertTitleLength<T extends string> =
+  T extends `${string}${string}${string}${string}${string}${string}${string}${string}${string}${string}${string}${string}${string}${string}${string}${string}${string}${string}${string}${string}${string}${string}${string}${string}${string}${string}${string}${string}${string}${string}${string}${string}${string}${string}${string}${string}${string}${string}${string}${string}${string}`
+    ? never
+    : T;
 type _TitleLengthCheck = AssertTitleLength<(typeof RULE_TITLES)[number]>;
 
 function formatActivityDateTime(date: Date): string {
@@ -199,10 +200,7 @@ export const NOTIFICATION_FAN_OUT_RULES: readonly NotificationFanOutRule[] = [
     type: 'activity_overdue',
     title: TITLE_OVERDUE,
     body: (ctx) =>
-      renderWithTitle(
-        '"{title}" venció. Reprográmala o márcala como finalizada.',
-        ctx,
-      ),
+      renderWithTitle('"{title}" venció. Reprográmala o márcala como finalizada.', ctx),
     recipients: ['assignee', 'creator', 'coordinator'],
     excludeCoordinator: false,
     needsCoordinator: true,
