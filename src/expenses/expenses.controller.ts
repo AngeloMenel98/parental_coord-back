@@ -18,10 +18,14 @@ import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { AuthUser } from '../auth/dto/auth-user.dto';
 import { ExpensesService } from './expenses.service';
+import { ExpenseAttachmentsService } from './attachments/expense-attachments.service';
 import { CreateExpenseDto } from './dto/create-expense.dto';
 import { UpdateExpenseDto } from './dto/update-expense.dto';
 import { RejectExpenseDto } from './dto/reject-expense.dto';
 import { ListExpensesQueryDto } from './dto/list-expenses-query.dto';
+import { PresignExpenseAttachmentDto } from './attachments/dto/presign-expense-attachment.dto';
+import { ConfirmExpenseAttachmentDto } from './attachments/dto/confirm-expense-attachment.dto';
+import { ConvertExpenseAttachmentDto } from './attachments/dto/convert-expense-attachment.dto';
 
 /**
  * T24 · La API de escritura de gastos.
@@ -37,7 +41,10 @@ import { ListExpensesQueryDto } from './dto/list-expenses-query.dto';
 @Controller('expenses')
 @UseGuards(JwtAuthGuard)
 export class ExpensesController {
-  constructor(private readonly expensesService: ExpensesService) {}
+  constructor(
+    private readonly expensesService: ExpensesService,
+    private readonly expenseAttachmentsService: ExpenseAttachmentsService,
+  ) {}
 
   @Get('bond/:bondId')
   @ApiBearerAuth()
@@ -164,5 +171,56 @@ export class ExpensesController {
   })
   pay(@Param('id', ParseUUIDPipe) id: string, @CurrentUser() user: AuthUser) {
     return this.expensesService.pay(id, user.id);
+  }
+
+  @Post(':id/attachments/presign')
+  @HttpCode(HttpStatus.OK)
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: 'Presign an expense attachment upload',
+    description:
+      'T30 · devuelve `uploadUrl`, `path`, `method`, `headers` y `expiresIn` para subir ' +
+      'directamente a Supabase Storage. La key está namespaced por gasto: ' +
+      '`expenses/{bondId}/{expenseId}/{uuid}.{ext}`.',
+  })
+  presignAttachment(
+    @Param('id', ParseUUIDPipe) id: string,
+    @CurrentUser() user: AuthUser,
+    @Body() dto: PresignExpenseAttachmentDto,
+  ) {
+    return this.expenseAttachmentsService.presign(id, user, dto);
+  }
+
+  @Post(':id/attachments/confirm')
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: 'Confirm an uploaded expense attachment',
+    description:
+      'T30 · crea la fila `expense_attachment` apuntando al objeto ya subido. ' +
+      'Rechaza 400 si el objeto no existe en storage.',
+  })
+  confirmAttachment(
+    @Param('id', ParseUUIDPipe) id: string,
+    @CurrentUser() user: AuthUser,
+    @Body() dto: ConfirmExpenseAttachmentDto,
+  ) {
+    return this.expenseAttachmentsService.confirm(id, user, dto);
+  }
+
+  @Post(':id/attachments/convert')
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: 'Convert an activity attachment into an expense attachment',
+    description:
+      'T30 · R6: una fila `expense_attachment` nueva apunta al MISMO objeto de Storage ' +
+      'del adjunto de actividad y se setea `expense.activity_id`. Sólo si la actividad ' +
+      'pertenece al mismo vínculo que el gasto.',
+  })
+  convertAttachment(
+    @Param('id', ParseUUIDPipe) id: string,
+    @CurrentUser() user: AuthUser,
+    @Body() dto: ConvertExpenseAttachmentDto,
+  ) {
+    return this.expenseAttachmentsService.convert(id, user, dto);
   }
 }

@@ -273,6 +273,21 @@ export class ExpensesRepository extends BaseRepository<ExpenseEntity> {
     }));
   }
 
+  /**
+   * T30 · R6: cuando un adjunto de actividad se convierte en gasto, se registra
+   * la actividad de origen. No usa guarda de estado: la conversión puede
+   * ocurrir sobre un gasto en cualquier estado mientras sea miembro del vínculo.
+   */
+  async updateActivityId(
+    id: string,
+    activityId: string,
+    manager?: EntityManager,
+  ): Promise<boolean> {
+    const repo = manager ? manager.getRepository(ExpenseEntity) : this.expenseRepo;
+    const result = await repo.update({ id, deletedAt: IsNull() }, { activityId });
+    return (result.affected ?? 0) > 0;
+  }
+
   private async updateGuarded(
     id: string,
     expectedStatus: ExpenseStatus,
