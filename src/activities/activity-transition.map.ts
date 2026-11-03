@@ -125,15 +125,14 @@ const RULES: readonly TransitionRule[] = [
     event: ACTIVITY_EVENT.OVERDUE,
   },
   {
-    id: 'T8',
-    from: ActivityStatus.OVERDUE,
-    to: ActivityStatus.ASSISTING,
-    actors: ['assignee'],
-    requireAssignee: true,
-    sideEffects: { confirmedAt: true },
-    event: ACTIVITY_EVENT.ASSISTING,
-  },
-  {
+    // ⚠ La aceptación TARDÍA (`overdue → assisting`) SE FUERA (decisión del usuario,
+    // 2026-11-03): una actividad cuya ventana de 36 h ya venció no se puede
+    // confirmar tarde. Antes el botón "Confirmar" quedaba vivo en `overdue` y el
+    // asignado podía rescatar la actividad — lo que pasó con "A largo plazo".
+    //
+    // La fila `overdue` de la matriz conserva SÓLO el "No asiste" (T8): el que no
+    // aceptó en la ventana devuelve la actividad, y de ahí la reasigna cualquiera
+    // (T9). Sin esa salida, una actividad vencida sería un callejón sin salida.
     id: 'T8',
     from: ActivityStatus.OVERDUE,
     to: ActivityStatus.NOT_ASSISTING,

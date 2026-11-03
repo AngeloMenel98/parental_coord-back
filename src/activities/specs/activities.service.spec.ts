@@ -882,20 +882,27 @@ describe('ActivitiesService', () => {
       expect(activityRepo.applyTransition).not.toHaveBeenCalled();
     });
 
-    it('overdue → assisting (T8) when origin is assigned', async () => {
+    /**
+     * La aceptación TARDÍA ya no existe (decisión del usuario, 2026-11-03).
+     *
+     * No es sólo que el botón desaparezca: la regla `overdue → assisting` se quitó
+     * del catálogo, así que el endpoint responde 409 como cualquier transición
+     * inexistente. Ocultar el botón y dejar la puerta abierta sería el flag
+     * mintiendo.
+     */
+    it('overdue → assisting is a 409: la aceptación tardía se quitó del catálogo', async () => {
       activityRepo.findById.mockResolvedValue(
         futureActivity({ status: ActivityStatus.OVERDUE, assignedTo: assignee, verifyAt: null }),
       );
       transitionEcho();
-      const res = await service.confirmAssignment('a1', assignee);
 
-      expect(activityRepo.applyTransition).toHaveBeenCalledWith(
-        expect.objectContaining({
-          expectedFrom: ActivityStatus.OVERDUE,
-          nextStatus: ActivityStatus.ASSISTING,
-        }),
+      await expectCode(
+        service.confirmAssignment('a1', assignee),
+        'ACTIVITY_INVALID_TRANSITION',
+        409,
       );
-      expect(res.assignedConfirmed).toBe(true);
+
+      expect(activityRepo.applyTransition).not.toHaveBeenCalled();
     });
 
     it('403 when overdue originated from created (no assignee; not the assignee)', async () => {
@@ -1178,7 +1185,10 @@ describe('ActivitiesService', () => {
       expect(rows[0].canConfirm).toBe(false);
     });
 
-    it('listByBond exposes canConfirm/decline for overdue-from-assigned', async () => {
+    it('listByBond exposes canDecline but NOT canConfirm for overdue-from-assigned', async () => {
+      // La aceptación tardía se quitó (decisión del usuario, 2026-11-03): en
+      // `overdue` el botón "Confirmar" no se pinta. El "No asiste" sigue, que es
+      // la salida que evita el callejón sin salida.
       activityRepo.findByBondIdOrdered.mockResolvedValue([
         futureActivity({
           id: 'a1',
@@ -1188,7 +1198,7 @@ describe('ActivitiesService', () => {
         }),
       ]);
       const rows = await service.listByBond(bondId, assignee);
-      expect(rows[0].canConfirm).toBe(true);
+      expect(rows[0].canConfirm).toBe(false);
       expect(rows[0].canDecline).toBe(true);
     });
 

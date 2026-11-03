@@ -33,7 +33,6 @@ describe('activity-transition map — resolveTransition (confirmed rules)', () =
       ['T5', ASSIGNED, ASSISTING, ACTIVITY_EVENT.ASSISTING],
       ['T6', ASSIGNED, NOT_ASSISTING, ACTIVITY_EVENT.NOT_ASSISTING],
       ['T7', ASSIGNED, OVERDUE, ACTIVITY_EVENT.OVERDUE],
-      ['T8', OVERDUE, ASSISTING, ACTIVITY_EVENT.ASSISTING],
       ['T8', OVERDUE, NOT_ASSISTING, ACTIVITY_EVENT.NOT_ASSISTING],
       ['T9', NOT_ASSISTING, ASSIGNED, ACTIVITY_EVENT.ASSIGNED],
       ['T10', ASSISTING, IN_PROGRESS, ACTIVITY_EVENT.IN_PROGRESS],
@@ -66,7 +65,6 @@ describe('activity-transition map — resolveTransition (confirmed rules)', () =
     for (const [from, to] of [
       [ASSIGNED, ASSISTING],
       [ASSIGNED, NOT_ASSISTING],
-      [OVERDUE, ASSISTING],
       [OVERDUE, NOT_ASSISTING],
     ] as const) {
       const rule = resolveTransition(from, to);
@@ -105,7 +103,6 @@ describe('activity-transition map — resolveTransition (confirmed rules)', () =
       declinedAt: true,
     });
     expect(resolveTransition(ASSIGNED, OVERDUE)?.sideEffects).toEqual({});
-    expect(resolveTransition(OVERDUE, ASSISTING)?.sideEffects).toEqual({ confirmedAt: true });
     expect(resolveTransition(OVERDUE, NOT_ASSISTING)?.sideEffects).toEqual({ declinedAt: true });
     expect(resolveTransition(NOT_ASSISTING, ASSIGNED)?.sideEffects).toEqual({
       deadline: 'set',
@@ -133,8 +130,19 @@ describe('activity-transition map — resolveTransition (confirmed rules)', () =
   });
 
   it('keeps the deadline on T8 (late response keeps the historical expiry)', () => {
-    expect(resolveTransition(OVERDUE, ASSISTING)?.sideEffects.deadline).toBeUndefined();
     expect(resolveTransition(OVERDUE, NOT_ASSISTING)?.sideEffects.deadline).toBeUndefined();
+  });
+
+  /**
+   * La aceptación TARDÍA se quitó del catálogo (decisión del usuario, 2026-11-03).
+   *
+   * No alcanza con esconder el botón: mientras la regla existiera, un cliente viejo
+   * o una llamada directa podrían confirmar tarde una actividad cuya ventana ya
+   * venció — y el flag `canConfirm` estaría mintiendo. La fila `overdue` conserva
+   * SÓLO el "No asiste" (T8), que es la salida que evita el callejón sin salida.
+   */
+  it('no hay regla hacia `assisting` desde `overdue` (la aceptación tardía se quitó)', () => {
+    expect(resolveTransition(OVERDUE, ASSISTING)).toBeUndefined();
   });
 });
 
@@ -154,6 +162,7 @@ describe('activity-transition map — invalid pairs return undefined', () => {
     [IN_PROGRESS, ASSIGNED],
     [NOT_ASSISTING, DONE],
     [OVERDUE, DONE],
+    [OVERDUE, ASSISTING],
     // ⚠ LAS ASIGNACIONES VIVAS NO SE PUEDEN ROBAR (T21). Estas cuatro son la regla que
     // protege de verdad: no hay camino hacia `assigned` desde una asignación viva, así que
     // `POST /:id/assign` sobre una de ellas es un 409 y no una escritura. Sin estas

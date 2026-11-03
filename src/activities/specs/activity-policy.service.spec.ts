@@ -260,18 +260,27 @@ describe('ActivityPolicyService', () => {
       expect(policy.evaluate(overdue, 'assignee', NOW).canComplete).toBe(false);
     });
 
-    it('assignee can confirm/decline `overdue` when origin is `assigned`', () => {
+    /**
+     * La aceptación TARDÍA ya no existe (decisión del usuario, 2026-11-03).
+     *
+     * Pasó con "A largo plazo": su ventana venció, el botón "Confirmar" siguió
+     * vivo y el asignado confirmó tarde. Ahora `canConfirm` es SÓLO en `assigned`.
+     *
+     * El "NO ASISTE" tardío SE QUEDA, y es lo que evita el callejón sin salida: el
+     * que no aceptó devuelve la actividad, y de ahí la reasigna cualquiera (T9).
+     */
+    it('en `overdue` el asignado NO puede confirmar, pero SÍ puede decir que no asiste', () => {
       const a = subject({ status: ActivityStatus.OVERDUE, assignedTo: 'assignee', verifyAt: null });
       const d = policy.evaluate(a, 'assignee', NOW);
-      expect(d.canConfirm).toBe(true);
+      expect(d.canConfirm).toBe(false);
       expect(d.canDecline).toBe(true);
     });
 
-    it('the LATE acceptance survives a past activity: that is the window', () => {
-      // Una actividad vencida suele tener la hora ya pasada (por eso venció):
-      // si `canConfirm` muriera con `isPast`, el botón "Confirmar" desaparecería
-      // justo en la aceptación tardía, que es el único caso en que la ventana
-      // de verificación sirve de algo.
+    it('una actividad vencida y ya pasada no se puede confirmar NI devolver', () => {
+      // Una actividad vencida suele tener la hora ya pasada (por eso venció).
+      // La aceptación tardía se quitó, así que en `overdue` no hay "Confirmar";
+      // y el "No asiste" tampoco, porque `isPast` lo mata — a una actividad que ya
+      // pasó no tiene sentido decir que no se asiste.
       const a = subject({
         status: ActivityStatus.OVERDUE,
         assignedTo: 'assignee',
@@ -280,7 +289,7 @@ describe('ActivityPolicyService', () => {
       });
       const d = policy.evaluate(a, 'assignee', NOW);
       expect(d.isPast).toBe(true);
-      expect(d.canConfirm).toBe(true);
+      expect(d.canConfirm).toBe(false);
       expect(d.canDecline).toBe(false);
     });
 

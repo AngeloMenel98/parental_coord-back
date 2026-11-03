@@ -63,14 +63,32 @@ export class ActivityPolicyService {
     const isCreator = activity.createdBy === viewerId;
     const isAssignee = activity.assignedTo !== null && activity.assignedTo === viewerId;
 
-    // Origin rule (T8): la aceptación tardía existe SÓLO cuando el `overdue`
+    // Origin rule (T8): el "NO ASISTE" tardío existe SÓLO cuando el `overdue`
     // viene de `assigned`. La origen la define `overdueOrigin()` — la misma
     // función que usa el guard del servicio.
     const origin = overdueOrigin(activity);
-    const canRespond =
+
+    // ⚠ LA ACEPTACIÓN TARDÍA SE FUERA (decisión del usuario, 2026-11-03).
+    //
+    // Antes `canConfirm` era TRUE también en `overdue` (la aceptación tardía, T8):
+    // el botón "Confirmar" sobrevivía a la ventana de 36 h, y el asignado podía
+    // "rescatar" la actividad. Pasó con "A largo plazo": su ventana venció el 31
+    // de octubre, el botón siguió ahí, y el 3 de noviembre se confirmó tarde y la
+    // actividad volvió a `assisting`. Parecía una actividad vigente con un botón
+    // de acción, y no lo era: la ventana ya se había cerrado.
+    //
+    // Ahora `canConfirm` es SÓLO en `assigned`: una actividad vencida se devuelve.
+    // Y el "NO ASISTE" tardío SÍ se queda, y es lo que evita el callejón: el que no
+    // aceptó en la ventana devuelve la actividad (`not_assisting`), y de ahí la
+    // reasigna cualquiera (T9). Sin esa salida, una actividad vencida sólo se
+    // podría cancelar.
+    const canConfirm = isAssignee && activity.status === ActivityStatus.ASSIGNED;
+
+    const canDecline =
       isAssignee &&
       (activity.status === ActivityStatus.ASSIGNED ||
-        (activity.status === ActivityStatus.OVERDUE && origin === 'assigned'));
+        (activity.status === ActivityStatus.OVERDUE && origin === 'assigned')) &&
+      !isPast;
 
     return {
       canDelete: isCreator && !isPast,
@@ -79,13 +97,11 @@ export class ActivityPolicyService {
       canReassign: activity.status === ActivityStatus.NOT_ASSISTING,
       // CONFIRMAR no lleva `isPast`: confirmar una actividad YA terminada es el
       // caso normal — la ventana de verificación existe justo para eso — y es lo
-      // que la app ya permitía (su regla de cliente no miraba la hora). Con
-      // `isPast` el botón "Confirmar" desaparecería justo en la aceptación
-      // tardía, que es el único caso en que la ventana sirve de algo.
-      canConfirm: canRespond,
+      // que la app ya permitía (su regla de cliente no miraba la hora).
+      canConfirm,
       // DECLINAR sí lo lleva: decir "no asisto" de una actividad que ya pasó no
       // significa nada, y es la regla que el flag ya tenía.
-      canDecline: canRespond && !isPast,
+      canDecline,
       canComplete:
         activity.status === ActivityStatus.IN_PROGRESS || activity.status === ActivityStatus.VERIFY,
       isPast,
