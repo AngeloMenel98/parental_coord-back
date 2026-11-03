@@ -3,6 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import { TypeOrmModule } from '@nestjs/typeorm';
 
 import { AppConfig } from '../../config/app-config';
+import { ExpenseAttachmentEntity } from '../../expenses/entities/expense-attachment.entity';
 import { ExpenseEntity } from '../../expenses/entities/expense.entity';
 import { ExpensesRepository } from '../../expenses/repositories/expenses.repository';
 import { NotificationEntity } from '../entities/notification.entity';
@@ -18,7 +19,16 @@ import { NotificationFanOutService } from './notification-fan-out.service';
     // worker (mismo criterio que `NotificationsWorkerModule`, que evita
     // arrastrar controllers al proceso worker). Sólo se necesita el acceso a
     // datos de `expense` para que la rama de gastos resuelva concept/monto.
-    TypeOrmModule.forFeature([NotificationEntity, ExpenseEntity]),
+    //
+    // ⚠ `ExpenseAttachmentEntity` va con él: `ExpensesRepository` pide LOS DOS
+    // repositorios (el gasto y su adjunto), y este módulo provee el repository a
+    // mano para no arrastrar el `ExpensesModule` entero. Si la lista de
+    // `forFeature` no sigue a la del `ExpensesModule`, el WORKER no arranca:
+    // Nest no puede resolver `ExpenseAttachmentEntityRepository` y el proceso
+    // queda en un crash-loop — SIN timers, SIN barrido y SIN fan-out. Es el mismo
+    // modo de fallo que el `StorageModule` del `WorkerModule`: un módulo que
+    // provee a mano tiene que replicar la lista de `forFeature` del módulo real.
+    TypeOrmModule.forFeature([NotificationEntity, ExpenseEntity, ExpenseAttachmentEntity]),
     ActivitiesModule,
     BondsModule,
   ],
