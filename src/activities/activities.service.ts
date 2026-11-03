@@ -50,7 +50,7 @@ export interface TransitionRequest {
   actor: TransitionActor;
   reason?: string | null;
   /** Extra column effects on top of the rule's side-effects (e.g. `deletedAt` for delete). */
-  fields?: ApplyTransitionFields & { assignedTo?: string };
+  fields?: ApplyTransitionFields;
   /** Extra keys merged into the outbox payload (e.g. `{ deleted: true }`). */
   payloadExtra?: Record<string, unknown>;
 }

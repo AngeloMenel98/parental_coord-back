@@ -154,6 +154,14 @@ describe('activity-transition map — invalid pairs return undefined', () => {
     [IN_PROGRESS, ASSIGNED],
     [NOT_ASSISTING, DONE],
     [OVERDUE, DONE],
+    // ⚠ LAS ASIGNACIONES VIVAS NO SE PUEDEN ROBAR (T21). Estas cuatro son la regla que
+    // protege de verdad: no hay camino hacia `assigned` desde una asignación viva, así que
+    // `POST /:id/assign` sobre una de ellas es un 409 y no una escritura. Sin estas
+    // aserciones, el catálogo podía abrirlas sin que ningún test lo notara.
+    [ASSIGNED, ASSIGNED],
+    [ASSISTING, ASSIGNED],
+    [VERIFY, ASSIGNED],
+    [OVERDUE, ASSIGNED],
   ];
 
   for (const [from, to] of invalid) {

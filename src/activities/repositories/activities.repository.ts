@@ -13,10 +13,18 @@ export interface ComplianceRow {
   completed: string;
 }
 
-/** Side-effect columns a transition may write (REQ-TX-1). */
+/**
+ * Side-effect columns a transition may write (REQ-TX-1).
+ *
+ * `assignedTo` is here because T3/T9 write it: the assignee is part of the
+ * transition, not an afterthought. Before it was declared, the write only
+ * survived because the repository assigns the fields onto the row
+ * (`Object.assign(row, input.fields)`) — the type did not know about it.
+ */
 export type ApplyTransitionFields = Partial<
   Pick<
     ActivityEntity,
+    | 'assignedTo'
     | 'confirmedAt'
     | 'cancelledAt'
     | 'cancelledBy'

@@ -1422,7 +1422,11 @@ describe('ActivitiesService', () => {
      */
     it('applies T9 when the activity is in `not_assisting` (the catalog guards, not the route)', async () => {
       activityRepo.findById.mockResolvedValue(
-        futureActivity({ status: ActivityStatus.NOT_ASSISTING, declinedAt: new Date(), declinedReason: 'no puedo' }),
+        futureActivity({
+          status: ActivityStatus.NOT_ASSISTING,
+          declinedAt: new Date(),
+          declinedReason: 'no puedo',
+        }),
       );
       transitionEcho();
 
@@ -1566,6 +1570,92 @@ describe('ActivitiesService', () => {
         Promise.resolve(id !== assignee),
       );
       await expectCode(service.reassign('a1', userId, assignee), 'ACTIVITY_NOT_FOUND', 404);
+      expect(activityRepo.applyTransition).not.toHaveBeenCalled();
+    });
+  });
+  /**
+   * RECEIPTS de la verificación de autorización (T21).
+   *
+   * El pase adversarial no encontró ningún defecto —las doce vías de entrada quedaron
+   * bloqueadas— pero dejó cinco huecos SIN FIJAR. Estos tests los cierran, para que la
+   * próxima revisión no tenga que volver a sondear lo mismo:
+   *
+   *  1. La respuesta es ESTRECHA: ni `version`, ni `bondId`, ni `deletedAt`.
+   *  2. El outbox lleva el ACTOR: una reasignación es atribuible.
+   *  3. Una asignación VIVA (o terminal, o vencida) es 409 y NO escribe — en las dos rutas.
+   *  4. La fila se lee SIN las borradas: el guard del soft delete está en el `WHERE` del
+   *     repositorio (`deletedAt IS NULL`), y esta aserción deja fijado que la ruta de
+   *     asignación usa esa lectura y no la que trae las borradas.
+   *  5. Un objetivo de OTRO vínculo es 404, con la consulta acotada por el vínculo.
+   */
+  describe('assign/reassign — receipts de la verificación de autorización', () => {
+    it('la respuesta es ESTRECHA: nada de version, bondId ni deletedAt', async () => {
+      activityRepo.findById.mockResolvedValue(
+        futureActivity({ status: ActivityStatus.CREATED, assignedTo: null }),
+      );
+      transitionEcho();
+
+      const res = await service.assign('a1', userId);
+
+      expect(Object.keys(res).sort()).toEqual(['assignedTo', 'id', 'status']);
+    });
+
+    it('el outbox lleva el actor: la reasignación es atribuible', async () => {
+      activityRepo.findById.mockResolvedValue(
+        futureActivity({ status: ActivityStatus.NOT_ASSISTING, declinedAt: new Date() }),
+      );
+      transitionEcho();
+
+      await service.reassign('a1', userId, assignee);
+
+      const input = activityRepo.applyTransition.mock.calls[0][0];
+      expect(input.outbox.payload).toMatchObject({
+        activityId: 'a1',
+        from: ActivityStatus.NOT_ASSISTING,
+        to: ActivityStatus.ASSIGNED,
+        actor: { type: 'user', id: userId, role: 'progenitor' },
+      });
+    });
+
+    it.each([
+      ActivityStatus.ASSIGNED,
+      ActivityStatus.ASSISTING,
+      ActivityStatus.IN_PROGRESS,
+      ActivityStatus.VERIFY,
+      ActivityStatus.OVERDUE,
+      ActivityStatus.DONE,
+      ActivityStatus.CANCELLED,
+    ])('una asignación viva, vencida o terminal (%s) es 409 y no escribe', async (status) => {
+      activityRepo.findById.mockResolvedValue(futureActivity({ status }));
+
+      await expectCode(service.assign('a1', userId), 'ACTIVITY_INVALID_TRANSITION', 409);
+      await expectCode(service.reassign('a1', userId), 'ACTIVITY_INVALID_TRANSITION', 409);
+
+      expect(activityRepo.applyTransition).not.toHaveBeenCalled();
+    });
+
+    it('la fila se lee SIN las borradas (el guard del soft delete vive en el WHERE)', async () => {
+      activityRepo.findById.mockResolvedValue(
+        futureActivity({ status: ActivityStatus.CREATED, assignedTo: null }),
+      );
+      transitionEcho();
+
+      await service.assign('a1', userId);
+
+      expect(activityRepo.findById).toHaveBeenCalledWith('a1');
+      expect(activityRepo.findByIdIncludingDeleted).not.toHaveBeenCalled();
+    });
+
+    it('un objetivo de OTRO vínculo es 404 (la consulta está acotada por el vínculo)', async () => {
+      activityRepo.findById.mockResolvedValue(
+        futureActivity({ status: ActivityStatus.CREATED, assignedTo: null }),
+      );
+      // El mock por defecto ignora el vínculo; acá se acota a propósito, como el SQL.
+      bondService.isActiveBondForMember.mockImplementation(
+        async (b: string, u: string) => b === bondId && u !== 'u-otro-vinculo',
+      );
+
+      await expectCode(service.assign('a1', userId, 'u-otro-vinculo'), 'ACTIVITY_NOT_FOUND', 404);
       expect(activityRepo.applyTransition).not.toHaveBeenCalled();
     });
   });
