@@ -142,14 +142,15 @@ export class ExpensesService {
       viewerId,
     );
 
-    return this.toResponse(saved, decision, counterpartId, category.name);
+    const names = await this.bondMembersRepo.findMemberNames(bondId);
+    return this.toResponse(saved, decision, counterpartId, names, category.name);
   }
 
   // ── Lectura ───────────────────────────────────────────────────────────────
 
   async getDetail(id: string, viewerId: string): Promise<ExpenseResponseDto> {
-    const { expense, counterpartId, decision } = await this.loadForViewer(id, viewerId);
-    return this.toResponse(expense, decision, counterpartId);
+    const { expense, counterpartId, decision, names } = await this.loadForViewer(id, viewerId);
+    return this.toResponse(expense, decision, counterpartId, names);
   }
 
   async listForBond(
@@ -172,13 +173,16 @@ export class ExpensesService {
     // contraparte de cada gasto sale de ese mismo conjunto. Preguntarlo por
     // gasto sería un N+1 con una consulta idéntica por fila.
     const memberIds = await this.bondMembersRepo.findActiveMemberIds(bondId);
+    // Los NOMBRES salen de UNA consulta por página, igual que los ids: preguntar el
+    // nombre por gasto sería un N+1 con la misma consulta por fila.
+    const names = await this.bondMembersRepo.findMemberNames(bondId);
     const mapped = items.map((expense) => {
       const counterpartId = selectCounterpartId(memberIds, expense.requestedBy);
       const decision = this.policy.evaluate(
         { status: expense.status, requestedBy: expense.requestedBy, counterpartId },
         viewerId,
       );
-      return this.toResponse(expense, decision, counterpartId);
+      return this.toResponse(expense, decision, counterpartId, names);
     });
 
     return { items: mapped, total, limit, offset };
@@ -434,6 +438,7 @@ export class ExpensesService {
     expense: ExpenseEntity;
     counterpartId: string | null;
     decision: ExpensePolicyDecision;
+    names: Map<string, string>;
   }> {
     const expense = await this.expensesRepo.findAliveById(id);
     if (!expense) throw new NotFoundException('Expense not found');
@@ -448,7 +453,11 @@ export class ExpensesService {
       counterpartId,
     };
 
-    return { expense, counterpartId, decision: this.policy.evaluate(subject, viewerId) };
+    // Los nombres de las personas del vínculo, para MOSTRARLOS en vez de pintar un
+    // UUID. Una consulta: el gasto nombra a tres personas como mucho.
+    const names = await this.bondMembersRepo.findMemberNames(expense.bondId);
+
+    return { expense, counterpartId, decision: this.policy.evaluate(subject, viewerId), names };
   }
 
   private async assertBondMember(bondId: string, viewerId: string): Promise<void> {
@@ -517,6 +526,7 @@ export class ExpensesService {
     expense: ExpenseEntity & { hasDocument?: boolean },
     decision: ExpensePolicyDecision,
     counterpartId: string | null,
+    names: Map<string, string>,
     categoryName?: string | null,
   ): ExpenseResponseDto {
     return {
@@ -533,8 +543,11 @@ export class ExpensesService {
       splitRatioOther: Number(expense.splitRatioOther),
       status: expense.status,
       requestedBy: expense.requestedBy,
+      requestedByName: names.get(expense.requestedBy) ?? null,
       counterpartId,
+      counterpartName: counterpartId ? (names.get(counterpartId) ?? null) : null,
       approvedBy: expense.approvedBy,
+      approvedByName: expense.approvedBy ? (names.get(expense.approvedBy) ?? null) : null,
       approvedAt: this.iso(expense.approvedAt),
       paidAt: this.iso(expense.paidAt),
       createdAt: this.iso(expense.createdAt)!,

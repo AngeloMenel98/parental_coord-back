@@ -50,7 +50,7 @@ describe('ExpensesService (T24)', () => {
     transaction: jest.Mock;
   };
   let bondsService: { isActiveBondForMember: jest.Mock };
-  let bondMembersRepo: { findActiveMemberIds: jest.Mock };
+  let bondMembersRepo: { findActiveMemberIds: jest.Mock; findMemberNames: jest.Mock };
   let categoriesRepo: { findActiveById: jest.Mock };
   let audit: { record: jest.Mock; recordStatusChange: jest.Mock };
   let clock: { now: jest.Mock };
@@ -116,6 +116,13 @@ describe('ExpensesService (T24)', () => {
     bondsService = { isActiveBondForMember: jest.fn().mockResolvedValue(true) };
     bondMembersRepo = {
       findActiveMemberIds: jest.fn().mockResolvedValue([REQUESTER, COUNTERPART]),
+      // Los NOMBRES para mostrar: el front no puede pintar un UUID.
+      findMemberNames: jest.fn().mockResolvedValue(
+        new Map([
+          [REQUESTER, 'Juan Pérez'],
+          [COUNTERPART, 'María García'],
+        ]),
+      ),
     };
     categoriesRepo = {
       findActiveById: jest.fn().mockResolvedValue({ id: CATEGORY, name: 'Salud' }),
@@ -304,6 +311,49 @@ describe('ExpensesService (T24)', () => {
       expect(result.categoryName).toBe('Salud');
       expect(result.canEdit).toBe(true);
       expect(result.canApprove).toBe(false);
+    });
+
+    /**
+     * Los NOMBRES de las personas, no sus UUIDs (el front no puede pintar un UUID).
+     *
+     * El detalle muestra "Solicitado por", "Contraparte" y "Aprobado por": los tres
+     * tienen que llegar con un nombre. `categoryName` ya resolvía el mismo
+     * problema para la categoría; los miembros se resuelven con UNA consulta por
+     * página, no una por gasto.
+     */
+    it('devuelve el nombre de quien pidió, de la contraparte y de quien aprobó', async () => {
+      givenAlive();
+      bondMembersRepo.findMemberNames.mockResolvedValue(
+        new Map([
+          [REQUESTER, 'Juan Pérez'],
+          [COUNTERPART, 'María García'],
+        ]),
+      );
+
+      const result = await service.getDetail(EXPENSE, REQUESTER);
+
+      expect(result.requestedByName).toBe('Juan Pérez');
+      expect(result.counterpartName).toBe('María García');
+      expect(result.approvedByName).toBeNull();
+    });
+
+    it('deja el nombre en null cuando la persona no tiene perfil', async () => {
+      givenAlive();
+      bondMembersRepo.findMemberNames.mockResolvedValue(new Map());
+
+      const result = await service.getDetail(EXPENSE, REQUESTER);
+
+      // `null`, no un id disfrazado de nombre: el front cae al id y listo.
+      expect(result.requestedByName).toBeNull();
+      expect(result.counterpartName).toBeNull();
+    });
+
+    it('pide los nombres UNA vez por gasto, no una por persona', async () => {
+      givenAlive();
+
+      await service.getDetail(EXPENSE, REQUESTER);
+
+      expect(bondMembersRepo.findMemberNames).toHaveBeenCalledTimes(1);
     });
 
     it('returns the decision for the counterpart on the same expense', async () => {

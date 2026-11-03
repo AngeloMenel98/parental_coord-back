@@ -53,14 +53,29 @@ export class ExpenseResponseDto {
   requestedBy!: string;
 
   /**
+   * El nombre del que solicitó el gasto, para MOSTRARLO. `null` si esa persona no
+   * tiene perfil cargado: el front cae al id en vez de inventar un nombre.
+   */
+  @ApiProperty({ nullable: true, example: 'Juan Pérez' })
+  requestedByName!: string | null;
+
+  /**
    * La otra parte del vínculo, o `null` si el vínculo todavía tiene un solo
    * miembro. Es la misma identidad con la que decide la política.
    */
   @ApiProperty({ format: 'uuid', nullable: true })
   counterpartId!: string | null;
 
+  /** El nombre de la contraparte, para mostrarlo. `null` si no hay o no tiene perfil. */
+  @ApiProperty({ nullable: true, example: 'María García' })
+  counterpartName!: string | null;
+
   @ApiProperty({ format: 'uuid', nullable: true })
   approvedBy!: string | null;
+
+  /** El nombre del que aprobó, para mostrarlo. */
+  @ApiProperty({ nullable: true, example: 'María García' })
+  approvedByName!: string | null;
 
   @ApiProperty({ format: 'date-time', nullable: true })
   approvedAt!: string | null;
