@@ -1358,4 +1358,164 @@ describe('ActivitiesService', () => {
       });
     });
   });
+
+  describe('assign → T3 (created → assigned)', () => {
+    it('assigns to the actor when assignedTo is omitted', async () => {
+      activityRepo.findById.mockResolvedValue(
+        futureActivity({ status: ActivityStatus.CREATED, assignedTo: null }),
+      );
+      transitionEcho();
+
+      const res = await service.assign('a1', userId);
+
+      expect(res.status).toBe(ActivityStatus.ASSIGNED);
+      expect(activityRepo.applyTransition).toHaveBeenCalledWith(
+        expect.objectContaining({
+          expectedFrom: ActivityStatus.CREATED,
+          nextStatus: ActivityStatus.ASSIGNED,
+          fields: expect.objectContaining({ assignedTo: userId }),
+        }),
+      );
+    });
+
+    it('assigns to another bond member', async () => {
+      activityRepo.findById.mockResolvedValue(
+        futureActivity({ status: ActivityStatus.CREATED, assignedTo: null }),
+      );
+      transitionEcho();
+
+      const res = await service.assign('a1', userId, assignee);
+
+      expect(res.status).toBe(ActivityStatus.ASSIGNED);
+      const fields = activityRepo.applyTransition.mock.calls[0][0].fields;
+      expect(fields.assignedTo).toBe(assignee);
+    });
+
+    it('sets the response deadline to now + 36 h (T3 side-effect)', async () => {
+      activityRepo.findById.mockResolvedValue(
+        futureActivity({ status: ActivityStatus.CREATED, assignedTo: null }),
+      );
+      transitionEcho();
+
+      await service.assign('a1', userId);
+
+      const fields = activityRepo.applyTransition.mock.calls[0][0].fields;
+      expect(fields.deadline).toEqual(new Date(NOW.getTime() + 36 * 3600_000));
+    });
+
+    it('409 when the activity is not in `created`', async () => {
+      activityRepo.findById.mockResolvedValue(futureActivity({ status: ActivityStatus.ASSIGNED }));
+      await expectCode(service.assign('a1', userId), 'ACTIVITY_INVALID_TRANSITION', 409);
+      expect(activityRepo.applyTransition).not.toHaveBeenCalled();
+    });
+
+    it('404 when the caller is not a bond member', async () => {
+      activityRepo.findById.mockResolvedValue(
+        futureActivity({ status: ActivityStatus.CREATED, assignedTo: null }),
+      );
+      bondService.isActiveBondForMember.mockResolvedValue(false);
+      await expectCode(service.assign('a1', 'u-out'), 'ACTIVITY_NOT_FOUND', 404);
+      expect(activityRepo.applyTransition).not.toHaveBeenCalled();
+    });
+
+    it('404 when the target is not an active bond member', async () => {
+      activityRepo.findById.mockResolvedValue(
+        futureActivity({ status: ActivityStatus.CREATED, assignedTo: null }),
+      );
+      bondService.isActiveBondForMember.mockImplementation((_b: string, id: string) =>
+        Promise.resolve(id !== assignee),
+      );
+      await expectCode(service.assign('a1', userId, assignee), 'ACTIVITY_NOT_FOUND', 404);
+      expect(activityRepo.applyTransition).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('reassign → T9 (not_assisting → assigned)', () => {
+    it('reassigns to the actor when assignedTo is omitted', async () => {
+      activityRepo.findById.mockResolvedValue(
+        futureActivity({ status: ActivityStatus.NOT_ASSISTING }),
+      );
+      transitionEcho();
+
+      const res = await service.reassign('a1', userId);
+
+      expect(res.status).toBe(ActivityStatus.ASSIGNED);
+      expect(activityRepo.applyTransition).toHaveBeenCalledWith(
+        expect.objectContaining({
+          expectedFrom: ActivityStatus.NOT_ASSISTING,
+          nextStatus: ActivityStatus.ASSIGNED,
+          fields: expect.objectContaining({ assignedTo: userId }),
+        }),
+      );
+    });
+
+    it('reassigns to another bond member', async () => {
+      activityRepo.findById.mockResolvedValue(
+        futureActivity({ status: ActivityStatus.NOT_ASSISTING }),
+      );
+      transitionEcho();
+
+      await service.reassign('a1', userId, assignee);
+
+      const fields = activityRepo.applyTransition.mock.calls[0][0].fields;
+      expect(fields.assignedTo).toBe(assignee);
+    });
+
+    it('clears declined_at and confirmed_at for the new assignee (T9 side-effect)', async () => {
+      activityRepo.findById.mockResolvedValue(
+        futureActivity({
+          status: ActivityStatus.NOT_ASSISTING,
+          declinedAt: new Date('2026-09-30T10:00:00Z'),
+          declinedReason: 'estoy de guardia',
+          confirmedAt: new Date('2026-09-30T09:00:00Z'),
+        }),
+      );
+      transitionEcho();
+
+      await service.reassign('a1', userId);
+
+      const fields = activityRepo.applyTransition.mock.calls[0][0].fields;
+      expect(fields.declinedAt).toBeNull();
+      expect(fields.declinedReason).toBeNull();
+      expect(fields.confirmedAt).toBeNull();
+    });
+
+    it('sets the response deadline to now + 36 h (T9 side-effect)', async () => {
+      activityRepo.findById.mockResolvedValue(
+        futureActivity({ status: ActivityStatus.NOT_ASSISTING }),
+      );
+      transitionEcho();
+
+      await service.reassign('a1', userId);
+
+      const fields = activityRepo.applyTransition.mock.calls[0][0].fields;
+      expect(fields.deadline).toEqual(new Date(NOW.getTime() + 36 * 3600_000));
+    });
+
+    it('409 when the activity is not in `not_assisting`', async () => {
+      activityRepo.findById.mockResolvedValue(futureActivity({ status: ActivityStatus.ASSIGNED }));
+      await expectCode(service.reassign('a1', userId), 'ACTIVITY_INVALID_TRANSITION', 409);
+      expect(activityRepo.applyTransition).not.toHaveBeenCalled();
+    });
+
+    it('404 when the caller is not a bond member', async () => {
+      activityRepo.findById.mockResolvedValue(
+        futureActivity({ status: ActivityStatus.NOT_ASSISTING }),
+      );
+      bondService.isActiveBondForMember.mockResolvedValue(false);
+      await expectCode(service.reassign('a1', 'u-out'), 'ACTIVITY_NOT_FOUND', 404);
+      expect(activityRepo.applyTransition).not.toHaveBeenCalled();
+    });
+
+    it('404 when the target is not an active bond member', async () => {
+      activityRepo.findById.mockResolvedValue(
+        futureActivity({ status: ActivityStatus.NOT_ASSISTING }),
+      );
+      bondService.isActiveBondForMember.mockImplementation((_b: string, id: string) =>
+        Promise.resolve(id !== assignee),
+      );
+      await expectCode(service.reassign('a1', userId, assignee), 'ACTIVITY_NOT_FOUND', 404);
+      expect(activityRepo.applyTransition).not.toHaveBeenCalled();
+    });
+  });
 });

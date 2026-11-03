@@ -27,6 +27,8 @@ export class ActivitySummaryDto {
 
   @Expose() canDelete!: boolean;
   @Expose() canCancel!: boolean;
+  @Expose() canAssign!: boolean;
+  @Expose() canReassign!: boolean;
   @Expose() canConfirm!: boolean;
   @Expose() canDecline!: boolean;
   @Expose() canComplete!: boolean;
@@ -58,6 +60,8 @@ export class ActivityDetailDto {
 
   @Expose() canDelete!: boolean;
   @Expose() canCancel!: boolean;
+  @Expose() canAssign!: boolean;
+  @Expose() canReassign!: boolean;
   @Expose() canConfirm!: boolean;
   @Expose() canDecline!: boolean;
   @Expose() canComplete!: boolean;

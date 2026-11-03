@@ -43,6 +43,8 @@ export interface PolicySubject {
 export interface ActivityPolicyDecision {
   canDelete: boolean;
   canCancel: boolean;
+  canAssign: boolean;
+  canReassign: boolean;
   canConfirm: boolean;
   canDecline: boolean;
   canComplete: boolean;
@@ -73,6 +75,8 @@ export class ActivityPolicyService {
     return {
       canDelete: isCreator && !isPast,
       canCancel: isCreator && !isPast,
+      canAssign: activity.status === ActivityStatus.CREATED,
+      canReassign: activity.status === ActivityStatus.NOT_ASSISTING,
       // CONFIRMAR no lleva `isPast`: confirmar una actividad YA terminada es el
       // caso normal — la ventana de verificación existe justo para eso — y es lo
       // que la app ya permitía (su regla de cliente no miraba la hora). Con

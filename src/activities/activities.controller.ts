@@ -17,6 +17,7 @@ import { ActivitiesService } from './activities.service';
 import { CreateActivityDto } from './dto/create-activity.dto';
 import { CancelActivityDto } from './dto/cancel-activity.dto';
 import { DeclineActivityDto } from './dto/decline-activity.dto';
+import { AssignActivityDto } from './dto/assign-activity.dto';
 import { ComplianceResponseDto } from '../bonds/dto/compliance-response.dto';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
@@ -63,6 +64,41 @@ export class ActivitiesController {
     @Body() dto: DeclineActivityDto,
   ) {
     return this.activitiesService.declineAssignment(id, user.id, dto?.reason);
+  }
+
+  @Post(':id/assign')
+  @HttpCode(HttpStatus.OK)
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: 'Assign a created activity to a bond member (T3)',
+    description:
+      'T21 · `assignedTo` is optional; omit it to assign to the actor. ' +
+      'Errors: 404 not found / not a member / target not a member · 409 invalid transition.',
+  })
+  assignActivity(
+    @Param('id', ParseUUIDPipe) id: string,
+    @CurrentUser() user: AuthUser,
+    @Body() dto: AssignActivityDto,
+  ) {
+    return this.activitiesService.assign(id, user.id, dto?.assignedTo);
+  }
+
+  @Post(':id/reassign')
+  @HttpCode(HttpStatus.OK)
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: 'Reassign a declined activity to a bond member (T9)',
+    description:
+      'T21 · `assignedTo` is optional; omit it to assign to the actor. ' +
+      'Clears the previous assignee decline/confirm timestamps. ' +
+      'Errors: 404 not found / not a member / target not a member · 409 invalid transition.',
+  })
+  reassignActivity(
+    @Param('id', ParseUUIDPipe) id: string,
+    @CurrentUser() user: AuthUser,
+    @Body() dto: AssignActivityDto,
+  ) {
+    return this.activitiesService.reassign(id, user.id, dto?.assignedTo);
   }
 
   // ── Acciones de swipe (R7) ───────────────────────────────────────────────

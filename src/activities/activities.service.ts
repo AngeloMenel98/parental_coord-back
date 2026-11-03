@@ -50,7 +50,7 @@ export interface TransitionRequest {
   actor: TransitionActor;
   reason?: string | null;
   /** Extra column effects on top of the rule's side-effects (e.g. `deletedAt` for delete). */
-  fields?: ApplyTransitionFields;
+  fields?: ApplyTransitionFields & { assignedTo?: string };
   /** Extra keys merged into the outbox payload (e.g. `{ deleted: true }`). */
   payloadExtra?: Record<string, unknown>;
 }
@@ -320,6 +320,9 @@ export class ActivitiesService {
     if (effects.declinedAt === true) {
       fields.declinedAt = ctx.now;
       if (ctx.reason != null) fields.declinedReason = ctx.reason;
+    } else if (effects.declinedAt === false) {
+      fields.declinedAt = null;
+      fields.declinedReason = null;
     }
 
     if (effects.verifyAt === true) {
@@ -611,6 +614,65 @@ export class ActivitiesService {
       id,
       status: ActivityStatus.NOT_ASSISTING,
       declinedAt: (updated.declinedAt ?? now).toISOString(),
+    };
+  }
+
+  /**
+   * T3 (`created` → `assigned`). Any bond member may assign the activity to
+   * themselves or to another member. Membership validation is the service's job
+   * (E5); the policy only reports the flag.
+   *
+   * The response is NARROW on purpose: this module answers the other actions with
+   * `{ id, status, … }`, not with the row. Returning the entity would publish the
+   * internal columns (`version`, `bondId`, `deletedAt`) that no client needs.
+   */
+  async assign(
+    id: string,
+    userId: string,
+    assignedTo?: string,
+  ): Promise<{ id: string; status: string; assignedTo: string | null }> {
+    return this.reassignInternal(id, userId, assignedTo);
+  }
+
+  /**
+   * T9 (`not_assisting` → `assigned`). Reassignment starts the new assignee from
+   * a clean sheet: the transition clears `declined_at`/`confirmed_at`.
+   */
+  async reassign(
+    id: string,
+    userId: string,
+    assignedTo?: string,
+  ): Promise<{ id: string; status: string; assignedTo: string | null }> {
+    return this.reassignInternal(id, userId, assignedTo);
+  }
+
+  private async reassignInternal(
+    id: string,
+    userId: string,
+    assignedTo?: string,
+  ): Promise<{ id: string; status: string; assignedTo: string | null }> {
+    const activity = await this.loadForMember(id, userId);
+    const targetId = assignedTo ?? userId;
+
+    // A provided target must be an active bond member; 404 without revealing
+    // whether that user exists at all (T21).
+    if (assignedTo !== undefined) {
+      const isMember = await this.bondService.isActiveBondForMember(activity.bondId, targetId);
+      if (!isMember) throw activityNotFound();
+    }
+
+    const updated = await this.transition({
+      activityId: id,
+      to: ActivityStatus.ASSIGNED,
+      actor: { kind: 'user', userId },
+      fields: { assignedTo: targetId },
+    });
+    if (!updated) throw activityInvalidTransition(activity.status, ActivityStatus.ASSIGNED);
+
+    return {
+      id: updated.id,
+      status: updated.status,
+      assignedTo: updated.assignedTo ?? null,
     };
   }
 

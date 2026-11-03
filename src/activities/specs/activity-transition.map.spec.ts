@@ -107,7 +107,11 @@ describe('activity-transition map — resolveTransition (confirmed rules)', () =
     expect(resolveTransition(ASSIGNED, OVERDUE)?.sideEffects).toEqual({});
     expect(resolveTransition(OVERDUE, ASSISTING)?.sideEffects).toEqual({ confirmedAt: true });
     expect(resolveTransition(OVERDUE, NOT_ASSISTING)?.sideEffects).toEqual({ declinedAt: true });
-    expect(resolveTransition(NOT_ASSISTING, ASSIGNED)?.sideEffects).toEqual({ deadline: 'set' });
+    expect(resolveTransition(NOT_ASSISTING, ASSIGNED)?.sideEffects).toEqual({
+      deadline: 'set',
+      declinedAt: false,
+      confirmedAt: false,
+    });
     expect(resolveTransition(ASSISTING, IN_PROGRESS)?.sideEffects).toEqual({});
     expect(resolveTransition(IN_PROGRESS, DONE)?.sideEffects).toEqual({ completedAt: true });
     expect(resolveTransition(IN_PROGRESS, VERIFY)?.sideEffects).toEqual({

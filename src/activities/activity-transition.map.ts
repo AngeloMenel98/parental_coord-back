@@ -147,7 +147,9 @@ const RULES: readonly TransitionRule[] = [
     from: ActivityStatus.NOT_ASSISTING,
     to: ActivityStatus.ASSIGNED,
     actors: ['bond_member'],
-    sideEffects: { deadline: 'set' },
+    // Reassignment starts the new assignee from a clean sheet: clear the
+    // previous assignee's decline/confirm timestamps (T21).
+    sideEffects: { deadline: 'set', declinedAt: false, confirmedAt: false },
     event: ACTIVITY_EVENT.ASSIGNED,
   },
   {

@@ -90,6 +90,8 @@ describe('ActivityPolicyService', () => {
       expect(d).toEqual({
         canDelete: true,
         canCancel: true,
+        canAssign: false,
+        canReassign: false,
         canConfirm: false,
         canDecline: false,
         canComplete: false,
@@ -102,6 +104,8 @@ describe('ActivityPolicyService', () => {
       expect(d).toEqual({
         canDelete: false,
         canCancel: false,
+        canAssign: false,
+        canReassign: false,
         canConfirm: true,
         canDecline: true,
         canComplete: false,
@@ -114,6 +118,8 @@ describe('ActivityPolicyService', () => {
       expect(d).toEqual({
         canDelete: false,
         canCancel: false,
+        canAssign: false,
+        canReassign: false,
         canConfirm: false,
         canDecline: false,
         canComplete: false,
@@ -134,6 +140,8 @@ describe('ActivityPolicyService', () => {
       expect(d).toEqual({
         canDelete: true,
         canCancel: true,
+        canAssign: false,
+        canReassign: false,
         canConfirm: true,
         canDecline: true,
         canComplete: false,
@@ -151,6 +159,8 @@ describe('ActivityPolicyService', () => {
       expect(policy.evaluate(past, 'creator', NOW)).toEqual({
         canDelete: false,
         canCancel: false,
+        canAssign: false,
+        canReassign: false,
         canConfirm: false,
         canDecline: false,
         canComplete: false,
@@ -159,6 +169,8 @@ describe('ActivityPolicyService', () => {
       expect(policy.evaluate(past, 'assignee', NOW)).toEqual({
         canDelete: false,
         canCancel: false,
+        canAssign: false,
+        canReassign: false,
         canConfirm: true,
         canDecline: false,
         canComplete: false,
@@ -169,6 +181,59 @@ describe('ActivityPolicyService', () => {
     it('is deterministic: same input, same output (pure, no hidden state)', () => {
       const a = subject();
       expect(policy.evaluate(a, 'creator', NOW)).toEqual(policy.evaluate(a, 'creator', NOW));
+    });
+  });
+
+  describe('evaluate — assignment flags (T21)', () => {
+    it('canAssign is true only in `created`', () => {
+      const created = subject({ status: ActivityStatus.CREATED, assignedTo: null });
+      expect(policy.evaluate(created, 'someone-else', NOW).canAssign).toBe(true);
+
+      for (const status of [
+        ActivityStatus.ASSIGNED,
+        ActivityStatus.ASSISTING,
+        ActivityStatus.NOT_ASSISTING,
+        ActivityStatus.IN_PROGRESS,
+        ActivityStatus.VERIFY,
+        ActivityStatus.OVERDUE,
+        ActivityStatus.DONE,
+        ActivityStatus.CANCELLED,
+      ]) {
+        const a = subject({
+          status,
+          assignedTo: status === ActivityStatus.CREATED ? null : 'assignee',
+        });
+        expect(policy.evaluate(a, 'someone-else', NOW).canAssign).toBe(false);
+      }
+    });
+
+    it('canReassign is true only in `not_assisting`', () => {
+      const notAssisting = subject({ status: ActivityStatus.NOT_ASSISTING });
+      expect(policy.evaluate(notAssisting, 'someone-else', NOW).canReassign).toBe(true);
+
+      for (const status of [
+        ActivityStatus.CREATED,
+        ActivityStatus.ASSIGNED,
+        ActivityStatus.ASSISTING,
+        ActivityStatus.IN_PROGRESS,
+        ActivityStatus.VERIFY,
+        ActivityStatus.OVERDUE,
+        ActivityStatus.DONE,
+        ActivityStatus.CANCELLED,
+      ]) {
+        const a = subject({ status });
+        expect(policy.evaluate(a, 'someone-else', NOW).canReassign).toBe(false);
+      }
+    });
+
+    it('assignment flags do NOT depend on the viewer role', () => {
+      const created = subject({ status: ActivityStatus.CREATED, assignedTo: null });
+      const notAssisting = subject({ status: ActivityStatus.NOT_ASSISTING });
+
+      for (const viewer of ['creator', 'assignee', 'someone-else']) {
+        expect(policy.evaluate(created, viewer, NOW).canAssign).toBe(true);
+        expect(policy.evaluate(notAssisting, viewer, NOW).canReassign).toBe(true);
+      }
     });
   });
 
