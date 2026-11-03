@@ -1409,6 +1409,35 @@ describe('ActivitiesService', () => {
       expect(activityRepo.applyTransition).not.toHaveBeenCalled();
     });
 
+    /**
+     * La RUTA no acota el estado: lo acota el CATÁLOGO de transiciones.
+     *
+     * `POST /:id/assign` sobre una actividad en `not_assisting` aplica T9 (la misma
+     * transición que la ruta de reasignar). Lo que impide robar una asignación viva
+     * NO es la ruta: es que el catálogo no tiene regla hacia `assigned` desde
+     * `assigned`/`assisting`/`in_progress`/`verify`, y eso es un 409.
+     *
+     * Pinned porque es la diferencia entre "la ruta protege" y "el catálogo protege":
+     * si algún día se duplica el estado en la ruta, este test lo delata.
+     */
+    it('applies T9 when the activity is in `not_assisting` (the catalog guards, not the route)', async () => {
+      activityRepo.findById.mockResolvedValue(
+        futureActivity({ status: ActivityStatus.NOT_ASSISTING, declinedAt: new Date(), declinedReason: 'no puedo' }),
+      );
+      transitionEcho();
+
+      const res = await service.assign('a1', userId);
+
+      expect(res.status).toBe(ActivityStatus.ASSIGNED);
+      expect(activityRepo.applyTransition).toHaveBeenCalledWith(
+        expect.objectContaining({
+          expectedFrom: ActivityStatus.NOT_ASSISTING,
+          nextStatus: ActivityStatus.ASSIGNED,
+          fields: expect.objectContaining({ assignedTo: userId }),
+        }),
+      );
+    });
+
     it('404 when the caller is not a bond member', async () => {
       activityRepo.findById.mockResolvedValue(
         futureActivity({ status: ActivityStatus.CREATED, assignedTo: null }),
@@ -1496,6 +1525,28 @@ describe('ActivitiesService', () => {
       activityRepo.findById.mockResolvedValue(futureActivity({ status: ActivityStatus.ASSIGNED }));
       await expectCode(service.reassign('a1', userId), 'ACTIVITY_INVALID_TRANSITION', 409);
       expect(activityRepo.applyTransition).not.toHaveBeenCalled();
+    });
+
+    /**
+     * La ruta de reasignar sobre una actividad en `created` aplica T3 — la misma
+     * transición que la ruta de asignar. Ver la nota del `describe` de `assign`: lo
+     * que acota los estados alcanzables es el catálogo, no la ruta.
+     */
+    it('applies T3 when the activity is in `created` (the catalog guards, not the route)', async () => {
+      activityRepo.findById.mockResolvedValue(
+        futureActivity({ status: ActivityStatus.CREATED, assignedTo: null }),
+      );
+      transitionEcho();
+
+      const res = await service.reassign('a1', userId);
+
+      expect(res.status).toBe(ActivityStatus.ASSIGNED);
+      expect(activityRepo.applyTransition).toHaveBeenCalledWith(
+        expect.objectContaining({
+          expectedFrom: ActivityStatus.CREATED,
+          nextStatus: ActivityStatus.ASSIGNED,
+        }),
+      );
     });
 
     it('404 when the caller is not a bond member', async () => {
