@@ -51,6 +51,24 @@ export class BondsRepository extends BaseRepository<BondEntity> {
   }
 
   /**
+   * Un solo bond con exactamente la misma carga que `findAllBondsEnriched`
+   * (miembros + usuario + personalData + hijos).
+   *
+   * B1 · lo usa `AdminService.setBondActive` para devolver, tras el toggle, la
+   * MISMA forma que devuelve `GET /admin/bonds` — sin una segunda consulta ni
+   * una vista paralela que se desincronice.
+   */
+  async findBondEnriched(bondId: string): Promise<BondEntity | null> {
+    return this.createQueryBuilder('bond')
+      .leftJoinAndSelect('bond.members', 'allMembers')
+      .leftJoinAndSelect('allMembers.user', 'memberUser')
+      .leftJoinAndSelect('memberUser.personalData', 'memberPD')
+      .leftJoinAndSelect('bond.children', 'child')
+      .where('bond.id = :bondId', { bondId })
+      .getOne();
+  }
+
+  /**
    * Find a single bond with full member details (user + personalData).
    * Returns null if bond not found.
    */

@@ -8,6 +8,8 @@ import * as bcrypt from 'bcryptjs';
 
 import { SystemRole } from '../users/entities/user.entity';
 import { BondMemberRole } from '../bonds/entities/bond-member.entity';
+import { BondEntity } from '../bonds/entities/bond.entity';
+import { ChildEntity } from '../children/entities/child.entity';
 import { UsersRepository } from '../users/repositories/users.repository';
 import { PersonalDataRepository } from '../users/repositories/personal-data.repository';
 import { BondsRepository } from '../bonds/repositories/bonds.repository';
@@ -16,6 +18,7 @@ import { ChildrenRepository } from '../children/repositories/children.repository
 import { CreateUserDto } from './dto/create-user.dto';
 import { CreateBondDto } from './dto/create-bond.dto';
 import { CreateChildDto } from './dto/create-child.dto';
+import { UpdateChildDto } from './dto/update-child.dto';
 
 @Injectable()
 export class AdminService {
@@ -63,15 +66,25 @@ export class AdminService {
   async listUsers() {
     const users = await this.usersRepo.findAllWithPersonalData();
 
-    return users.map((u) => ({
-      id: u.id,
-      email: u.email,
-      systemRole: u.systemRole,
-      firstName: u.personalData?.firstName ?? null,
-      lastName: u.personalData?.lastName ?? null,
-      isActive: u.isActive,
-      createdAt: u.createdAt,
-    }));
+    return users.map((u) => this.toAdminUserView(u));
+  }
+
+  /**
+   * B1 · S1 — activa o desactiva una cuenta sin borrar nada.
+   *
+   * Devuelve exactamente la forma de `GET /admin/users` para que la UI pueda
+   * reemplazar la tarjeta con la respuesta sin recargar la lista.
+   */
+  async setUserActive(userId: string, isActive: boolean) {
+    const user = await this.usersRepo.findById(userId, {
+      relations: ['personalData'],
+    });
+    if (!user) throw new NotFoundException(`User ${userId} not found`);
+
+    user.isActive = isActive;
+    const saved = await this.usersRepo.save(user);
+
+    return this.toAdminUserView(saved);
   }
 
   // ── Bonds ────────────────────────────────────────────────────────
@@ -115,19 +128,23 @@ export class AdminService {
   async listBonds() {
     const enrichedBonds = await this.bondsRepo.findAllBondsEnriched();
 
-    return enrichedBonds.map((b) => ({
-      id: b.id,
-      title: b.title,
-      agreementType: b.agreementType,
-      isActive: b.isActive,
-      members: (b.members ?? []).map((m) => ({
-        id: m.userId,
-        email: m.user?.email,
-        role: m.role,
-      })),
-      childrenCount: b.children?.length ?? 0,
-      createdAt: b.createdAt,
-    }));
+    return enrichedBonds.map((b) => this.toBondAdminView(b));
+  }
+
+  /**
+   * B1 · S2 — activa o desactiva un vínculo completo.
+   *
+   * Devuelve la forma de `GET /admin/bonds`; desactivar un bond no toca sus
+   * miembros, hijos ni historial.
+   */
+  async setBondActive(bondId: string, isActive: boolean) {
+    const bond = await this.bondsRepo.findBondEnriched(bondId);
+    if (!bond) throw new NotFoundException(`Bond ${bondId} not found`);
+
+    bond.isActive = isActive;
+    const saved = await this.bondsRepo.save(bond);
+
+    return this.toBondAdminView(saved);
   }
 
   // ── Bond Members ─────────────────────────────────────────────────
@@ -174,13 +191,78 @@ export class AdminService {
       dateOfBirth: dto.dateOfBirth ?? null,
     });
 
+    return this.toAdminChildView(saved);
+  }
+
+  /** B1 · S3 — edición parcial; `dateOfBirth: null` borra la fecha. */
+  async updateChild(childId: string, dto: UpdateChildDto) {
+    const child = await this.childrenRepo.findById(childId);
+    if (!child) throw new NotFoundException(`Child ${childId} not found`);
+
+    // Sólo los campos realmente enviados: un `undefined` explícito no debe pisar
+    // el valor guardado.
+    const patch = Object.fromEntries(
+      Object.entries(dto).filter(([, value]) => value !== undefined),
+    );
+    Object.assign(child, patch);
+
+    const saved = await this.childrenRepo.save(child);
+    return this.toAdminChildView(saved);
+  }
+
+  /** B1 · S3 — borra el hijo; 404 con el mensaje documentado si no existe. */
+  async removeChild(childId: string): Promise<void> {
+    const child = await this.childrenRepo.findById(childId);
+    if (!child) throw new NotFoundException(`Child ${childId} not found`);
+
+    await this.childrenRepo.remove(child);
+  }
+
+  // ── Vistas compartidas ───────────────────────────────────────────
+
+  private toAdminUserView(u: {
+    id: string;
+    email: string;
+    systemRole: SystemRole;
+    isActive: boolean;
+    createdAt: Date;
+    personalData?: { firstName?: string; lastName?: string } | null;
+  }) {
     return {
-      id: saved.id,
-      bondId: saved.bondId,
-      firstName: saved.firstName,
-      lastName: saved.lastName,
-      dateOfBirth: saved.dateOfBirth,
-      createdAt: saved.createdAt,
+      id: u.id,
+      email: u.email,
+      systemRole: u.systemRole,
+      firstName: u.personalData?.firstName ?? null,
+      lastName: u.personalData?.lastName ?? null,
+      isActive: u.isActive,
+      createdAt: u.createdAt,
+    };
+  }
+
+  private toBondAdminView(b: BondEntity) {
+    return {
+      id: b.id,
+      title: b.title,
+      agreementType: b.agreementType,
+      isActive: b.isActive,
+      members: (b.members ?? []).map((m) => ({
+        id: m.userId,
+        email: m.user?.email,
+        role: m.role,
+      })),
+      childrenCount: b.children?.length ?? 0,
+      createdAt: b.createdAt,
+    };
+  }
+
+  private toAdminChildView(c: ChildEntity) {
+    return {
+      id: c.id,
+      bondId: c.bondId,
+      firstName: c.firstName,
+      lastName: c.lastName,
+      dateOfBirth: c.dateOfBirth,
+      createdAt: c.createdAt,
     };
   }
 }
