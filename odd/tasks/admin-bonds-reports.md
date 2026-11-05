@@ -89,8 +89,8 @@ commits ahead of main.
 | ID | Specs | Route | Status | Commit |
 | --- | --- | --- | --- | --- |
 | B1 | S1-S5, S12 | inline | done | 68508c9 |
-| B2 | S6-S8 | inline | in review | — |
-| B3 | S9-S11 | inline | pending | — |
+| B2 | S6-S8 | inline | done | ecd7001 |
+| B3 | S9-S11 | inline | done | pending |
 
 ## Log
 
@@ -132,6 +132,21 @@ caller (`dateFrom`..`dateTo`) and exclusive internally (`>= from`, `< to + 1 day
 computed in UTC. Activities are placed in the window by
 `COALESCE(scheduled_start, created_at)`; expenses by `expense_date`. A member with
 `left_at` set is not part of the report.
+
+**L12 — B3 storage decision.** `report.file_url` stores the storage *path*
+(`reports/<bondId>/<reportId>.pdf`), not a URL: the signed download URL is issued per
+read, exactly like the activity attachments. The PDFs live in their own bucket
+(`SUPABASE_STORAGE_BUCKET_REPORTS`, default `reports`) so a retention policy can differ
+from activity attachments. `StorageService` gained `uploadObject` (direct server-side
+upload, `upsert: true` for job retries) and `createSignedReportDownloadUrl`. The
+`createSignedUploadUrl` `expiresIn` parameter was removed: it was never used and no
+caller passed it.
+
+**L13 — B3 evidence.** `npx jest src/reports` → 6 suites, 29 tests (renderer produces a
+real `%PDF-` buffer; `ReportsModule wiring` compiles the Nest graph with every
+repository and queue overridden, so a missing provider fails the suite instead of the
+boot). Full suite 91 suites / 1090 tests. `pnpm build` clean. `eslint` exit 0 on every
+touched file. Worker registration lives only in `worker.module.ts`.
 
 **L9 — slice boundary.** `ft/admin-bonds-reports` starts from `ft/supabase-cloud`, which
 is itself 73 commits ahead of `origin/main`. Slices are therefore measured against

@@ -8,6 +8,7 @@ import { ExpensesWorkerModule } from './expenses/stale-reminder/expenses-worker.
 import { UsersModule } from './users/users.module';
 import { StorageModule } from './storage/storage.module';
 import { ActivityTimersWorkerModule } from './queues/activity-timers/activity-timers-worker.module';
+import { ReportPdfWorkerModule } from './reports/pdf/report-pdf-worker.module';
 import { WebhooksWorkerModule } from './webhooks/webhooks-worker.module';
 import { NotificationsWorkerModule } from './notifications/notifications-worker.module';
 import { validateConfig } from './config/app-config';
@@ -52,6 +53,8 @@ import { buildBullConnection } from './queues/redis.config';
     StorageModule,
     UsersModule,
     ActivityTimersWorkerModule,
+    // B3 · S11: el PDF del reporte se renderiza en el worker, nunca en la API.
+    ReportPdfWorkerModule,
     WebhooksWorkerModule,
     NotificationsWorkerModule,
   ],
