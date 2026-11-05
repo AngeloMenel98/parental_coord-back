@@ -148,6 +148,33 @@ repository and queue overridden, so a missing provider fails the suite instead o
 boot). Full suite 91 suites / 1090 tests. `pnpm build` clean. `eslint` exit 0 on every
 touched file. Worker registration lives only in `worker.module.ts`.
 
+**L14 — backend verification (self-verified, verifier launch refused).** The harness
+declined to admit an independent verifier for this launch ("No supported `Risk: item N`
+declaration was recognized in the launch task"), so the checks below were run inline:
+- `npx jest` → 91 suites / 1090 tests passed; `pnpm build` exit 0; `eslint` exit 0.
+- S1/S2: `src/admin/admin.service.ts` setUserActive/setBondActive throw
+  `User ${userId} not found` / `Bond ${bondId} not found`; pinned in
+  `src/admin/admin.service.spec.ts`.
+- S3/S4: partial patch filters `undefined`; `dateOfBirth: null` clears; `""` rejected by
+  `@IsDateString` (`src/admin/dto/update-child.dto.ts`).
+- S5: both `AdminController` and `AdminReportsController` carry
+  `@UseGuards(JwtAuthGuard, RolesGuard)` + `@Roles(SystemRole.ADMIN)`; pinned by
+  reflection tests.
+- S6: `bond-report.service.ts` converts inclusive dates to `>= from` / `< to + 1 día` in
+  UTC; `bond-report.repository.ts` selects activities by
+  `COALESCE(scheduled_start, created_at)` and expenses by `expense_date`.
+- S7/S8: `build-bond-report.ts` `isEligibleExpense` excludes deleted and rejected from
+  numerator and denominator; `byStatus` keeps rejected; every amount and percentage is
+  `round2`-ed. Pinned by 8 pure tests.
+- S9/S10: `reports.service.ts` creates the row as `requested` with `requestedBy`, enqueues
+  once, and only signs `fileUrl` for completed/delivered.
+- S11: `generatePdf` marks completed only after `uploadObject` returns a path; failures
+  propagate. `ReportPdfWorkerModule` is registered only in `worker.module.ts`.
+  `ReportsModule wiring` compiles the real Nest graph.
+- S12: existing `/admin/*` routes and shapes untouched; two of them pinned in the spec.
+- Verified out of band: `1792555200000-AlignSystemRoleAndReportStatusEnums.ts` already
+  aligned `report_status` to the entity literals, so no migration was needed.
+
 **L9 — slice boundary.** `ft/admin-bonds-reports` starts from `ft/supabase-cloud`, which
 is itself 73 commits ahead of `origin/main`. Slices are therefore measured against
 `ft/supabase-cloud`: B1 = 663 changed lines across 8 files (321 of them the spec).
