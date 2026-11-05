@@ -81,6 +81,18 @@ commits ahead of main.
   it through the storage service, and on success sets `status = 'completed'`,
   `fileUrl`, `generatedAt` and `generatedBy` on the row. A failure leaves the row out of
   `completed` and is logged; it never marks the report completed.
+- **S13 — Bond health for the list.** `GET /admin/bonds/health?dateFrom=YYYY-MM-DD&dateTo=YYYY-MM-DD`
+  returns one row per bond — including bonds with no data, which answer zeros — shaped as
+  `{ bondId, title, agreementType, isActive, membersCount, childrenCount, activitiesTotal,
+  completionRate, paidAmountPercentage }`. It uses the S6 window rules and the S7 eligible
+  expense base, and answers in a fixed number of grouped queries instead of one report per
+  bond.
+- **S14 — Monthly trend.** `GET /admin/bonds/:bondId/trend?months=6` returns
+  `{ bondId, months: [ { month: "YYYY-MM", activitiesTotal, completionRate } ] }` with
+  exactly `months` entries, oldest first, ending on the month of `generatedAt` in UTC, and
+  zero-valued entries for months without activities. Unknown bond answers 404 with
+  `Bond <id> not found`; `months` outside 1..12 answers 400 with
+  `months must be between 1 and 12`.
 - **S12 — Existing behaviour.** Every existing `/admin/*` route and response keeps its
   current shape and status codes.
 
@@ -91,6 +103,7 @@ commits ahead of main.
 | B1 | S1-S5, S12 | inline | done | 68508c9 |
 | B2 | S6-S8 | inline | done | ecd7001 |
 | B3 | S9-S11 | inline | done | 6c3363f |
+| B4 | S13-S14 | inline | done | pending |
 
 ## Log
 
@@ -205,3 +218,15 @@ Not exercised, and why: no Postgres and no Redis are reachable in this environme
 job was processed for real. Before deploying: run `pnpm storage:init` so the
 `SUPABASE_STORAGE_BUCKET_REPORTS` bucket exists, and start the worker (`pnpm
 start:worker`) — the API alone will queue PDFs and never render them.
+
+**L15 — B4, born from the design handoff.** The chosen artboard
+(`design/admin-ui/01-consola-de-vinculos.html`) shows three numbers per bond in the list
+(children, completion, % paid) and a six-month completion series in the detail. Neither
+existed in the API: `GET /admin/bonds` returns no health, and the only numbers came from a
+full report per bond — 12 bonds × 6 months would have been dozens of requests. B4 adds two
+read endpoints (`bonds/health`, `bonds/:bondId/trend`) backed by four grouped queries and
+two pure builders, and is part of the same feature.
+
+**L16 — B4 evidence.** `npx jest src/reports` → 8 suites / 42 tests; full suite 93 suites /
+1103 tests. `pnpm build` and `eslint` clean. The `/admin/bonds/health` route is declared
+before `bonds/:bondId/...` so it cannot be swallowed by the UUID pipe.

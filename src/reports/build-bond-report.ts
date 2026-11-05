@@ -140,12 +140,12 @@ const toAmount = (value: number | string): number => {
 };
 
 /** Dos decimales, sin `-0` ni arrastre binario visible. */
-const round2 = (value: number): number => {
+export const round2 = (value: number): number => {
   const rounded = Math.round((value + Number.EPSILON) * 100) / 100;
   return Object.is(rounded, -0) ? 0 : rounded;
 };
 
-const percentage = (numerator: number, denominator: number): number =>
+export const percentage = (numerator: number, denominator: number): number =>
   denominator === 0 ? 0 : round2((numerator / denominator) * 100);
 
 const ageInYears = (dateOfBirth: string | null, at: Date): number | null => {
