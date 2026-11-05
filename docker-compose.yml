@@ -85,6 +85,10 @@ services:
       - SUPABASE_URL=${SUPABASE_URL:-}
       - SUPABASE_SERVICE_ROLE_KEY=${SUPABASE_SERVICE_ROLE_KEY:-}
       - SUPABASE_STORAGE_BUCKET_ACTIVITY_ATTACHMENTS=${SUPABASE_STORAGE_BUCKET_ACTIVITY_ATTACHMENTS:-activity-attachments}
+      # Report PDFs: the worker uploads them and the API signs their download URL.
+      # Without this line both fall back to the bare 'reports' bucket while the host
+      # creates 'reports-dev', and every PDF lookup 400s inside the container.
+      - SUPABASE_STORAGE_BUCKET_REPORTS=${SUPABASE_STORAGE_BUCKET_REPORTS:-reports}
       - ATTACHMENTS_MAX_SIZE_BYTES=${ATTACHMENTS_MAX_SIZE_BYTES:-10485760}
     ports:
       - '3000:3000'
@@ -128,6 +132,10 @@ services:
       - SUPABASE_URL=${SUPABASE_URL:-}
       - SUPABASE_SERVICE_ROLE_KEY=${SUPABASE_SERVICE_ROLE_KEY:-}
       - SUPABASE_STORAGE_BUCKET_ACTIVITY_ATTACHMENTS=${SUPABASE_STORAGE_BUCKET_ACTIVITY_ATTACHMENTS:-activity-attachments}
+      # Report PDFs: the worker uploads them and the API signs their download URL.
+      # Without this line both fall back to the bare 'reports' bucket while the host
+      # creates 'reports-dev', and every PDF lookup 400s inside the container.
+      - SUPABASE_STORAGE_BUCKET_REPORTS=${SUPABASE_STORAGE_BUCKET_REPORTS:-reports}
       - ATTACHMENTS_MAX_SIZE_BYTES=${ATTACHMENTS_MAX_SIZE_BYTES:-10485760}
     depends_on:
       postgres:

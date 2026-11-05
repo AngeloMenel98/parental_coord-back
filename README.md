@@ -69,14 +69,18 @@ máquina. No hay un tercer entorno y k8s queda fuera por ahora.
 
 | | Dónde corre la API | Base | Redis | Bucket |
 | --- | --- | --- | --- | --- |
-| **dev** | `pnpm start:dev` en tu máquina | `docker compose postgres` | `docker compose redis` | `activity-attachments-dev` |
-| **prod** | donde deployes (`node dist/src/main`) | Supabase Cloud (pooler de sesión) | el que uses | `activity-attachments` |
+| **dev** | `pnpm start:dev` en tu máquina | `docker compose postgres` | `docker compose redis` | `activity-attachments-dev` + `reports-dev` |
+| **prod** | donde deployes (`node dist/src/main`) | Supabase Cloud (pooler de sesión) | el que uses | `activity-attachments` + `reports` |
+
+Son **dos** buckets por entorno: los adjuntos de actividad/gasto y los PDF de
+reporte. `SUPABASE_STORAGE_BUCKET_REPORTS` es el segundo; si falta, el servicio cae
+al nombre `reports` y la subida apunta a un bucket que nadie creó.
 
 Los dos archivos de entorno:
 
-- **`.env`** → dev. `DB_HOST=127.0.0.1`, `DB_SSL=false`, bucket `-dev`.
-- **`.env.prod`** → prod. Pooler de Supavisor, `DB_SSL=true`, bucket
-  `activity-attachments`.
+- **`.env`** → dev. `DB_HOST=127.0.0.1`, `DB_SSL=false`, buckets `-dev`.
+- **`.env.prod`** → prod. Pooler de Supavisor, `DB_SSL=true`, buckets
+  `activity-attachments` y `reports`.
 
 Los dos están gitignoreados. `.env.example` es el único archivo versionado.
 
@@ -101,7 +105,7 @@ pnpm start:dev
 ```bash
 pnpm typeorm:prod              # ENV_FILE=.env.prod migration:run
 pnpm seed:admin:prod           # ENV_FILE=.env.prod
-pnpm storage:init:prod         # ENV_FILE=.env.prod, bucket activity-attachments
+pnpm storage:init:prod         # ENV_FILE=.env.prod, ambos buckets
 ```
 
 Las tres son idempotentes: `migration:run` responde "No migrations are pending"
@@ -163,9 +167,15 @@ DB_SSL=true pnpm typeorm migration:run
 pnpm storage:init
 ```
 
-Crea o ajusta el bucket privado `activity-attachments` con el límite de tamaño y
-los MIME types `image/jpeg`, `image/png`, `application/pdf`. Es idempotente y
-reemplaza al viejo servicio `supabase-init`.
+Crea o ajusta **los dos** buckets privados con el límite de tamaño y los MIME
+types `image/jpeg`, `image/png`, `application/pdf`:
+
+- `SUPABASE_STORAGE_BUCKET_ACTIVITY_ATTACHMENTS` (adjuntos)
+- `SUPABASE_STORAGE_BUCKET_REPORTS` (PDF de reportes)
+
+Es idempotente y reemplaza al viejo servicio `supabase-init`. En Docker los dos
+nombres llegan por `docker-compose.yml`, pero los buckets siguen viviendo en
+Supabase Cloud: este script es el que los crea.
 
 ### 4. Verificar
 
