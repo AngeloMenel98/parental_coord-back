@@ -1,17 +1,5 @@
-import {
-  Body,
-  Controller,
-  Get,
-  Param,
-  ParseUUIDPipe,
-  Post,
-  UseGuards,
-} from '@nestjs/common';
-import {
-  ApiBearerAuth,
-  ApiOperation,
-  ApiTags,
-} from '@nestjs/swagger';
+import { Body, Controller, Get, Param, ParseUUIDPipe, Post, UseGuards } from '@nestjs/common';
+import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 
 import { ChildrenService } from './children.service';
 import { CreateChildDto } from './dto/create-child.dto';
@@ -40,10 +28,7 @@ export class ChildrenController {
   @UseGuards(JwtAuthGuard)
   @ApiBearerAuth()
   @ApiOperation({ summary: 'List children' })
-  findByBond(
-    @CurrentUser() user: AuthUser,
-    @Param('bondId', ParseUUIDPipe) bondId: string,
-  ) {
+  findByBond(@CurrentUser() user: AuthUser, @Param('bondId', ParseUUIDPipe) bondId: string) {
     return this.childrenService.findByBond(bondId, user.id);
   }
 }

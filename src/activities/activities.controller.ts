@@ -1,41 +1,35 @@
 import {
   Body,
   Controller,
+  Delete,
   Get,
   HttpCode,
   HttpStatus,
-  NotFoundException,
   Param,
   ParseUUIDPipe,
   Post,
   UseGuards,
 } from '@nestjs/common';
-import {
-  ApiBearerAuth,
-  ApiOperation,
-  ApiTags,
-} from '@nestjs/swagger';
+import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { plainToInstance } from 'class-transformer';
 
 import { ActivitiesService } from './activities.service';
 import { CreateActivityDto } from './dto/create-activity.dto';
+import { CancelActivityDto } from './dto/cancel-activity.dto';
+import { DeclineActivityDto } from './dto/decline-activity.dto';
+import { AssignActivityDto } from './dto/assign-activity.dto';
 import { ComplianceResponseDto } from '../bonds/dto/compliance-response.dto';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { AuthUser } from '../auth/dto/auth-user.dto';
-import { BondsRepository } from '../bonds/repositories/bonds.repository';
 
 @ApiTags('activities')
 @Controller('activities')
 @UseGuards(JwtAuthGuard)
 export class ActivitiesController {
-  constructor(
-    private readonly activitiesService: ActivitiesService,
-    private readonly bondsRepo: BondsRepository,
-  ) {}
+  constructor(private readonly activitiesService: ActivitiesService) {}
 
   @Post(':bondId/create')
-  @HttpCode(HttpStatus.CREATED)
   @ApiBearerAuth()
   @ApiOperation({ summary: 'Create activity' })
   create(
@@ -50,36 +44,106 @@ export class ActivitiesController {
   @HttpCode(HttpStatus.OK)
   @ApiBearerAuth()
   @ApiOperation({ summary: 'Confirm activity assignment (idempotent)' })
-  confirmAssignment(
+  confirmAssignment(@Param('id', ParseUUIDPipe) id: string, @CurrentUser() user: AuthUser) {
+    return this.activitiesService.confirmAssignment(id, user.id);
+  }
+
+  @Post(':id/decline')
+  @HttpCode(HttpStatus.OK)
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: 'Decline activity assignment ("No asistir")',
+    description:
+      'R5/A1 · Motivo OBLIGATORIO de 3–200 caracteres (mismo validador que Cancelar). ' +
+      'Errores: 404 no existe/no es miembro · 403 no es el asignado · 409 ACTIVITY_ALREADY_PAST · ' +
+      '422 VALIDATION_FAILED. El 422 se lanza explícitamente, sin tocar el ValidationPipe global.',
+  })
+  declineAssignment(
     @Param('id', ParseUUIDPipe) id: string,
     @CurrentUser() user: AuthUser,
+    @Body() dto: DeclineActivityDto,
   ) {
-    return this.activitiesService.confirmAssignment(id, user.id);
+    return this.activitiesService.declineAssignment(id, user.id, dto?.reason);
+  }
+
+  @Post(':id/assign')
+  @HttpCode(HttpStatus.OK)
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: 'Assign a created activity to a bond member (T3)',
+    description:
+      'T21 · `assignedTo` is optional; omit it to assign to the actor. ' +
+      'Errors: 404 not found / not a member / target not a member · 409 invalid transition.',
+  })
+  assignActivity(
+    @Param('id', ParseUUIDPipe) id: string,
+    @CurrentUser() user: AuthUser,
+    @Body() dto: AssignActivityDto,
+  ) {
+    return this.activitiesService.assign(id, user.id, dto?.assignedTo);
+  }
+
+  @Post(':id/reassign')
+  @HttpCode(HttpStatus.OK)
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: 'Reassign a declined activity to a bond member (T9)',
+    description:
+      'T21 · `assignedTo` is optional; omit it to assign to the actor. ' +
+      'Clears the previous assignee decline/confirm timestamps. ' +
+      'Errors: 404 not found / not a member / target not a member · 409 invalid transition.',
+  })
+  reassignActivity(
+    @Param('id', ParseUUIDPipe) id: string,
+    @CurrentUser() user: AuthUser,
+    @Body() dto: AssignActivityDto,
+  ) {
+    return this.activitiesService.reassign(id, user.id, dto?.assignedTo);
+  }
+
+  // ── Acciones de swipe (R7) ───────────────────────────────────────────────
+
+  @Delete(':id')
+  @HttpCode(HttpStatus.OK)
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: 'Delete activity ("Eliminar") — soft delete',
+    description:
+      'A4 · Escribe `deleted_at` y nada más: sin purga, sin retención y sin borrado en cascada. ' +
+      'Se deshace con POST /:id/restore dentro de 5000 ms.',
+  })
+  deleteActivity(@Param('id', ParseUUIDPipe) id: string, @CurrentUser() user: AuthUser) {
+    return this.activitiesService.delete(id, user.id);
+  }
+
+  @Post(':id/cancel')
+  @HttpCode(HttpStatus.OK)
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: 'Cancel activity ("Cancelar") — creator only, reason required',
+    description:
+      'A1 · Motivo OBLIGATORIO de 3–200 caracteres. Sólo el creador. ' +
+      '422 VALIDATION_FAILED si el motivo no cumple; 409 ACTIVITY_ALREADY_PAST si ya pasó.',
+  })
+  cancelActivity(
+    @Param('id', ParseUUIDPipe) id: string,
+    @CurrentUser() user: AuthUser,
+    @Body() dto: CancelActivityDto,
+  ) {
+    return this.activitiesService.cancel(id, user.id, dto?.reason);
   }
 
   @Get('bond/:bondId')
   @ApiBearerAuth()
   @ApiOperation({ summary: 'List activities for a bond (ordered, summary shape)' })
-  async listByBond(
-    @Param('bondId', ParseUUIDPipe) bondId: string,
-    @CurrentUser() user: AuthUser,
-  ) {
-    const bond = await this.bondsRepo.findActiveBondForMember(bondId, user.id);
-
-    if (!bond) {
-      throw new NotFoundException('Bond not found or you are not a member');
-    }
-
-    return this.activitiesService.listByBond(bondId);
+  listByBond(@Param('bondId', ParseUUIDPipe) bondId: string, @CurrentUser() user: AuthUser) {
+    return this.activitiesService.listByBond(bondId, user.id);
   }
 
   @Get(':id')
   @ApiBearerAuth()
   @ApiOperation({ summary: 'Get activity detail by id' })
-  getActivityDetail(
-    @Param('id', ParseUUIDPipe) id: string,
-    @CurrentUser() user: AuthUser,
-  ) {
+  getActivityDetail(@Param('id', ParseUUIDPipe) id: string, @CurrentUser() user: AuthUser) {
     return this.activitiesService.getDetail(id, user.id);
   }
 
@@ -89,26 +153,24 @@ export class ActivitiesController {
     @Param('bondId', ParseUUIDPipe) bondId: string,
     @CurrentUser() user: AuthUser,
   ) {
-    const bond = await this.bondsRepo.findActiveBondForMember(bondId, user.id);
-
-    if (!bond) {
-      throw new NotFoundException('Bond not found or you are not a member');
-    }
-
-    const members = await this.activitiesService.getComplianceForBond(bondId);
-
-    const now = new Date();
-    const period = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+    const { period, members } = await this.activitiesService.getComplianceForBond(bondId, user.id);
 
     return plainToInstance(
       ComplianceResponseDto,
       {
         bondId,
         period,
-        bondActive: bond.isActive,
         members,
       },
       { excludeExtraneousValues: true },
     );
+  }
+
+  @Post(':id/complete')
+  @HttpCode(HttpStatus.CREATED)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Mark an activity as done (idempotent)' })
+  complete(@Param('id', ParseUUIDPipe) id: string, @CurrentUser() user: AuthUser) {
+    return this.activitiesService.complete(id, user.id);
   }
 }

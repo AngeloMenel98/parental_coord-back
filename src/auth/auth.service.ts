@@ -1,50 +1,45 @@
 import { BadRequestException, Injectable, UnauthorizedException } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
-import { InjectRepository } from '@nestjs/typeorm';
 import * as bcrypt from 'bcryptjs';
-import { Repository } from 'typeorm';
 
 import { UserEntity, SystemRole } from '../users/entities/user.entity';
-import { PersonalDataEntity } from '../users/entities/personal-data.entity';
+import { UsersRepository } from '../users/repositories/users.repository';
+import { PersonalDataRepository } from '../users/repositories/personal-data.repository';
 import { LoginDto, RegisterDto } from './dto/auth.dto';
 
 @Injectable()
 export class AuthService {
   constructor(
-    @InjectRepository(UserEntity)
-    private readonly userRepo: Repository<UserEntity>,
-    @InjectRepository(PersonalDataEntity)
-    private readonly personalDataRepo: Repository<PersonalDataEntity>,
+    private readonly usersRepo: UsersRepository,
+    private readonly personalDataRepo: PersonalDataRepository,
     private readonly jwtService: JwtService,
   ) {}
 
   async register(dto: RegisterDto) {
-    const existing = await this.userRepo.findOneBy({ email: dto.email });
+    const existing = await this.usersRepo.findOneByEmail(dto.email);
     if (existing) {
       throw new BadRequestException('Email already registered');
     }
 
     const hashed = await bcrypt.hash(dto.password, 10);
-    const user = this.userRepo.create({
+    const user = await this.usersRepo.createAndSave({
       email: dto.email,
       passwordHash: hashed,
       systemRole: SystemRole.USER,
       isActive: true,
     });
-    await this.userRepo.save(user);
 
-    const personalData = this.personalDataRepo.create({
+    await this.personalDataRepo.createAndSave({
       userId: user.id,
       firstName: dto.firstName,
       lastName: dto.lastName,
     });
-    await this.personalDataRepo.save(personalData);
 
     return this.buildAuthResponse(user);
   }
 
   async login(dto: LoginDto) {
-    const user = await this.userRepo.findOneBy({ email: dto.email });
+    const user = await this.usersRepo.findOneByEmail(dto.email);
     if (!user) {
       throw new UnauthorizedException('Invalid credentials');
     }
@@ -67,7 +62,7 @@ export class AuthService {
       systemRole: user.systemRole,
     });
 
-    const personal = await this.personalDataRepo.findOneBy({ userId: user.id });
+    const personal = await this.personalDataRepo.findOneByUserId(user.id);
 
     return {
       access_token: token,

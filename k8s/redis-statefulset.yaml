@@ -1,0 +1,77 @@
+# Redis StatefulSet (dev-only, in-cluster).
+#
+# Why this exists: the async plane (BullMQ webhook deliveries, activity timers,
+# notification fan-out + retention) and the realtime publisher all need Redis.
+# Before this manifest the k8s setup had none, so the worker could not be
+# deployed at all — the whole pipeline shipped dark in-cluster.
+#
+# - redis:7-alpine with `--appendonly yes` (same command as docker-compose.yml),
+#   so queued jobs and scheduler state survive a pod restart.
+# - Data lives on the static PVC redis-data at /data (WORKDIR of the image).
+# - Runs as the image's own redis user: uid 999, gid 1000. fsGroup 1000 makes
+#   the mounted volume group-writable for that gid (verified with
+#   `docker run --entrypoint id redis:7-alpine redis`).
+# - No password on purpose (dev-only, ClusterIP + NetworkPolicy). For a managed
+#   Redis, do NOT apply this file: point REDIS_HOST/REDIS_PORT at the managed
+#   endpoint and put REDIS_PASSWORD (and REDIS_TLS=true if required) in the
+#   app-secret Secret instead.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: redis
+  labels:
+    app: redis
+spec:
+  serviceName: redis
+  replicas: 1
+  selector:
+    matchLabels:
+      app: redis
+  template:
+    metadata:
+      labels:
+        app: redis
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 999
+        runAsGroup: 1000
+        fsGroup: 1000
+      containers:
+        - name: redis
+          image: redis:7-alpine
+          command: ['redis-server', '--appendonly', 'yes']
+          securityContext:
+            # Mirrors postgres-statefulset.yaml: the entrypoint may need to
+            # touch the data dir; the container still drops all capabilities.
+            readOnlyRootFilesystem: false
+            allowPrivilegeEscalation: false
+          ports:
+            - containerPort: 6379
+              name: redis
+          readinessProbe:
+            exec:
+              command: ['redis-cli', 'ping']
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 3
+          livenessProbe:
+            exec:
+              command: ['redis-cli', 'ping']
+            initialDelaySeconds: 15
+            periodSeconds: 10
+            timeoutSeconds: 3
+          volumeMounts:
+            - name: data
+              mountPath: /data
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 200m
+              memory: 256Mi
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: redis-data

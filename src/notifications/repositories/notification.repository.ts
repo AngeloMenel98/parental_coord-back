@@ -1,0 +1,315 @@
+import { Injectable } from '@nestjs/common';
+import { InjectRepository } from '@nestjs/typeorm';
+import { EntityManager, Repository } from 'typeorm';
+
+import { BaseRepository } from '../../common/repositories/base.repository';
+import { NotificationEntity } from '../entities/notification.entity';
+
+/** Entrada genérica de `create` (REQ-SUB-5, D11). */
+export interface CreateNotificationInput {
+  userId: string;
+  bondId: string;
+  type: string;
+  title: string;
+  body: string;
+  refEntityType: string;
+  refEntityId?: string | null;
+  /**
+   * Evento de `outbox_event` que originó la notificación (slice 2).
+   *
+   * `undefined`/`null` ⇒ se persiste NULL, que es lo que siguen haciendo los
+   * call-sites históricos (`webhook_disabled`, filas legadas). Sólo el fan-out
+   * del worker escribe un UUID y, por tanto, participa del índice único
+   * parcial `(user_id, source_event_id) WHERE source_event_id IS NOT NULL`.
+   */
+  sourceEventId?: string | null;
+}
+
+/** Filtros del listado de notificaciones del usuario (read path). */
+export interface ListNotificationsOptions {
+  /** Tamaño de página (1..100, validado en el DTO). */
+  limit: number;
+  /** Desplazamiento (>= 0, validado en el DTO). */
+  offset: number;
+  /** Sólo no leídas. */
+  unreadOnly?: boolean;
+  /** Acota a un bond; las notificaciones sin bond quedan fuera. */
+  bondId?: string;
+}
+
+/** Página de notificaciones + total del mismo conjunto filtrado. */
+export interface ListNotificationsResult {
+  items: NotificationEntity[];
+  total: number;
+}
+
+/**
+ * Acceso a `notification` — la tabla raíz de este módulo.
+ *
+ * Espeja el patrón probado de `ActivitiesAuditRepository.record(entry, manager?)`:
+ * el `manager` opcional es lo que permite escribir la notificación dentro de
+ * la MISMA transacción que la fila de `activity` (T2+ lo usa en create/cancel/
+ * decline); sin él, escribe por la conexión normal.
+ */
+@Injectable()
+export class NotificationRepository extends BaseRepository<NotificationEntity> {
+  constructor(
+    @InjectRepository(NotificationEntity)
+    private readonly notifRepo: Repository<NotificationEntity>,
+  ) {
+    super(notifRepo);
+  }
+
+  /**
+   * Crea una notificación GENÉRICA (REQ-SUB-5, D11).
+   *
+   * El `refEntityType` es libre (antes estaba hardcodeado a `'activity'`), lo que
+   * habilita avisos de otros dominios (p. ej. `webhook_disabled`) sin filas
+   * `coordinador`. Mismo patrón `manager?` que el resto de repos.
+   *
+   * ⚠ Nota: se llama `createNotification` (no `create`) porque `BaseRepository`
+   * extiende `Repository`, cuyo `create()` ya existe con otra firma; sobrecargarlo
+   * rompería el tipado estricto (TS2416). El contrato funcional de D11 se mantiene.
+   */
+  async createNotification(
+    input: CreateNotificationInput,
+    manager?: EntityManager,
+  ): Promise<NotificationEntity> {
+    const repo = manager ? manager.getRepository(NotificationEntity) : this.notifRepo;
+    return repo.save(
+      repo.create({
+        userId: input.userId,
+        bondId: input.bondId,
+        type: input.type,
+        title: input.title,
+        body: input.body,
+        refEntityType: input.refEntityType,
+        refEntityId: input.refEntityId ?? null,
+        sourceEventId: input.sourceEventId ?? null,
+        isRead: false,
+      }),
+    );
+  }
+
+  /**
+   * Inserta la notificación de UN destinatario ligada a un `outbox_event`
+   * (fan-out, REQ-FAN-001/REQ-FAN-005).
+   *
+   * `ON CONFLICT DO NOTHING` (`orIgnore()`) sobre el índice único parcial
+   * `(user_id, source_event_id) WHERE source_event_id IS NOT NULL` convierte un
+   * re-dispatch del mismo evento en un no-op: devuelve `null` sin lanzar
+   * `23505`. Esto es deliberado (R6): un `save()` explotaría y abortaría la
+   * transacción de dispatch, dejando el evento sin `dispatched_at` para
+   * siempre. Por eso esta ruta NUNCA usa `save()`.
+   *
+   * La entidad devuelta es deliberadamente MÍNIMA (sólo el `id` es
+   * significativo): el fan-out sólo necesita contar creadas vs. ignoradas, no
+   * leer la fila de vuelta.
+   */
+  async createFromEvent(
+    input: CreateNotificationInput & { sourceEventId: string },
+    manager?: EntityManager,
+  ): Promise<NotificationEntity | null> {
+    const repo = manager ? manager.getRepository(NotificationEntity) : this.notifRepo;
+    const values = {
+      userId: input.userId,
+      bondId: input.bondId,
+      type: input.type,
+      title: input.title,
+      body: input.body,
+      refEntityType: input.refEntityType,
+      refEntityId: input.refEntityId ?? null,
+      sourceEventId: input.sourceEventId,
+      isRead: false,
+    };
+
+    const result = await repo
+      .createQueryBuilder()
+      .insert()
+      .into(NotificationEntity)
+      .values(values)
+      .orIgnore()
+      .returning('id')
+      .execute();
+
+    const rows = (result.raw as Array<{ id?: string }> | undefined) ?? [];
+    const id = rows[0]?.id;
+
+    return id ? repo.create({ ...values, id }) : null;
+  }
+
+  /**
+   * Notificación ligada a una `activity` (wrapper delgado sobre
+   * {@link createNotification} con `refEntityType='activity'`): mantiene intactos
+   * los call-sites existentes.
+   */
+  async createForActivity(
+    input: {
+      userId: string;
+      bondId: string;
+      type: string;
+      title: string;
+      body: string;
+      refEntityId: string;
+    },
+    manager?: EntityManager,
+  ): Promise<NotificationEntity> {
+    return this.createNotification({ ...input, refEntityType: 'activity' }, manager);
+  }
+
+  // ── Read path (notifications-read-path) ───────────────────────────────────
+
+  /**
+   * Lista las notificaciones del USUARIO, más recientes primero.
+   *
+   * El scoping por `user_id` va SIEMPRE primero y es la única garantía de
+   * aislamiento: ninguna fila ajena puede entrar en `items` ni en `total`.
+   *
+   * Orden determinista: `created_at DESC, id DESC` — el `id` desempata las
+   * filas que comparten `created_at` para que la paginación sea estable (la
+   * fila repetida o saltada no puede ocurrir al paginar).
+   *
+   * `bond_id` es NULLABLE ⇒ con `bondId` las notificaciones SIN bond quedan
+   * fuera (igualdad simple). NUNCA `COALESCE`: `COALESCE(bond_id, :bondId)`
+   * reintroduciría las notificaciones sin bond y rompería el filtro.
+   */
+  async listForUser(
+    userId: string,
+    options: ListNotificationsOptions,
+  ): Promise<ListNotificationsResult> {
+    const [items, total] = await Promise.all([
+      this.scopedQuery(userId, options)
+        .orderBy('n.created_at', 'DESC')
+        .addOrderBy('n.id', 'DESC')
+        .limit(options.limit)
+        .offset(options.offset)
+        .getMany(),
+      this.scopedQuery(userId, options).getCount(),
+    ]);
+
+    return { items, total };
+  }
+
+  /**
+   * Cuenta las no leídas del usuario (`COUNT(*)` equivalente vía `getCount()`).
+   *
+   * Con `bondId` sólo cuenta las de ese bond; las notificaciones sin bond
+   * (`bond_id IS NULL`) quedan fuera (misma semántica que el listado).
+   */
+  async countUnread(userId: string, bondId?: string): Promise<number> {
+    const qb = this.notifRepo
+      .createQueryBuilder('n')
+      .where('n.user_id = :userId', { userId })
+      .andWhere('n.is_read = false');
+
+    if (bondId) {
+      qb.andWhere('n.bond_id = :bondId', { bondId });
+    }
+
+    return qb.getCount();
+  }
+
+  /**
+   * Marca UNA notificación como leída.
+   *
+   * `UPDATE … SET is_read = true WHERE user_id = :userId AND id = :id` es
+   * ATÓMICO (no hay read-modify-write) y su alcance es doble: el `user_id`
+   * impide tocar filas ajenas y el `affected` distingue "no existe" de
+   * "existe pero es de otro" — indistinguibles a propósito (404, sin oráculo
+   * de existencia).
+   *
+   * @returns nº de filas afectadas (0 = no existe o es ajena).
+   */
+  async markRead(id: string, userId: string): Promise<number> {
+    const result = await this.notifRepo
+      .createQueryBuilder()
+      .update(NotificationEntity)
+      .set({ isRead: true })
+      .where('user_id = :userId', { userId })
+      .andWhere('id = :id', { id })
+      .execute();
+
+    return result.affected ?? 0;
+  }
+
+  /**
+   * Marca TODAS las no leídas del usuario como leídas.
+   *
+   * El `AND is_read = false` hace que `affected` sea el nº de filas NUEVAMENTE
+   * leídas (re-marcar lo ya leído no cuenta) y que la operación sea idempotente.
+   * Con `bondId` sólo se tocan las de ese bond.
+   */
+  async markAllRead(userId: string, bondId?: string): Promise<number> {
+    const qb = this.notifRepo
+      .createQueryBuilder()
+      .update(NotificationEntity)
+      .set({ isRead: true })
+      .where('user_id = :userId', { userId })
+      .andWhere('is_read = false');
+
+    if (bondId) {
+      qb.andWhere('bond_id = :bondId', { bondId });
+    }
+
+    const result = await qb.execute();
+    return result.affected ?? 0;
+  }
+
+  /**
+   * Purga las notificaciones ANTERIORES al corte (retención, slice 1).
+   *
+   * Política vigente (ruling #1553): se borran TODAS las filas más antiguas
+   * que la ventana de retención, LEÍDAS Y NO LEÍDAS — una notificación sin
+   * leer que envejezca más allá de la ventana también se elimina (consecuencia
+   * aceptada explícitamente en la spec "Retention policy"). El criterio es
+   * exclusivamente TEMPORAL: `source_event_id` es irrelevante para la
+   * retención, aunque el fan-out ya escriba UUIDs en las filas nuevas (NULL en
+   * las legadas) ⇒ no puede cambiar el resultado del borrado.
+   *
+   * El `options.onlyRead` existe para que un cambio de política futuro
+   * ("las leídas a N días, las no leídas a M días") sea una SEGUNDA llamada
+   * con un SEGUNDO corte, NO una reescritura de este método.
+   *
+   * El SQL vive AQUÍ (regla de casa: los servicios nunca tocan TypeORM); el
+   * servicio de retención resuelve el corte/política y registra el recuento.
+   *
+   * @param cutoff instante EXCLUSIVO: se borra lo que sea anterior a él.
+   * @param options.onlyRead `true` ⇒ añade `AND is_read = true`.
+   * @returns nº de filas borradas (0 si no había ninguna).
+   */
+  async purgeOlderThan(cutoff: Date, options: { onlyRead?: boolean } = {}): Promise<number> {
+    const qb = this.notifRepo
+      .createQueryBuilder()
+      .delete()
+      .from(NotificationEntity)
+      .where('created_at < :cutoff', { cutoff });
+
+    if (options.onlyRead === true) {
+      qb.andWhere('is_read = true');
+    }
+
+    const result = await qb.execute();
+
+    return result.affected ?? 0;
+  }
+
+  /**
+   * QueryBuilder con el scoping por `user_id` + los filtros opcionales.
+   *
+   * Se construye uno por consulta (filas y `total`) para que el `COUNT` no
+   * arrastre el `ORDER BY` de la página.
+   */
+  private scopedQuery(userId: string, options: { unreadOnly?: boolean; bondId?: string }) {
+    const qb = this.notifRepo.createQueryBuilder('n').where('n.user_id = :userId', { userId });
+
+    if (options.unreadOnly) {
+      qb.andWhere('n.is_read = false');
+    }
+
+    if (options.bondId) {
+      qb.andWhere('n.bond_id = :bondId', { bondId: options.bondId });
+    }
+
+    return qb;
+  }
+}

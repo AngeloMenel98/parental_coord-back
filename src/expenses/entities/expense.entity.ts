@@ -4,13 +4,14 @@ import {
   Entity,
   JoinColumn,
   ManyToOne,
-  OneToMany,
   PrimaryGeneratedColumn,
   UpdateDateColumn,
 } from 'typeorm';
 import { BondEntity } from '../../bonds/entities/bond.entity';
 import { UserEntity } from '../../users/entities/user.entity';
 import { ChildEntity } from '../../children/entities/child.entity';
+import { CategoryEntity } from '../../categories/entities/category.entity';
+import { ActivityEntity } from '../../activities/entities/activity.entity';
 
 export enum ExpenseStatus {
   PENDING = 'pending',
@@ -37,6 +38,31 @@ export class ExpenseEntity {
   @ManyToOne(() => ChildEntity, { onDelete: 'SET NULL', nullable: true })
   @JoinColumn({ name: 'child_id' })
   child!: ChildEntity | null;
+
+  /**
+   * R2 · Una sola taxonomía: la MISMA tabla `category` que ya usa una actividad.
+   * Nullable porque los gastos históricos no tienen categoría y elegir una por
+   * ellos sería inventar un dato contable; que sea obligatoria al crear es regla
+   * del DTO (`CreateExpenseDto`, T22), no del esquema.
+   */
+  @Column({ type: 'uuid', nullable: true, name: 'category_id' })
+  categoryId!: string | null;
+
+  @ManyToOne(() => CategoryEntity, { onDelete: 'RESTRICT', nullable: true })
+  @JoinColumn({ name: 'category_id' })
+  category!: CategoryEntity | null;
+
+  /**
+   * R6/D-17 · Actividad de la que nació el gasto (adjunto convertido). Nullable:
+   * no todo gasto viene de una actividad. `SET NULL` para que borrar la actividad
+   * nunca se lleve puesta la fila de plata.
+   */
+  @Column({ type: 'uuid', nullable: true, name: 'activity_id' })
+  activityId!: string | null;
+
+  @ManyToOne(() => ActivityEntity, { onDelete: 'SET NULL', nullable: true })
+  @JoinColumn({ name: 'activity_id' })
+  activity!: ActivityEntity | null;
 
   @Column({ type: 'varchar', length: 255, name: 'concept' })
   concept!: string;
@@ -83,6 +109,14 @@ export class ExpenseEntity {
 
   @Column({ type: 'timestamptz', nullable: true, name: 'paid_at' })
   paidAt!: Date | null;
+
+  /**
+   * "Eliminar" de un gasto, con la convención de `activity.deleted_at`: la fila
+   * se queda con la marca y las lecturas filtran `deleted_at IS NULL`. No hay
+   * purga ni cascada.
+   */
+  @Column({ type: 'timestamptz', nullable: true, name: 'deleted_at' })
+  deletedAt!: Date | null;
 
   @CreateDateColumn({ type: 'timestamptz', name: 'created_at' })
   createdAt!: Date;

@@ -1,0 +1,157 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: parental-coordination-postgres
+    environment:
+      POSTGRES_USER: parental
+      POSTGRES_PASSWORD: parental_secret
+      POSTGRES_DB: parental_coordination
+    ports:
+      - '5432:5432'
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U parental -d parental_coordination']
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    container_name: parental-coordination-redis
+    command: ['redis-server', '--appendonly', 'yes']
+    ports:
+      - '6379:6379'
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ['CMD-SHELL', 'redis-cli ping']
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # One-shot schema migrator.
+  #
+  # Runs the TypeORM CLI that is already baked into the image before the API or
+  # the worker boot. Compose had no migration step at all, so both containers
+  # started against whatever schema happened to exist (k8s solved the same
+  # problem with the `migrations` initContainer in app-deployment.yaml).
+  # Release gate W3.
+  #
+  # `restart: 'no'` is intentional: this container must exit 0, not loop.
+  migrate:
+    build: .
+    container_name: parental-coordination-migrate
+    command:
+      [
+        'node',
+        'node_modules/typeorm/cli.js',
+        'migration:run',
+        '-d',
+        'dist/src/database/data-source.js',
+      ]
+    environment:
+      - NODE_ENV=production
+      - DB_HOST=postgres
+      - DB_PORT=5432
+      - DB_USER=parental
+      - DB_PASSWORD=parental_secret
+      - DB_NAME=parental_coordination
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: 'no'
+
+  api:
+    build: .
+    container_name: parental-coordination-api
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+      - DB_HOST=postgres
+      - DB_PORT=5432
+      - DB_USER=parental
+      - DB_PASSWORD=parental_secret
+      - DB_NAME=parental_coordination
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - JWT_SECRET=dev-secret
+      - JWT_EXPIRES_IN=7d
+      - REALTIME_PUBLISH_ENABLED=true
+      # Cloud storage. Read from the same .env the host uses; empty values keep
+      # StorageService disabled (attachments return "Storage not configured").
+      - SUPABASE_URL=${SUPABASE_URL:-}
+      - SUPABASE_SERVICE_ROLE_KEY=${SUPABASE_SERVICE_ROLE_KEY:-}
+      - SUPABASE_STORAGE_BUCKET_ACTIVITY_ATTACHMENTS=${SUPABASE_STORAGE_BUCKET_ACTIVITY_ATTACHMENTS:-activity-attachments}
+      # Report PDFs: the worker uploads them and the API signs their download URL.
+      # Without this line both fall back to the bare 'reports' bucket while the host
+      # creates 'reports-dev', and every PDF lookup 400s inside the container.
+      - SUPABASE_STORAGE_BUCKET_REPORTS=${SUPABASE_STORAGE_BUCKET_REPORTS:-reports}
+      - ATTACHMENTS_MAX_SIZE_BYTES=${ATTACHMENTS_MAX_SIZE_BYTES:-10485760}
+    ports:
+      - '3000:3000'
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test:
+        [
+          'CMD',
+          'node',
+          '-e',
+          "fetch('http://127.0.0.1:3000/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    restart: unless-stopped
+
+  worker:
+    build: .
+    container_name: parental-coordination-worker
+    command: ['node', 'dist/src/worker.main.js']
+    environment:
+      - NODE_ENV=production
+      - DB_HOST=postgres
+      - DB_PORT=5432
+      - DB_USER=parental
+      - DB_PASSWORD=parental_secret
+      - DB_NAME=parental_coordination
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - JWT_SECRET=dev-secret
+      - JWT_EXPIRES_IN=7d
+      - REALTIME_PUBLISH_ENABLED=true
+      - SUPABASE_URL=${SUPABASE_URL:-}
+      - SUPABASE_SERVICE_ROLE_KEY=${SUPABASE_SERVICE_ROLE_KEY:-}
+      - SUPABASE_STORAGE_BUCKET_ACTIVITY_ATTACHMENTS=${SUPABASE_STORAGE_BUCKET_ACTIVITY_ATTACHMENTS:-activity-attachments}
+      # Report PDFs: the worker uploads them and the API signs their download URL.
+      # Without this line both fall back to the bare 'reports' bucket while the host
+      # creates 'reports-dev', and every PDF lookup 400s inside the container.
+      - SUPABASE_STORAGE_BUCKET_REPORTS=${SUPABASE_STORAGE_BUCKET_REPORTS:-reports}
+      - ATTACHMENTS_MAX_SIZE_BYTES=${ATTACHMENTS_MAX_SIZE_BYTES:-10485760}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ['CMD', 'kill', '-0', '1']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    restart: unless-stopped
+
+volumes:
+  postgres-data:
+  redis-data:

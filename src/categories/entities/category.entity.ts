@@ -6,6 +6,8 @@ import {
   PrimaryGeneratedColumn,
   UpdateDateColumn,
 } from 'typeorm';
+import { Criticality } from '../../common/enums/criticality.enum';
+export { Criticality };
 
 @Entity('category')
 export class CategoryEntity {
@@ -23,6 +25,9 @@ export class CategoryEntity {
 
   @Column({ type: 'varchar', length: 50, nullable: true, name: 'icon' })
   icon!: string | null;
+
+  @Column({ type: 'enum', enum: Criticality, default: Criticality.MEDIUM, name: 'criticality' })
+  criticality!: Criticality;
 
   @Column({ type: 'boolean', default: true, name: 'is_active' })
   isActive!: boolean;

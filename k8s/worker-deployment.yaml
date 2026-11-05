@@ -1,0 +1,76 @@
+# Worker Deployment for parental_coordination_back.
+#
+# Same image as the API, different entrypoint. The worker owns everything that
+# must not run inside an HTTP request:
+#   - webhook delivery jobs (BullMQ `webhook-delivery`)
+#   - activity timers (overdue transitions)
+#   - notification fan-out from outbox events + the daily retention purge
+#   - realtime publishing (`REALTIME_PUBLISH_ENABLED`, default true)
+#
+# Why this exists: `k8s/` had no worker Deployment, so on a cluster the outbox
+# was never drained, webhooks never delivered, no notification was ever written
+# and retention never ran. Release gate W3.
+#
+# - No Service, no ports, no ingress: the worker is a pure consumer.
+# - envFrom app-config + app-secret — the SAME env as the API. A worker with a
+#   diverging env is the classic way a queue silently stops being consumed.
+# - Migrations are NOT run here: app-deployment.yaml owns them through its
+#   `migrations` initContainer. On a first rollout the worker may restart a few
+#   times until the schema exists; that is expected and self-healing. The API
+#   must be applied (and its initContainer finished) before the worker is useful.
+# - replicas: 1 on purpose. BullMQ tolerates more than one consumer, but the
+#   retention scheduler is set up per process and the webhook processors are
+#   concurrency-capped per pod; scale only with load evidence.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: parental-coordination-worker
+  labels:
+    app: parental-coordination-worker
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: parental-coordination-worker
+  template:
+    metadata:
+      labels:
+        app: parental-coordination-worker
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+      containers:
+        - name: worker
+          image: parental-coordination-back:latest
+          imagePullPolicy: IfNotPresent
+          command: ['node', 'dist/src/worker.main.js']
+          envFrom:
+            - configMapRef:
+                name: app-config
+            - secretRef:
+                name: app-secret
+          securityContext:
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+          # Process-liveness only: PID 1 is the Nest worker. A hung job is not
+          # detectable this way; BullMQ retries jobs, and a dead process exits
+          # and is restarted by the Deployment anyway.
+          livenessProbe:
+            exec:
+              command: ['/bin/sh', '-c', 'kill -0 1']
+            initialDelaySeconds: 15
+            periodSeconds: 20
+            timeoutSeconds: 3
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 300m
+              memory: 256Mi
