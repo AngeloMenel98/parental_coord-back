@@ -9,11 +9,7 @@ import {
 } from '@nestjs/common';
 import { plainToInstance } from 'class-transformer';
 
-import {
-  ActivitiesRepository,
-  ApplyTransitionFields,
-  ApplyTransitionNotification,
-} from './repositories/activities.repository';
+import { ActivitiesRepository, ApplyTransitionFields } from './repositories/activities.repository';
 import {
   resolveInitial,
   resolveTransition,
@@ -24,7 +20,6 @@ import { TimerKind } from '../queues/activity-timers/activity-timers.constants';
 import { timerOpsForTransition } from '../queues/activity-timers/activity-timers.ops';
 import { ActivityChildRepository } from './repositories/activity-child.repository';
 import { ActivityEntity, ActivityStatus, ActivityType } from './entities/activity.entity';
-import { NotificationRepository } from '../notifications/repositories/notification.repository';
 import {
   BondMembersRepository,
   ComplianceMemberRow,
@@ -37,7 +32,7 @@ import { CompleteActivityResponseDto } from './dto/complete-activity-response.dt
 import { parseActivityReason } from './dto/activity-reason.validator';
 import { CategoryEntity } from '../categories/entities/category.entity';
 import { Clock } from '../common/clock/clock';
-import { ActivityPolicyService } from './activity-policy.service';
+import { ActivityPolicyService, overdueOrigin } from './activity-policy.service';
 import {
   activityForbidden,
   activityInvalidTransition,
@@ -70,7 +65,6 @@ export class ActivitiesService {
   constructor(
     private readonly activitiesRepo: ActivitiesRepository,
     private readonly activityChildRepo: ActivityChildRepository,
-    private readonly notificationRepo: NotificationRepository,
 
     @Inject(forwardRef(() => BondsService))
     private readonly bondService: BondsService,
@@ -133,6 +127,22 @@ export class ActivitiesService {
     }
   }
 
+  /**
+   * R16 · Minimum lead time for writes that change `scheduledStart`. Shared
+   * between create and the future edit route: existing activities are never
+   * re-validated.
+   */
+  private assertMinimumLeadTime(scheduledStart: string): void {
+    const start = new Date(scheduledStart);
+    const now = this.clock.now().getTime();
+    const hours = this.config.get<number>('MIN_LEAD_TIME_HOURS') ?? 48;
+    if (start.getTime() < now + hours * 60 * 60 * 1000) {
+      throw new BadRequestException(
+        'La actividad debe programarse con al menos 48 horas de anticipación',
+      );
+    }
+  }
+
   private async loadForMember(
     id: string,
     userId: string,
@@ -181,13 +191,24 @@ export class ActivitiesService {
     if (isSystem) {
       if (!rule.actors.includes('system')) return activity;
     } else {
-      // A user must never trigger a system-only rule (T7/T10).
+      // A user must never trigger a system-only rule (T7/T10/T12/T14/T16).
       if (!rule.actors.includes('bond_member') && !rule.actors.includes('assignee')) {
         throw activityForbidden('This transition is system-only');
       }
       if (rule.requireAssignee && activity.assignedTo !== userId) {
         throw activityForbidden('Only the assignee can perform this action');
       }
+    }
+
+    // T8 origin guard: late acceptance/decline is only allowed when overdue
+    // originated from `assigned`. The origin comes from `overdueOrigin()` — the
+    // SAME function the policy uses, so the two cannot drift apart.
+    if (rule.id === 'T8' && overdueOrigin(activity) !== 'assigned') {
+      throw activityInvalidTransition(
+        activity.status,
+        req.to,
+        'Late response is only allowed when overdue originated from assigned',
+      );
     }
 
     const actorRole = userId ? await this.resolveActorRole(activity.bondId, userId) : null;
@@ -198,10 +219,6 @@ export class ActivitiesService {
       reason: req.reason ?? null,
     });
     if (req.fields) Object.assign(fields, req.fields);
-
-    // T7 notifies the parental coordinator; resolved pre-tx so the write joins
-    // the SAME transaction as the status change (REQ-ACTOR-3, design D9).
-    const notification = await this.resolveOverdueNotification(rule, activity);
 
     const updated = await this.activitiesRepo.applyTransition({
       id: activity.id,
@@ -222,7 +239,6 @@ export class ActivitiesService {
           ...req.payloadExtra,
         },
       },
-      notification,
     });
 
     if (!updated) {
@@ -237,10 +253,9 @@ export class ActivitiesService {
   }
 
   /**
-   * SYSTEM entry for the OVERDUE transition (T7). Called by the timer processor
-   * and the reconciliation sweep (E9). A missing row is a 404; a stale/invalid
-   * source state (e.g. no longer `assigned`) is a silent no-op (timers never
-   * surface a conflict).
+   * SYSTEM entry for the OVERDUE transition (T7/T14/T16). Called by the timer
+   * processor and the reconciliation sweep (E9). A missing row is a 404; a
+   * stale/invalid source state is a silent no-op (timers never surface a conflict).
    */
   async markOverdue(activityId: string): Promise<ActivityEntity | null> {
     const activity = await this.activitiesRepo.findById(activityId);
@@ -266,30 +281,6 @@ export class ActivitiesService {
         `System transition ${activityId} → ${to} no-op: ${(error as Error).message}`,
       );
     }
-  }
-
-  /**
-   * T7 coordinator notice, resolved before the tx and written by the repository
-   * inside it. No coordinator ⇒ skip + log (normal, not an error, REQ-ACTOR-3).
-   */
-  private async resolveOverdueNotification(
-    rule: { id: string },
-    activity: ActivityEntity,
-  ): Promise<ApplyTransitionNotification | undefined> {
-    if (rule.id !== 'T7') return undefined;
-
-    const coordinator = await this.bondMembersRepo.findCoordinator(activity.bondId);
-    if (!coordinator) {
-      this.logger.warn(`No coordinator in bond ${activity.bondId}; T7 notification skipped`);
-      return undefined;
-    }
-
-    return {
-      userId: coordinator.userId,
-      type: 'activity_overdue',
-      title: activity.title,
-      body: `Activity overdue: ${activity.title}`,
-    };
   }
 
   /** Bond-scoped actor role (REQ-ACTOR-1, design D2); `null` for system. */
@@ -329,6 +320,15 @@ export class ActivitiesService {
     if (effects.declinedAt === true) {
       fields.declinedAt = ctx.now;
       if (ctx.reason != null) fields.declinedReason = ctx.reason;
+    } else if (effects.declinedAt === false) {
+      fields.declinedAt = null;
+      fields.declinedReason = null;
+    }
+
+    if (effects.verifyAt === true) {
+      fields.verifyAt = ctx.now;
+    } else if (effects.verifyAt === false) {
+      fields.verifyAt = null;
     }
 
     return fields;
@@ -369,6 +369,8 @@ export class ActivitiesService {
         return entity.scheduledStart;
       case TimerKind.END:
         return entity.scheduledEnd ?? entity.scheduledStart;
+      case TimerKind.VERIFY_TIMEOUT:
+        return entity.deadline;
       default:
         return null;
     }
@@ -381,6 +383,7 @@ export class ActivitiesService {
 
   async create(bondId: string, dto: CreateActivityDto, userId: string): Promise<ActivityEntity> {
     this.validateSchedules(dto.scheduledStart, dto.scheduledEnd);
+    this.assertMinimumLeadTime(dto.scheduledStart);
 
     await this.assertBondMember(bondId, userId);
 
@@ -414,9 +417,8 @@ export class ActivitiesService {
       assignedTo,
       scheduledStart: new Date(dto.scheduledStart),
       scheduledEnd: dto.scheduledEnd ? new Date(dto.scheduledEnd) : null,
-      // T2 side-effect: entering `assigned` sets the response anchor (REQ-MODEL-2).
-      deadline:
-        initial.status === ActivityStatus.ASSIGNED ? this.computeResponseDeadline(now) : null,
+      // T1/T2 side-effect: the response window opens at create for both states.
+      deadline: this.computeResponseDeadline(now),
       notifBefore: NOTIF_BEFORE,
       notifAfter: NOTIF_AFTER,
     };
@@ -437,20 +439,6 @@ export class ActivitiesService {
       );
 
       await this.activityChildRepo.saveChildrenFor(created.id, dto.childrenIds, manager);
-
-      if (assignedTo) {
-        await this.notificationRepo.createForActivity(
-          {
-            userId: assignedTo,
-            bondId,
-            type: 'activity_assigned',
-            title: dto.title,
-            body: `New activity assigned: ${dto.title}`,
-            refEntityId: created.id,
-          },
-          manager,
-        );
-      }
 
       return created;
     });
@@ -474,7 +462,8 @@ export class ActivitiesService {
   }
 
   async getDetail(id: string, userId: string): Promise<ActivityDetailDto> {
-    const activity = await this.findById(id);
+    const activity = await this.activitiesRepo.findByIdWithChildren(id);
+    if (!activity) throw activityNotFound();
 
     await this.assertActivityMember(activity, userId);
 
@@ -494,7 +483,8 @@ export class ActivitiesService {
     const activity = await this.findById(id);
     await this.assertActivityMember(activity, userId);
 
-    // T11: only `in_progress -> done`. Any other source (incl. terminal) => 409.
+    // T11 (cierre temprano desde `in_progress`) y T13 (cierre desde la ventana
+    // de verificación). Cualquier otro origen —terminal incluido— es 409.
     const updated = await this.transition({
       activityId: id,
       to: ActivityStatus.DONE,
@@ -624,6 +614,65 @@ export class ActivitiesService {
       id,
       status: ActivityStatus.NOT_ASSISTING,
       declinedAt: (updated.declinedAt ?? now).toISOString(),
+    };
+  }
+
+  /**
+   * T3 (`created` → `assigned`). Any bond member may assign the activity to
+   * themselves or to another member. Membership validation is the service's job
+   * (E5); the policy only reports the flag.
+   *
+   * The response is NARROW on purpose: this module answers the other actions with
+   * `{ id, status, … }`, not with the row. Returning the entity would publish the
+   * internal columns (`version`, `bondId`, `deletedAt`) that no client needs.
+   */
+  async assign(
+    id: string,
+    userId: string,
+    assignedTo?: string,
+  ): Promise<{ id: string; status: string; assignedTo: string | null }> {
+    return this.reassignInternal(id, userId, assignedTo);
+  }
+
+  /**
+   * T9 (`not_assisting` → `assigned`). Reassignment starts the new assignee from
+   * a clean sheet: the transition clears `declined_at`/`confirmed_at`.
+   */
+  async reassign(
+    id: string,
+    userId: string,
+    assignedTo?: string,
+  ): Promise<{ id: string; status: string; assignedTo: string | null }> {
+    return this.reassignInternal(id, userId, assignedTo);
+  }
+
+  private async reassignInternal(
+    id: string,
+    userId: string,
+    assignedTo?: string,
+  ): Promise<{ id: string; status: string; assignedTo: string | null }> {
+    const activity = await this.loadForMember(id, userId);
+    const targetId = assignedTo ?? userId;
+
+    // A provided target must be an active bond member; 404 without revealing
+    // whether that user exists at all (T21).
+    if (assignedTo !== undefined) {
+      const isMember = await this.bondService.isActiveBondForMember(activity.bondId, targetId);
+      if (!isMember) throw activityNotFound();
+    }
+
+    const updated = await this.transition({
+      activityId: id,
+      to: ActivityStatus.ASSIGNED,
+      actor: { kind: 'user', userId },
+      fields: { assignedTo: targetId },
+    });
+    if (!updated) throw activityInvalidTransition(activity.status, ActivityStatus.ASSIGNED);
+
+    return {
+      id: updated.id,
+      status: updated.status,
+      assignedTo: updated.assignedTo ?? null,
     };
   }
 

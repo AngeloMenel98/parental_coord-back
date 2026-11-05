@@ -4,7 +4,12 @@
 # live in separate Secret resources and are referenced via envFrom secretRef.
 #
 # DB_HOST=postgres resolves to the headless Service in-cluster (k8s/postgres-service.yaml).
+# REDIS_HOST=redis resolves to the Redis Service in-cluster (k8s/redis-service.yaml).
 # The app listens on PORT=3000 internally; the Service exposes it.
+#
+# Shared by the API Deployment AND the worker Deployment (both use envFrom):
+# keep queue-related values here, not in the Deployments, or the two processes
+# will drift apart.
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -16,8 +21,17 @@ data:
   DB_HOST: "postgres"
   DB_PORT: "5432"
   DB_NAME: "parental_coordination"
+  REDIS_HOST: "redis"
+  REDIS_PORT: "6379"
   JWT_EXPIRES_IN: "24h"
   PORT: "3000"
   CORS_ORIGINS: "http://localhost:3000"
   THROTTLE_TTL: "60000"
   THROTTLE_LIMIT: "100"
+  # Emergency brakes (runbook: Engram sdd/notifications-fanout/runbook #1591).
+  # `NOTIFICATIONS_FANOUT_ENABLED=false` keeps webhooks + dispatched marking but
+  # writes zero notifications; `REALTIME_PUBLISH_ENABLED=false` stops publishing
+  # `activity.changed` to Redis. Both are read by the worker; restart its pod
+  # after flipping them (env is only read at boot).
+  NOTIFICATIONS_FANOUT_ENABLED: "true"
+  REALTIME_PUBLISH_ENABLED: "true"

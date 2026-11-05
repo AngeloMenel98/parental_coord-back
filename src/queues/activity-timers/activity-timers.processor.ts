@@ -13,20 +13,22 @@ import { ActivitiesRepository } from '../../activities/repositories/activities.r
 import { ActivityTimersSweep } from './activity-timers.sweep';
 
 /** State that must still hold for a timer of `kind` to be valid (REQ-TIMER-2). */
-export function expectedSourceFor(kind: TimerKind): ActivityStatus | null {
+export function expectedSourceFor(kind: TimerKind): ActivityStatus | ActivityStatus[] | null {
   switch (kind) {
     case TimerKind.RESPONSE_TIMEOUT:
-      return ActivityStatus.ASSIGNED;
+      return [ActivityStatus.CREATED, ActivityStatus.ASSIGNED];
     case TimerKind.START:
       return ActivityStatus.ASSISTING;
     case TimerKind.END:
       return ActivityStatus.IN_PROGRESS;
+    case TimerKind.VERIFY_TIMEOUT:
+      return ActivityStatus.VERIFY;
     default:
       return null;
   }
 }
 
-/** Target system transition for a timer of `kind` (REQ-TIMER-8): T7/T10/T11. */
+/** Target system transition for a timer of `kind` (REQ-TIMER-8): T7/T10/T12/T14/T16. */
 export function targetStatusFor(kind: TimerKind): ActivityStatus | null {
   switch (kind) {
     case TimerKind.RESPONSE_TIMEOUT:
@@ -34,7 +36,9 @@ export function targetStatusFor(kind: TimerKind): ActivityStatus | null {
     case TimerKind.START:
       return ActivityStatus.IN_PROGRESS;
     case TimerKind.END:
-      return ActivityStatus.DONE;
+      return ActivityStatus.VERIFY;
+    case TimerKind.VERIFY_TIMEOUT:
+      return ActivityStatus.OVERDUE;
     default:
       return null;
   }
@@ -97,11 +101,14 @@ export class ActivityTimersProcessor extends WorkerHost implements OnModuleInit 
     }
 
     const expected = expectedSourceFor(data.kind);
-    if (expected && activity.status !== expected) {
-      this.logger.log(
-        `${data.kind} timer for ${data.activityId} expects ${expected} but is ${activity.status}; no-op`,
-      );
-      return;
+    if (expected) {
+      const expectedSet = Array.isArray(expected) ? expected : [expected];
+      if (!expectedSet.includes(activity.status)) {
+        this.logger.log(
+          `${data.kind} timer for ${data.activityId} expects ${expectedSet.join('|')} but is ${activity.status}; no-op`,
+        );
+        return;
+      }
     }
 
     const to = targetStatusFor(data.kind);

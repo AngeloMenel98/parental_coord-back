@@ -86,6 +86,12 @@ export class AppConfig {
   @IsInt()
   RESPONSE_TIMEOUT_HOURS?: number;
 
+  /** Minimum lead time (hours) between now and scheduledStart on create/edit. */
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  MIN_LEAD_TIME_HOURS?: number;
+
   // --- Webhooks (design D12) — every key optional, defaults applied here. ---
 
   /** Payload-only API version constant; NOT URL versioning. */
@@ -164,6 +170,29 @@ export class AppConfig {
   @IsOptional()
   @IsString()
   REALTIME_PUBLISH_ENABLED?: string = 'true';
+
+  // --- Notifications (design D8) — every key optional, defaults applied here. ---
+
+  /** Notifications (read and unread alike) are purged after N days. */
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  NOTIFICATIONS_RETENTION_DAYS?: number = 30;
+
+  /** Retention purge interval (ms) — one purge per day by default. */
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  NOTIFICATIONS_RETENTION_INTERVAL_MS?: number = 86_400_000;
+
+  /**
+   * Emergency brake for outbox → notification fan-out (worker-only, default on).
+   * `'false'` ⇒ the worker still delivers webhooks and marks events dispatched,
+   * but writes zero notifications (events are not paused/replayed).
+   */
+  @IsOptional()
+  @IsString()
+  NOTIFICATIONS_FANOUT_ENABLED?: string = 'true';
 }
 
 export function validateConfig(config: Record<string, unknown>): AppConfig {

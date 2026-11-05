@@ -5,9 +5,12 @@ import { ACTIVITY_EVENT } from '../../activities/activity-transition.map';
  *
  * `PRODUCED_ACTIVITY_EVENT_TYPES` se DERIVA del mapa de transiciones
  * (`ACTIVITY_EVENT`) para que el catálogo nunca se desincronice de lo que el
- * productor realmente emite: son exactamente los nueve `activity.*` de T1–T11/T15.
+ * productor realmente emite: son los `activity.*` de T1–T16 excepto los
+ * catalogados pero no emitidos.
  */
-export const PRODUCED_ACTIVITY_EVENT_TYPES: readonly string[] = Object.values(ACTIVITY_EVENT);
+export const PRODUCED_ACTIVITY_EVENT_TYPES: readonly string[] = Object.values(
+  ACTIVITY_EVENT,
+).filter((type) => type !== ACTIVITY_EVENT.UNASSIGNED);
 
 /**
  * `activity.state_changed` es VIRTUAL: el productor NUNCA lo emite; el dispatcher
@@ -16,10 +19,13 @@ export const PRODUCED_ACTIVITY_EVENT_TYPES: readonly string[] = Object.values(AC
 export const WEBHOOK_VIRTUAL_EVENT_TYPE = 'activity.state_changed';
 
 /**
- * `activity.verify` está CATALOGADO pero NO se emite hasta que exista el flujo de
- * verificación (REQ-EVT-1, AC-19: out of scope hoy).
+ * Eventos catalogados pero NO emitidos hoy. `activity.unassigned` sobrevive como
+ * constante pública de contrato de webhooks (un suscriptor puede filtrar por él)
+ * aunque T4 fue removido y ya no hay productor (REQ-EVT-1, AC-21).
  */
-export const WEBHOOK_CATALOGUED_NOT_EMITTED_EVENT_TYPE = 'activity.verify';
+export const WEBHOOK_CATALOGUED_NOT_EMITTED_EVENT_TYPES: readonly string[] = [
+  ACTIVITY_EVENT.UNASSIGNED,
+];
 
 /** Cómo se ve cada tipo en `GET /event-types`. */
 export interface EventCatalogEntry {
@@ -32,15 +38,18 @@ export interface EventCatalogEntry {
 }
 
 /**
- * Catálogo completo que sirve `GET /event-types` (T-W1.29): los nueve tipos
- * producidos, el virtual `activity.state_changed` y el catalogado-no-emitido
- * `activity.verify`.
+ * Catálogo completo que sirve `GET /event-types` (T-W1.29): los tipos
+ * producidos, el virtual `activity.state_changed` y los catalogados-no-emitidos.
  */
 export function listEventCatalog(): EventCatalogEntry[] {
   return [
     ...PRODUCED_ACTIVITY_EVENT_TYPES.map((type) => ({ type, emitted: true, virtual: false })),
     { type: WEBHOOK_VIRTUAL_EVENT_TYPE, emitted: false, virtual: true },
-    { type: WEBHOOK_CATALOGUED_NOT_EMITTED_EVENT_TYPE, emitted: false, virtual: false },
+    ...WEBHOOK_CATALOGUED_NOT_EMITTED_EVENT_TYPES.map((type) => ({
+      type,
+      emitted: false,
+      virtual: false,
+    })),
   ];
 }
 

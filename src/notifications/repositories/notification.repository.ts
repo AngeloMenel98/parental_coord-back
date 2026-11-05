@@ -14,6 +14,15 @@ export interface CreateNotificationInput {
   body: string;
   refEntityType: string;
   refEntityId?: string | null;
+  /**
+   * Evento de `outbox_event` que originó la notificación (slice 2).
+   *
+   * `undefined`/`null` ⇒ se persiste NULL, que es lo que siguen haciendo los
+   * call-sites históricos (`webhook_disabled`, filas legadas). Sólo el fan-out
+   * del worker escribe un UUID y, por tanto, participa del índice único
+   * parcial `(user_id, source_event_id) WHERE source_event_id IS NOT NULL`.
+   */
+  sourceEventId?: string | null;
 }
 
 /** Filtros del listado de notificaciones del usuario (read path). */
@@ -76,9 +85,57 @@ export class NotificationRepository extends BaseRepository<NotificationEntity> {
         body: input.body,
         refEntityType: input.refEntityType,
         refEntityId: input.refEntityId ?? null,
+        sourceEventId: input.sourceEventId ?? null,
         isRead: false,
       }),
     );
+  }
+
+  /**
+   * Inserta la notificación de UN destinatario ligada a un `outbox_event`
+   * (fan-out, REQ-FAN-001/REQ-FAN-005).
+   *
+   * `ON CONFLICT DO NOTHING` (`orIgnore()`) sobre el índice único parcial
+   * `(user_id, source_event_id) WHERE source_event_id IS NOT NULL` convierte un
+   * re-dispatch del mismo evento en un no-op: devuelve `null` sin lanzar
+   * `23505`. Esto es deliberado (R6): un `save()` explotaría y abortaría la
+   * transacción de dispatch, dejando el evento sin `dispatched_at` para
+   * siempre. Por eso esta ruta NUNCA usa `save()`.
+   *
+   * La entidad devuelta es deliberadamente MÍNIMA (sólo el `id` es
+   * significativo): el fan-out sólo necesita contar creadas vs. ignoradas, no
+   * leer la fila de vuelta.
+   */
+  async createFromEvent(
+    input: CreateNotificationInput & { sourceEventId: string },
+    manager?: EntityManager,
+  ): Promise<NotificationEntity | null> {
+    const repo = manager ? manager.getRepository(NotificationEntity) : this.notifRepo;
+    const values = {
+      userId: input.userId,
+      bondId: input.bondId,
+      type: input.type,
+      title: input.title,
+      body: input.body,
+      refEntityType: input.refEntityType,
+      refEntityId: input.refEntityId ?? null,
+      sourceEventId: input.sourceEventId,
+      isRead: false,
+    };
+
+    const result = await repo
+      .createQueryBuilder()
+      .insert()
+      .into(NotificationEntity)
+      .values(values)
+      .orIgnore()
+      .returning('id')
+      .execute();
+
+    const rows = (result.raw as Array<{ id?: string }> | undefined) ?? [];
+    const id = rows[0]?.id;
+
+    return id ? repo.create({ ...values, id }) : null;
   }
 
   /**
@@ -195,6 +252,44 @@ export class NotificationRepository extends BaseRepository<NotificationEntity> {
     }
 
     const result = await qb.execute();
+    return result.affected ?? 0;
+  }
+
+  /**
+   * Purga las notificaciones ANTERIORES al corte (retención, slice 1).
+   *
+   * Política vigente (ruling #1553): se borran TODAS las filas más antiguas
+   * que la ventana de retención, LEÍDAS Y NO LEÍDAS — una notificación sin
+   * leer que envejezca más allá de la ventana también se elimina (consecuencia
+   * aceptada explícitamente en la spec "Retention policy"). El criterio es
+   * exclusivamente TEMPORAL: `source_event_id` es irrelevante para la
+   * retención, aunque el fan-out ya escriba UUIDs en las filas nuevas (NULL en
+   * las legadas) ⇒ no puede cambiar el resultado del borrado.
+   *
+   * El `options.onlyRead` existe para que un cambio de política futuro
+   * ("las leídas a N días, las no leídas a M días") sea una SEGUNDA llamada
+   * con un SEGUNDO corte, NO una reescritura de este método.
+   *
+   * El SQL vive AQUÍ (regla de casa: los servicios nunca tocan TypeORM); el
+   * servicio de retención resuelve el corte/política y registra el recuento.
+   *
+   * @param cutoff instante EXCLUSIVO: se borra lo que sea anterior a él.
+   * @param options.onlyRead `true` ⇒ añade `AND is_read = true`.
+   * @returns nº de filas borradas (0 si no había ninguna).
+   */
+  async purgeOlderThan(cutoff: Date, options: { onlyRead?: boolean } = {}): Promise<number> {
+    const qb = this.notifRepo
+      .createQueryBuilder()
+      .delete()
+      .from(NotificationEntity)
+      .where('created_at < :cutoff', { cutoff });
+
+    if (options.onlyRead === true) {
+      qb.andWhere('is_read = true');
+    }
+
+    const result = await qb.execute();
+
     return result.affected ?? 0;
   }
 

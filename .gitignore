@@ -1,8 +1,8 @@
 node_modules/
 dist/
 .env
-.env.test
-.env.*.local
+.env.*
+!.env.example
 coverage/
 *.js.map
 .vercel

@@ -4,7 +4,6 @@ import { DeepPartial, EntityManager, IsNull, QueryDeepPartialEntity, Repository 
 
 import { BaseRepository } from '../../common/repositories/base.repository';
 import { ActivityEntity, ActivityStatus } from '../entities/activity.entity';
-import { NotificationRepository } from '../../notifications/repositories/notification.repository';
 import { OutboxEventRepository } from '../../outbox/repositories/outbox-event.repository';
 import { InitialTransition } from '../activity-transition.map';
 
@@ -14,10 +13,18 @@ export interface ComplianceRow {
   completed: string;
 }
 
-/** Side-effect columns a transition may write (REQ-TX-1). */
+/**
+ * Side-effect columns a transition may write (REQ-TX-1).
+ *
+ * `assignedTo` is here because T3/T9 write it: the assignee is part of the
+ * transition, not an afterthought. Before it was declared, the write only
+ * survived because the repository assigns the fields onto the row
+ * (`Object.assign(row, input.fields)`) — the type did not know about it.
+ */
 export type ApplyTransitionFields = Partial<
   Pick<
     ActivityEntity,
+    | 'assignedTo'
     | 'confirmedAt'
     | 'cancelledAt'
     | 'cancelledBy'
@@ -26,16 +33,9 @@ export type ApplyTransitionFields = Partial<
     | 'completedAt'
     | 'deadline'
     | 'deletedAt'
+    | 'verifyAt'
   >
 >;
-
-/** Notification written INSIDE the transition tx (T7 coordinator, REQ-ACTOR-3). */
-export interface ApplyTransitionNotification {
-  userId: string;
-  type: string;
-  title: string;
-  body: string;
-}
 
 /** Plain DTO (no typeorm types leak to the service). `null` return = CAS/guard miss. */
 export interface ApplyTransitionInput {
@@ -49,8 +49,6 @@ export interface ApplyTransitionInput {
     eventType: string;
     payload: Record<string, unknown>;
   };
-  /** Optional companion write in the SAME tx (e.g. coordinator overdue notice). */
-  notification?: ApplyTransitionNotification;
 }
 
 /** Create INSERT exception (design D3): v1 + one outbox row. */
@@ -66,7 +64,6 @@ export class ActivitiesRepository extends BaseRepository<ActivityEntity> {
     @InjectRepository(ActivityEntity)
     private readonly activityRepo: Repository<ActivityEntity>,
 
-    private readonly notiRepo: NotificationRepository,
     private readonly outboxRepo: OutboxEventRepository,
   ) {
     super(activityRepo);
@@ -128,11 +125,27 @@ export class ActivitiesRepository extends BaseRepository<ActivityEntity> {
   }
 
   /**
+   * Detalle de activity con los `childrenIds` resueltos igual que en el listado
+   * (REQ-T09 D-5). Excluye filas soft-deleted.
+   */
+  async findByIdWithChildren(id: string): Promise<ActivityEntity | null> {
+    return this.activityRepo
+      .createQueryBuilder('a')
+      .where('a.id = :id', { id })
+      .andWhere('a.deleted_at IS NULL')
+      .addSelect(
+        "(SELECT COALESCE(array_agg(ac.child_id ORDER BY ac.created_at), '{}'::uuid[]) FROM activity_child ac WHERE ac.activity_id = a.id)",
+        'childrenIds',
+      )
+      .getOne();
+  }
+
+  /**
    * Crea una actividad dentro de una transacción abierta por `transaction()`.
    *
    * `manager` es opcional (patrón `manager?` de ActivitiesAuditRepository.record):
    * con él, la fila de `activity` participa en la MISMA transacción que
-   * `activity_child` y la notificación; sin él, escribe por la conexión normal.
+   * `activity_child`; sin él, escribe por la conexión normal.
    */
   async createInTx(
     data: DeepPartial<ActivityEntity>,
@@ -200,7 +213,8 @@ export class ActivitiesRepository extends BaseRepository<ActivityEntity> {
 
       await this.outboxRepo.insert(
         {
-          activityId: input.id,
+          aggregateType: 'activity',
+          aggregateId: input.id,
           bondId: input.outbox.bondId,
           eventType: input.outbox.eventType,
           aggregateVersion: nextVersion,
@@ -208,20 +222,6 @@ export class ActivitiesRepository extends BaseRepository<ActivityEntity> {
         },
         em,
       );
-
-      if (input.notification) {
-        await this.notiRepo.createForActivity(
-          {
-            userId: input.notification.userId,
-            bondId: input.outbox.bondId,
-            type: input.notification.type,
-            title: input.notification.title,
-            body: input.notification.body,
-            refEntityId: input.id,
-          },
-          em,
-        );
-      }
 
       return saved;
     };
@@ -249,7 +249,8 @@ export class ActivitiesRepository extends BaseRepository<ActivityEntity> {
 
       await this.outboxRepo.insert(
         {
-          activityId: saved.id,
+          aggregateType: 'activity',
+          aggregateId: saved.id,
           bondId: saved.bondId,
           eventType: input.initial.event,
           aggregateVersion: 1,
@@ -266,10 +267,12 @@ export class ActivitiesRepository extends BaseRepository<ActivityEntity> {
 
   /**
    * Reconciliation source of truth (REQ-TIMER-4, design D9). Returns the live
-   * activities whose timer should already have fired:
+   * activities whose timer should already have fired. FIVE estados barridos (T25):
+   * `created` past its response `deadline` (nunca se asignó a tiempo),
    * `assigned` past its response `deadline`, `assisting` past `scheduled_start`,
-   * `in_progress` past `COALESCE(scheduled_end, scheduled_start)`. Soft-deleted
-   * rows are excluded; results are bounded and ordered by soonest anchor.
+   * `in_progress` past `COALESCE(scheduled_end, scheduled_start)` y `verify` past
+   * el `deadline` de su ventana de verificación. Soft-deleted rows are excluded;
+   * results are bounded and ordered by soonest anchor.
    */
   async findDueForTransition(now: Date, limit = 100): Promise<ActivityEntity[]> {
     return this.activityRepo
@@ -277,16 +280,20 @@ export class ActivitiesRepository extends BaseRepository<ActivityEntity> {
       .where('a.deleted_at IS NULL')
       .andWhere(
         `(
-          (a.status = :assigned AND a.deadline IS NOT NULL AND a.deadline <= :now)
+          (a.status = :created AND a.deadline IS NOT NULL AND a.deadline <= :now)
+          OR (a.status = :assigned AND a.deadline IS NOT NULL AND a.deadline <= :now)
           OR (a.status = :assisting AND a.scheduled_start IS NOT NULL AND a.scheduled_start <= :now)
           OR (a.status = :inProgress AND COALESCE(a.scheduled_end, a.scheduled_start) IS NOT NULL
               AND COALESCE(a.scheduled_end, a.scheduled_start) <= :now)
+          OR (a.status = :verify AND a.deadline IS NOT NULL AND a.deadline <= :now)
         )`,
         {
           now,
+          created: ActivityStatus.CREATED,
           assigned: ActivityStatus.ASSIGNED,
           assisting: ActivityStatus.ASSISTING,
           inProgress: ActivityStatus.IN_PROGRESS,
+          verify: ActivityStatus.VERIFY,
         },
       )
       .addOrderBy('a.deadline', 'ASC', 'NULLS LAST')

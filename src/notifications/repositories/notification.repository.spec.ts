@@ -1,6 +1,6 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { getMetadataArgsStorage, Repository } from 'typeorm';
 
 import { NotificationEntity } from '../entities/notification.entity';
 import { NotificationRepository } from './notification.repository';
@@ -46,8 +46,26 @@ describe('NotificationRepository (T-W1.33, REQ-SUB-5, D11)', () => {
       body: 'Your endpoint kept failing.',
       refEntityType: 'webhook_subscription',
       refEntityId: 's1',
+      sourceEventId: null,
       isRead: false,
     });
+  });
+
+  it('maps an explicit sourceEventId through createNotification', async () => {
+    await repo.createNotification({
+      userId: 'u1',
+      bondId: 'b1',
+      type: 'activity_assigned',
+      title: 't',
+      body: 'b',
+      refEntityType: 'activity',
+      refEntityId: 'a1',
+      sourceEventId: 'e1',
+    });
+
+    expect(notifRepo.create).toHaveBeenCalledWith(
+      expect.objectContaining({ sourceEventId: 'e1', isRead: false }),
+    );
   });
 
   it('keeps createForActivity as a thin wrapper (refEntityType=activity)', async () => {
@@ -89,6 +107,160 @@ describe('NotificationRepository (T-W1.33, REQ-SUB-5, D11)', () => {
   });
 });
 
+describe('NotificationRepository — createFromEvent (notifications-fanout T1.2/T1.3)', () => {
+  let repo: NotificationRepository;
+  let notifRepo: jest.Mocked<Repository<NotificationEntity>>;
+  let insertQb: {
+    insert: jest.Mock;
+    into: jest.Mock;
+    values: jest.Mock;
+    orIgnore: jest.Mock;
+    returning: jest.Mock;
+    execute: jest.Mock;
+  };
+  /** Orden real de las llamadas del QueryBuilder (assert de orIgnore < returning). */
+  let callOrder: string[];
+
+  const input = {
+    userId: 'u1',
+    bondId: 'b1',
+    type: 'activity_assigned',
+    title: 'Pick up kids',
+    body: 'New activity assigned: Pick up kids',
+    refEntityType: 'activity',
+    refEntityId: 'a1',
+    sourceEventId: 'e1',
+  };
+
+  beforeEach(async () => {
+    callOrder = [];
+    insertQb = {
+      insert: jest.fn(() => {
+        callOrder.push('insert');
+        return insertQb;
+      }),
+      into: jest.fn(() => {
+        callOrder.push('into');
+        return insertQb;
+      }),
+      values: jest.fn(() => {
+        callOrder.push('values');
+        return insertQb;
+      }),
+      orIgnore: jest.fn(() => {
+        callOrder.push('orIgnore');
+        return insertQb;
+      }),
+      returning: jest.fn(() => {
+        callOrder.push('returning');
+        return insertQb;
+      }),
+      execute: jest.fn(async () => ({ raw: [{ id: 'n1' }] })),
+    };
+
+    notifRepo = {
+      create: jest.fn((data: object) => data),
+      save: jest.fn(async (data: object) => data),
+      createQueryBuilder: jest.fn(() => insertQb),
+      target: NotificationEntity,
+      manager: {},
+    } as unknown as jest.Mocked<Repository<NotificationEntity>>;
+
+    const module: TestingModule = await Test.createTestingModule({
+      providers: [
+        NotificationRepository,
+        { provide: getRepositoryToken(NotificationEntity), useValue: notifRepo },
+      ],
+    }).compile();
+
+    repo = module.get(NotificationRepository);
+  });
+
+  it('inserts the full row shape with isRead=false and the outbox event id', async () => {
+    await repo.createFromEvent(input);
+
+    expect(insertQb.insert).toHaveBeenCalled();
+    expect(insertQb.into).toHaveBeenCalledWith(NotificationEntity);
+    expect(insertQb.values).toHaveBeenCalledWith({
+      userId: 'u1',
+      bondId: 'b1',
+      type: 'activity_assigned',
+      title: 'Pick up kids',
+      body: 'New activity assigned: Pick up kids',
+      refEntityType: 'activity',
+      refEntityId: 'a1',
+      sourceEventId: 'e1',
+      isRead: false,
+    });
+  });
+
+  it('chains orIgnore() BEFORE returning(id) and never calls save()', async () => {
+    await repo.createFromEvent(input);
+
+    expect(insertQb.orIgnore).toHaveBeenCalled();
+    expect(insertQb.returning).toHaveBeenCalledWith('id');
+    expect(callOrder).toEqual(['insert', 'into', 'values', 'orIgnore', 'returning']);
+    expect(notifRepo.save).not.toHaveBeenCalled();
+  });
+
+  it('returns null (not throw) when the partial unique index collapses the insert', async () => {
+    insertQb.execute.mockResolvedValueOnce({ raw: [] });
+
+    await expect(repo.createFromEvent(input)).resolves.toBeNull();
+    expect(notifRepo.save).not.toHaveBeenCalled();
+  });
+
+  it('returns null when the driver omits raw entirely', async () => {
+    insertQb.execute.mockResolvedValueOnce({});
+
+    await expect(repo.createFromEvent(input)).resolves.toBeNull();
+  });
+
+  it('returns a detached minimal entity with the returned id on success', async () => {
+    const entity = await repo.createFromEvent(input);
+
+    expect(entity).toEqual(
+      expect.objectContaining({
+        id: 'n1',
+        userId: 'u1',
+        sourceEventId: 'e1',
+        isRead: false,
+      }),
+    );
+    expect(notifRepo.create).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'n1', sourceEventId: 'e1' }),
+    );
+    expect(notifRepo.save).not.toHaveBeenCalled();
+  });
+
+  it('defaults refEntityId to null when omitted', async () => {
+    await repo.createFromEvent({
+      ...input,
+      refEntityId: undefined,
+    });
+
+    expect(insertQb.values).toHaveBeenCalledWith(expect.objectContaining({ refEntityId: null }));
+  });
+
+  it('uses the EntityManager repository instead of the injected one', async () => {
+    const managerRepo = {
+      createQueryBuilder: jest.fn(() => insertQb),
+      create: jest.fn((data: object) => data),
+      save: jest.fn(async (data: object) => data),
+    };
+    const manager = { getRepository: jest.fn().mockReturnValue(managerRepo) };
+
+    await repo.createFromEvent(input, manager as never);
+
+    expect(manager.getRepository).toHaveBeenCalledWith(NotificationEntity);
+    expect(notifRepo.createQueryBuilder).not.toHaveBeenCalled();
+    expect(managerRepo.save).not.toHaveBeenCalled();
+    expect(managerRepo.create).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'n1', sourceEventId: 'e1' }),
+    );
+  });
+});
+
 /**
  * Doble del `QueryBuilder` de TypeORM: encadena y REGISTRA las condiciones
  * (`where`/`andWhere`) para poder afirmar sobre el SQL que se genera.
@@ -105,20 +277,28 @@ interface QbStub {
   update: jest.Mock;
   set: jest.Mock;
   execute: jest.Mock;
+  delete: jest.Mock;
+  from: jest.Mock;
   conditions: string[];
+  /** Parámetrosvinculados de cada condición, en el mismo orden que `conditions`. */
+  params: Record<string, unknown>[];
 }
 
-function createQbStub(executeResult: () => { affected?: number }): QbStub {
+function createQbStub(executeResult: () => { affected?: number | null }): QbStub {
   const conditions: string[] = [];
+  const params: Record<string, unknown>[] = [];
   const stub = {} as QbStub;
 
   stub.conditions = conditions;
-  stub.where = jest.fn((sql: string) => {
+  stub.params = params;
+  stub.where = jest.fn((sql: string, bound?: Record<string, unknown>) => {
     conditions.push(sql);
+    params.push(bound ?? {});
     return stub;
   });
-  stub.andWhere = jest.fn((sql: string) => {
+  stub.andWhere = jest.fn((sql: string, bound?: Record<string, unknown>) => {
     conditions.push(sql);
+    params.push(bound ?? {});
     return stub;
   });
   stub.orderBy = jest.fn(() => stub);
@@ -130,6 +310,8 @@ function createQbStub(executeResult: () => { affected?: number }): QbStub {
   stub.update = jest.fn(() => stub);
   stub.set = jest.fn(() => stub);
   stub.execute = jest.fn(async () => executeResult());
+  stub.delete = jest.fn(() => stub);
+  stub.from = jest.fn(() => stub);
 
   return stub;
 }
@@ -138,7 +320,7 @@ describe('NotificationRepository — read path (notifications-read-path)', () =>
   let repo: NotificationRepository;
   let qbs: QbStub[];
   /** Resultado que devuelve `execute()` (UPDATE … RETURNING affected). */
-  let executeResult: { affected?: number };
+  let executeResult: { affected?: number | null };
 
   beforeEach(async () => {
     qbs = [];
@@ -262,5 +444,109 @@ describe('NotificationRepository — read path (notifications-read-path)', () =>
 
     expect(qbs[0].andWhere).toHaveBeenCalledWith('bond_id = :bondId', { bondId: 'b1' });
     expect(qbs[0].conditions.join(' ')).not.toMatch(/coalesce/i);
+  });
+});
+
+/**
+ * Retención (`notifications-hygiene`, slice 1 — task 2.1 / 4.3): el purge vive
+ * en el repositorio (el servicio nunca toca TypeORM). El ruling vigente
+ * (#1553) purga LEÍDAS Y NO LEÍDAS; `onlyRead` es la válvula para un futuro
+ * "leídas a N días, no leídas a M días" (segunda llamada, no reescritura).
+ */
+describe('NotificationRepository — retention (notifications-hygiene, slice 1)', () => {
+  let repo: NotificationRepository;
+  let qbs: QbStub[];
+  /** Resultado que devuelve `execute()` (DELETE … RETURNING affected). */
+  let executeResult: { affected?: number | null };
+
+  const CUTOFF = new Date('2026-01-01T00:00:00.000Z');
+
+  beforeEach(async () => {
+    qbs = [];
+    executeResult = { affected: 0 };
+
+    const notifRepo = {
+      target: NotificationEntity,
+      manager: {},
+      createQueryBuilder: jest.fn(() => {
+        const qb = createQbStub(() => executeResult);
+        qbs.push(qb);
+        return qb;
+      }),
+    } as unknown as jest.Mocked<Repository<NotificationEntity>>;
+
+    const module: TestingModule = await Test.createTestingModule({
+      providers: [
+        NotificationRepository,
+        { provide: getRepositoryToken(NotificationEntity), useValue: notifRepo },
+      ],
+    }).compile();
+
+    repo = module.get(NotificationRepository);
+  });
+
+  it('deletes the rows older than the cutoff and returns the affected count', async () => {
+    executeResult = { affected: 7 };
+
+    await expect(repo.purgeOlderThan(CUTOFF)).resolves.toBe(7);
+
+    const qb = qbs[0];
+    expect(qb.delete).toHaveBeenCalled();
+    expect(qb.from).toHaveBeenCalledWith(NotificationEntity);
+    expect(qb.where).toHaveBeenCalledWith('created_at < :cutoff', { cutoff: CUTOFF });
+    expect(qb.execute).toHaveBeenCalled();
+  });
+
+  it('binds the cutoff as a PARAMETER and never interpolates it into the SQL', async () => {
+    await repo.purgeOlderThan(CUTOFF);
+
+    const qb = qbs[0];
+    const [sql, params] = qb.where.mock.calls[0];
+    expect(sql).toBe('created_at < :cutoff');
+    expect(params).toEqual({ cutoff: CUTOFF });
+
+    // El valor NUNCA aparece concatenado dentro del SQL.
+    const iso = CUTOFF.toISOString();
+    expect(qb.conditions.join(' ')).not.toContain(iso);
+    expect(qb.conditions.join(' ')).not.toContain(String(CUTOFF.getTime()));
+  });
+
+  it('purges read AND unread rows by default (no is_read filter at all)', async () => {
+    await repo.purgeOlderThan(CUTOFF);
+
+    expect(qbs[0].andWhere).not.toHaveBeenCalled();
+    expect(qbs[0].conditions).toEqual(['created_at < :cutoff']);
+    expect(qbs[0].conditions.join(' ')).not.toMatch(/is_read/i);
+  });
+
+  it('adds the is_read = true predicate only when onlyRead is true', async () => {
+    await repo.purgeOlderThan(CUTOFF, { onlyRead: true });
+
+    expect(qbs[0].andWhere).toHaveBeenCalledWith('is_read = true');
+    expect(qbs[0].conditions).toEqual(['created_at < :cutoff', 'is_read = true']);
+  });
+
+  it('does NOT filter by is_read when onlyRead is false', async () => {
+    await repo.purgeOlderThan(CUTOFF, { onlyRead: false });
+
+    expect(qbs[0].andWhere).not.toHaveBeenCalled();
+    expect(qbs[0].conditions).toEqual(['created_at < :cutoff']);
+  });
+
+  it('returns 0 (never null/undefined) when affected is null or absent', async () => {
+    executeResult = { affected: null };
+    await expect(repo.purgeOlderThan(CUTOFF)).resolves.toBe(0);
+
+    executeResult = {};
+    await expect(repo.purgeOlderThan(CUTOFF)).resolves.toBe(0);
+  });
+
+  it('targets the `notification` table', async () => {
+    await repo.purgeOlderThan(CUTOFF);
+
+    expect(qbs[0].from).toHaveBeenCalledWith(NotificationEntity);
+
+    const table = getMetadataArgsStorage().tables.find((t) => t.target === NotificationEntity);
+    expect(table?.name).toBe('notification');
   });
 });

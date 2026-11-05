@@ -5,6 +5,7 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 import { ActivitiesModule } from '../activities/activities.module';
 import { OutboxModule } from '../outbox/outbox.module';
 import { NotificationsModule } from '../notifications/notifications.module';
+import { NotificationsFanOutModule } from '../notifications/fan-out/notifications-fan-out.module';
 import { RealtimeWorkerModule } from '../realtime/realtime-worker.module';
 import { WebhookSubscriptionEntity } from './subscriptions/entities/webhook-subscription.entity';
 import { WebhookDeliveryEntity } from './delivery/entities/webhook-delivery.entity';
@@ -48,6 +49,7 @@ import { WebhookObservabilityService } from './webhooks-observability';
     BullModule.registerQueue({ name: WEBHOOK_DELIVERY_QUEUE }),
     OutboxModule,
     NotificationsModule,
+    NotificationsFanOutModule,
     ActivitiesModule,
     RealtimeWorkerModule,
   ],

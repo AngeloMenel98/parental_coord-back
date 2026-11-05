@@ -45,6 +45,15 @@ export class NotificationEntity {
   @Index('IDX_notification_ref_entity')
   refEntityId!: string | null;
 
+  // Evento de origen (`outbox_event`) — primitivo de deduplicación de la
+  // slice 2. Columna PLANA a propósito: sin `ManyToOne` (evita el ciclo de
+  // imports notification → outbox → activity) y sin decoradores `@Index`
+  // (`synchronize: false` los volvería inertes y no pueden expresar el
+  // `DESC` por columna ni el predicado `WHERE` parcial). El DDL vive en la
+  // migración `1792646400000-AddNotificationSourceEventAndIndexes`.
+  @Column({ type: 'uuid', nullable: true, name: 'source_event_id' })
+  sourceEventId!: string | null;
+
   @Column({ type: 'boolean', default: false, name: 'is_read' })
   isRead!: boolean;
 

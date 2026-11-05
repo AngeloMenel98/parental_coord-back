@@ -5,6 +5,9 @@
   "description": "Sistema de Coordinación Parental — Backend API",
   "author": "",
   "private": true,
+  "engines": {
+    "node": ">=22"
+  },
   "license": "UNLICENSED",
   "scripts": {
     "build": "nest build",
@@ -26,7 +29,11 @@
     "smoke:db:migrate": "ENV_FILE=.env.test pnpm typeorm migration:run",
     "smoke:db:seed": "ENV_FILE=.env.test pnpm seed:admin",
     "typeorm": "typeorm-ts-node-commonjs -d src/database/data-source.ts",
-    "seed:admin": "ts-node scripts/seed-admin.ts"
+    "typeorm:prod": "ENV_FILE=.env.prod pnpm typeorm migration:run",
+    "seed:admin": "ts-node scripts/seed-admin.ts",
+    "seed:admin:prod": "ENV_FILE=.env.prod pnpm seed:admin",
+    "storage:init": "ts-node scripts/create-storage-bucket.ts",
+    "storage:init:prod": "ENV_FILE=.env.prod pnpm storage:init"
   },
   "dependencies": {
     "@nestjs/bullmq": "^10.2.3",
@@ -42,6 +49,7 @@
     "@nestjs/throttler": "^6.5.0",
     "@nestjs/typeorm": "10.0.2",
     "@nestjs/websockets": "^10.4.22",
+    "@supabase/supabase-js": "^2.118.0",
     "bcryptjs": "^3.0.3",
     "bullmq": "^5.81.5",
     "class-transformer": "^0.5.1",

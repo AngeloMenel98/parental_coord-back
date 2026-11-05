@@ -30,21 +30,24 @@ describe('activity-transition map — resolveTransition (confirmed rules)', () =
   const confirmed: ReadonlyArray<readonly [TransitionId, ActivityStatus, ActivityStatus, string]> =
     [
       ['T3', CREATED, ASSIGNED, ACTIVITY_EVENT.ASSIGNED],
-      ['T4', ASSIGNED, CREATED, ACTIVITY_EVENT.UNASSIGNED],
       ['T5', ASSIGNED, ASSISTING, ACTIVITY_EVENT.ASSISTING],
       ['T6', ASSIGNED, NOT_ASSISTING, ACTIVITY_EVENT.NOT_ASSISTING],
       ['T7', ASSIGNED, OVERDUE, ACTIVITY_EVENT.OVERDUE],
-      ['T8', OVERDUE, ASSISTING, ACTIVITY_EVENT.ASSISTING],
       ['T8', OVERDUE, NOT_ASSISTING, ACTIVITY_EVENT.NOT_ASSISTING],
       ['T9', NOT_ASSISTING, ASSIGNED, ACTIVITY_EVENT.ASSIGNED],
       ['T10', ASSISTING, IN_PROGRESS, ACTIVITY_EVENT.IN_PROGRESS],
       ['T11', IN_PROGRESS, DONE, ACTIVITY_EVENT.DONE],
+      ['T12', IN_PROGRESS, VERIFY, ACTIVITY_EVENT.VERIFY],
+      ['T13', VERIFY, DONE, ACTIVITY_EVENT.DONE],
+      ['T14', VERIFY, OVERDUE, ACTIVITY_EVENT.VERIFY_EXPIRED],
+      ['T16', CREATED, OVERDUE, ACTIVITY_EVENT.CREATED_OVERDUE],
       ['T15', CREATED, CANCELLED, ACTIVITY_EVENT.CANCELLED],
       ['T15', ASSIGNED, CANCELLED, ACTIVITY_EVENT.CANCELLED],
       ['T15', ASSISTING, CANCELLED, ACTIVITY_EVENT.CANCELLED],
       ['T15', NOT_ASSISTING, CANCELLED, ACTIVITY_EVENT.CANCELLED],
       ['T15', OVERDUE, CANCELLED, ACTIVITY_EVENT.CANCELLED],
       ['T15', IN_PROGRESS, CANCELLED, ACTIVITY_EVENT.CANCELLED],
+      ['T15', VERIFY, CANCELLED, ACTIVITY_EVENT.CANCELLED],
     ];
 
   for (const [id, from, to, event] of confirmed) {
@@ -62,7 +65,6 @@ describe('activity-transition map — resolveTransition (confirmed rules)', () =
     for (const [from, to] of [
       [ASSIGNED, ASSISTING],
       [ASSIGNED, NOT_ASSISTING],
-      [OVERDUE, ASSISTING],
       [OVERDUE, NOT_ASSISTING],
     ] as const) {
       const rule = resolveTransition(from, to);
@@ -71,29 +73,27 @@ describe('activity-transition map — resolveTransition (confirmed rules)', () =
     }
   });
 
-  it('T3/T4/T9/T15 admit bond members', () => {
-    for (const [from, to] of [
-      [CREATED, ASSIGNED],
-      [ASSIGNED, CREATED],
-      [NOT_ASSISTING, ASSIGNED],
-      [ASSIGNED, CANCELLED],
-    ] as const) {
-      expect(resolveTransition(from, to)?.actors).toEqual(['bond_member']);
-    }
+  it('T3/T9/T15 admit bond members; T4 is removed', () => {
+    expect(resolveTransition(CREATED, ASSIGNED)?.actors).toEqual(['bond_member']);
+    expect(resolveTransition(NOT_ASSISTING, ASSIGNED)?.actors).toEqual(['bond_member']);
+    expect(resolveTransition(ASSIGNED, CANCELLED)?.actors).toEqual(['bond_member']);
+    expect(resolveTransition(ASSIGNED, CREATED)).toBeUndefined();
   });
 
-  it('T7/T10 are system-only; T11 admits system and bond members', () => {
+  it('T7/T10/T12/T14/T16 are system-only; T11 and T13 admit bond members', () => {
     expect(resolveTransition(ASSIGNED, OVERDUE)?.actors).toEqual(['system']);
     expect(resolveTransition(ASSISTING, IN_PROGRESS)?.actors).toEqual(['system']);
-    expect(resolveTransition(IN_PROGRESS, DONE)?.actors).toEqual(['system', 'bond_member']);
+    expect(resolveTransition(IN_PROGRESS, VERIFY)?.actors).toEqual(['system']);
+    expect(resolveTransition(VERIFY, OVERDUE)?.actors).toEqual(['system']);
+    expect(resolveTransition(CREATED, OVERDUE)?.actors).toEqual(['system']);
+    expect(resolveTransition(VERIFY, DONE)?.actors).toEqual(['bond_member']);
+    // El cierre temprano lo hace un miembro, NO el sistema: el timer END va a
+    // `verify`, no a `done`.
+    expect(resolveTransition(IN_PROGRESS, DONE)?.actors).toEqual(['bond_member']);
   });
 
   it('encodes the confirmed side-effects', () => {
     expect(resolveTransition(CREATED, ASSIGNED)?.sideEffects).toEqual({ deadline: 'set' });
-    expect(resolveTransition(ASSIGNED, CREATED)?.sideEffects).toEqual({
-      deadline: 'clear',
-      confirmedAt: false,
-    });
     expect(resolveTransition(ASSIGNED, ASSISTING)?.sideEffects).toEqual({
       deadline: 'clear',
       confirmedAt: true,
@@ -103,20 +103,46 @@ describe('activity-transition map — resolveTransition (confirmed rules)', () =
       declinedAt: true,
     });
     expect(resolveTransition(ASSIGNED, OVERDUE)?.sideEffects).toEqual({});
-    expect(resolveTransition(OVERDUE, ASSISTING)?.sideEffects).toEqual({ confirmedAt: true });
     expect(resolveTransition(OVERDUE, NOT_ASSISTING)?.sideEffects).toEqual({ declinedAt: true });
-    expect(resolveTransition(NOT_ASSISTING, ASSIGNED)?.sideEffects).toEqual({ deadline: 'set' });
+    expect(resolveTransition(NOT_ASSISTING, ASSIGNED)?.sideEffects).toEqual({
+      deadline: 'set',
+      declinedAt: false,
+      confirmedAt: false,
+    });
     expect(resolveTransition(ASSISTING, IN_PROGRESS)?.sideEffects).toEqual({});
     expect(resolveTransition(IN_PROGRESS, DONE)?.sideEffects).toEqual({ completedAt: true });
+    expect(resolveTransition(IN_PROGRESS, VERIFY)?.sideEffects).toEqual({
+      deadline: 'set',
+      verifyAt: true,
+    });
+    expect(resolveTransition(VERIFY, DONE)?.sideEffects).toEqual({
+      deadline: 'clear',
+      completedAt: true,
+      verifyAt: false,
+    });
+    expect(resolveTransition(VERIFY, OVERDUE)?.sideEffects).toEqual({ deadline: 'clear' });
+    expect(resolveTransition(CREATED, OVERDUE)?.sideEffects).toEqual({ deadline: 'clear' });
     expect(resolveTransition(ASSIGNED, CANCELLED)?.sideEffects).toEqual({
       deadline: 'clear',
       cancelledAt: true,
+      verifyAt: false,
     });
   });
 
   it('keeps the deadline on T8 (late response keeps the historical expiry)', () => {
-    expect(resolveTransition(OVERDUE, ASSISTING)?.sideEffects.deadline).toBeUndefined();
     expect(resolveTransition(OVERDUE, NOT_ASSISTING)?.sideEffects.deadline).toBeUndefined();
+  });
+
+  /**
+   * La aceptación TARDÍA se quitó del catálogo (decisión del usuario, 2026-11-03).
+   *
+   * No alcanza con esconder el botón: mientras la regla existiera, un cliente viejo
+   * o una llamada directa podrían confirmar tarde una actividad cuya ventana ya
+   * venció — y el flag `canConfirm` estaría mintiendo. La fila `overdue` conserva
+   * SÓLO el "No asiste" (T8), que es la salida que evita el callejón sin salida.
+   */
+  it('no hay regla hacia `assisting` desde `overdue` (la aceptación tardía se quitó)', () => {
+    expect(resolveTransition(OVERDUE, ASSISTING)).toBeUndefined();
   });
 });
 
@@ -130,14 +156,21 @@ describe('activity-transition map — invalid pairs return undefined', () => {
     [CREATED, DONE],
     [ASSIGNED, DONE],
     [ASSIGNED, IN_PROGRESS],
+    [ASSIGNED, CREATED],
     [ASSISTING, OVERDUE],
     [ASSISTING, DONE],
     [IN_PROGRESS, ASSIGNED],
     [NOT_ASSISTING, DONE],
     [OVERDUE, DONE],
-    [CREATED, OVERDUE],
-    [VERIFY, DONE],
-    [VERIFY, CANCELLED],
+    [OVERDUE, ASSISTING],
+    // ⚠ LAS ASIGNACIONES VIVAS NO SE PUEDEN ROBAR (T21). Estas cuatro son la regla que
+    // protege de verdad: no hay camino hacia `assigned` desde una asignación viva, así que
+    // `POST /:id/assign` sobre una de ellas es un 409 y no una escritura. Sin estas
+    // aserciones, el catálogo podía abrirlas sin que ningún test lo notara.
+    [ASSIGNED, ASSIGNED],
+    [ASSISTING, ASSIGNED],
+    [VERIFY, ASSIGNED],
+    [OVERDUE, ASSIGNED],
   ];
 
   for (const [from, to] of invalid) {
@@ -179,6 +212,12 @@ describe('timerOpsForTransition (design decision 7)', () => {
     ]);
   });
 
+  it('-> created enqueues response-timeout (T1 assignment window)', () => {
+    expect(timerOpsForTransition(CREATED)).toEqual([
+      { action: 'enqueue', kind: TimerKind.RESPONSE_TIMEOUT },
+    ]);
+  });
+
   it('-> assisting cancels response-timeout and enqueues start and end', () => {
     expect(timerOpsForTransition(ASSISTING)).toEqual([
       { action: 'cancel', kind: TimerKind.RESPONSE_TIMEOUT },
@@ -193,6 +232,13 @@ describe('timerOpsForTransition (design decision 7)', () => {
     ]);
   });
 
+  it('-> verify cancels end and enqueues verify-timeout', () => {
+    expect(timerOpsForTransition(VERIFY)).toEqual([
+      { action: 'cancel', kind: TimerKind.END },
+      { action: 'enqueue', kind: TimerKind.VERIFY_TIMEOUT },
+    ]);
+  });
+
   it('-> overdue re-enqueues start and end (late T8 flow)', () => {
     expect(timerOpsForTransition(OVERDUE)).toEqual([
       { action: 'enqueue', kind: TimerKind.START },
@@ -200,19 +246,16 @@ describe('timerOpsForTransition (design decision 7)', () => {
     ]);
   });
 
-  it('done/cancelled/not_assisting/created cancel every timer', () => {
+  it('done/cancelled/not_assisting cancel every timer', () => {
     const cancellations = [
       { action: 'cancel', kind: TimerKind.RESPONSE_TIMEOUT },
       { action: 'cancel', kind: TimerKind.START },
       { action: 'cancel', kind: TimerKind.END },
+      { action: 'cancel', kind: TimerKind.VERIFY_TIMEOUT },
     ];
-    for (const to of [DONE, CANCELLED, NOT_ASSISTING, CREATED]) {
+    for (const to of [DONE, CANCELLED, NOT_ASSISTING]) {
       expect(timerOpsForTransition(to)).toEqual(cancellations);
     }
-  });
-
-  it('returns no ops for out-of-scope targets', () => {
-    expect(timerOpsForTransition(VERIFY)).toEqual([]);
   });
 });
 

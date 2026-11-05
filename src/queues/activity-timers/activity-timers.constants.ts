@@ -6,6 +6,7 @@ export enum TimerKind {
   RESPONSE_TIMEOUT = 'response-timeout',
   START = 'start',
   END = 'end',
+  VERIFY_TIMEOUT = 'verify-timeout',
   SWEEP = 'sweep',
 }
 

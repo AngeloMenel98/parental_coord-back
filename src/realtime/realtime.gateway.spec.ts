@@ -4,6 +4,9 @@ import { WebSocket } from 'ws';
 import { BondsService } from '../bonds/bonds.service';
 import { BondMembersRepository } from '../bonds/repositories/bond-members.repository';
 import { ActivityChangedMessageV1 } from './dto/activity-changed-message';
+import { ExpenseChangedMessageV1 } from './dto/expense-changed-message';
+import { NotificationCreatedMessageV1 } from './dto/notification-created-message';
+import { RealtimeMessageV1 } from './dto/realtime-message';
 import { RealtimeAuthService } from './realtime-auth.service';
 import { RealtimeGateway } from './realtime.gateway';
 import { RealtimeSubscriberService } from './realtime-subscriber.service';
@@ -38,6 +41,32 @@ function frame(bondId: string): ActivityChangedMessageV1 {
   };
 }
 
+function expenseFrame(bondId: string): ExpenseChangedMessageV1 {
+  return {
+    v: 1,
+    type: 'expense.changed',
+    eventId: `evt-${bondId}-${Math.random().toString(36).slice(2, 8)}`,
+    expenseId: 'exp-1',
+    bondId,
+    status: 'approved',
+    actor: { type: 'user', id: 'u1' },
+    occurredAt: '2026-10-16T14:22:31.412Z',
+  };
+}
+
+function notificationFrame(userId: string): NotificationCreatedMessageV1 {
+  return {
+    v: 1,
+    type: 'notification.created',
+    notificationId: `ntf-${userId}`,
+    userId,
+    notificationType: 'activity_assigned',
+    refEntityType: 'activity',
+    refEntityId: 'a1',
+    occurredAt: '2026-10-26T10:00:00.000Z',
+  };
+}
+
 /** Lets the fire-and-forget `deliver()` promise settle before asserting. */
 function flushDelivery(): Promise<void> {
   return new Promise((resolve) => setImmediate(resolve));
@@ -54,14 +83,14 @@ describe('RealtimeGateway (REQ-1/REQ-3)', () => {
   let authService: { authenticate: jest.Mock };
   let bondsService: { findByUserId: jest.Mock };
   let bondMembersRepo: { findActiveMemberIds: jest.Mock };
-  let subscriber: { messages$: Subject<ActivityChangedMessageV1> };
+  let subscriber: { messages$: Subject<RealtimeMessageV1> };
   let gateway: RealtimeGateway;
 
   beforeEach(() => {
     authService = { authenticate: jest.fn() };
     bondsService = { findByUserId: jest.fn() };
     bondMembersRepo = { findActiveMemberIds: jest.fn() };
-    subscriber = { messages$: new Subject<ActivityChangedMessageV1>() };
+    subscriber = { messages$: new Subject<RealtimeMessageV1>() };
     gateway = new RealtimeGateway(
       authService as unknown as RealtimeAuthService,
       bondsService as unknown as BondsService,
@@ -240,6 +269,115 @@ describe('RealtimeGateway (REQ-1/REQ-3)', () => {
       await flushDelivery();
 
       expect(u1a.send).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('per-user delivery for notification.created (S4)', () => {
+    /** u1 (2 sockets) and u2 (1 socket), both authenticated with a bond. */
+    async function connectBoth(): Promise<{
+      u1a: ReturnType<typeof clientSocket>;
+      u1b: ReturnType<typeof clientSocket>;
+      u2: ReturnType<typeof clientSocket>;
+    }> {
+      authService.authenticate.mockImplementation((request: { headers: Record<string, string> }) =>
+        Promise.resolve(
+          request.headers.authorization === 'Bearer u2'
+            ? { id: 'u2', email: 'e2', systemRole: 'user' }
+            : { id: 'u1', email: 'e1', systemRole: 'user' },
+        ),
+      );
+      bondsService.findByUserId.mockResolvedValue([{ id: 'b1' }]);
+
+      const u1a = clientSocket();
+      const u1b = clientSocket();
+      const u2 = clientSocket();
+      await gateway.handleConnection(u1a, handshakeRequest('Bearer u1'));
+      await gateway.handleConnection(u1b, handshakeRequest('Bearer u1'));
+      await gateway.handleConnection(u2, handshakeRequest('Bearer u2'));
+      return { u1a, u1b, u2 };
+    }
+
+    it('sends the frame only to the owner sockets, exactly once each', async () => {
+      const { u1a, u1b, u2 } = await connectBoth();
+
+      subscriber.messages$.next(notificationFrame('u1'));
+      await flushDelivery();
+
+      expect(u1a.send).toHaveBeenCalledTimes(1);
+      expect(u1b.send).toHaveBeenCalledTimes(1);
+      expect(u1a.send).toHaveBeenCalledWith(u1b.send.mock.calls[0][0]);
+      expect(u2.send).not.toHaveBeenCalled();
+    });
+
+    it('strips the userId routing key before writing to the socket', async () => {
+      const { u2 } = await connectBoth();
+
+      subscriber.messages$.next(notificationFrame('u2'));
+      await flushDelivery();
+
+      const sent = JSON.parse(u2.send.mock.calls[0][0] as string);
+      expect(sent).toEqual({
+        v: 1,
+        type: 'notification.created',
+        notificationId: 'ntf-u2',
+        notificationType: 'activity_assigned',
+        refEntityType: 'activity',
+        refEntityId: 'a1',
+        occurredAt: '2026-10-26T10:00:00.000Z',
+      });
+      expect(sent).not.toHaveProperty('userId');
+    });
+
+    it('never queries bond members for a notification frame', async () => {
+      await connectBoth();
+
+      subscriber.messages$.next(notificationFrame('u1'));
+      await flushDelivery();
+
+      expect(bondMembersRepo.findActiveMemberIds).not.toHaveBeenCalled();
+    });
+
+    it('sends nothing when the owner has no registered socket', async () => {
+      const { u1a, u1b, u2 } = await connectBoth();
+
+      subscriber.messages$.next(notificationFrame('u9'));
+      await flushDelivery();
+
+      expect(u1a.send).not.toHaveBeenCalled();
+      expect(u1b.send).not.toHaveBeenCalled();
+      expect(u2.send).not.toHaveBeenCalled();
+    });
+
+    it('keeps activity.changed bond-wide after a notification frame (no cross-talk)', async () => {
+      const { u1a, u2 } = await connectBoth();
+      bondMembersRepo.findActiveMemberIds.mockResolvedValue(['u1', 'u2']);
+
+      subscriber.messages$.next(notificationFrame('u1'));
+      subscriber.messages$.next(frame('b1'));
+      await flushDelivery();
+
+      // u1a: 1 notification + 1 activity; u2: only the activity, never the notification.
+      expect(u1a.send).toHaveBeenCalledTimes(2);
+      expect(u2.send).toHaveBeenCalledTimes(1);
+      expect(JSON.parse(u2.send.mock.calls[0][0] as string).type).toBe('activity.changed');
+    });
+
+    it('delivers an expense.changed frame to the bond audience (S8, T26)', async () => {
+      const { u1a, u1b, u2 } = await connectBoth();
+      bondMembersRepo.findActiveMemberIds.mockResolvedValue(['u1', 'u2']);
+
+      const message = expenseFrame('b1');
+      subscriber.messages$.next(message);
+      await flushDelivery();
+
+      expect(bondMembersRepo.findActiveMemberIds).toHaveBeenCalledWith('b1');
+      const expected = JSON.stringify(message);
+      expect(u1a.send).toHaveBeenCalledTimes(1);
+      expect(u1a.send).toHaveBeenCalledWith(expected);
+      expect(u1b.send).toHaveBeenCalledTimes(1);
+      expect(u1b.send).toHaveBeenCalledWith(expected);
+      expect(u2.send).toHaveBeenCalledTimes(1);
+      expect(u2.send).toHaveBeenCalledWith(expected);
     });
   });
 });

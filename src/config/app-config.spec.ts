@@ -53,6 +53,38 @@ describe('AppConfig — webhook keys (D12)', () => {
 });
 
 /**
+ * Activity lead-time / response window keys (R14/R16). Both optional ints,
+ * coerced from env strings; defaults are applied by the service if absent.
+ */
+describe('AppConfig — activity timing keys', () => {
+  const required = {
+    DB_HOST: 'localhost',
+    DB_PORT: '5432',
+    DB_USER: 'u',
+    DB_PASSWORD: 'p',
+    DB_NAME: 'd',
+    JWT_SECRET: 's',
+  };
+
+  it('accepts activity timing keys as optional integers', () => {
+    const cfg = validateConfig({
+      ...required,
+      RESPONSE_TIMEOUT_HOURS: '36',
+      MIN_LEAD_TIME_HOURS: '48',
+    });
+
+    expect(cfg.RESPONSE_TIMEOUT_HOURS).toBe(36);
+    expect(cfg.MIN_LEAD_TIME_HOURS).toBe(48);
+  });
+
+  it('rejects a non-integer activity timing value', () => {
+    expect(() => validateConfig({ ...required, MIN_LEAD_TIME_HOURS: 'abc' })).toThrow(
+      /Config validation failed/,
+    );
+  });
+});
+
+/**
  * Realtime keys (design #1471, spec REQ-1/REQ-4). Both optional with defaults:
  * `WS_PATH='/realtime'` and `REALTIME_PUBLISH_ENABLED='true'`.
  */
@@ -82,5 +114,46 @@ describe('AppConfig — realtime keys', () => {
 
     expect(cfg.WS_PATH).toBe('/ws');
     expect(cfg.REALTIME_PUBLISH_ENABLED).toBe('false');
+  });
+});
+
+/**
+ * Notifications keys (design D8, spec "Retention policy"). Both optional with
+ * defaults: `NOTIFICATIONS_RETENTION_DAYS=30` and
+ * `NOTIFICATIONS_RETENTION_INTERVAL_MS=86400000` (one purge per day). The ints
+ * are coercioned from the env string, exactly like the webhook keys.
+ */
+describe('AppConfig — notifications keys (D8)', () => {
+  const required = {
+    DB_HOST: 'localhost',
+    DB_PORT: '5432',
+    DB_USER: 'u',
+    DB_PASSWORD: 'p',
+    DB_NAME: 'd',
+    JWT_SECRET: 's',
+  };
+
+  it('applies the notification retention defaults when the keys are absent', () => {
+    const cfg = validateConfig({ ...required });
+
+    expect(cfg.NOTIFICATIONS_RETENTION_DAYS).toBe(30);
+    expect(cfg.NOTIFICATIONS_RETENTION_INTERVAL_MS).toBe(86_400_000);
+  });
+
+  it('coerces env string ints to numbers', () => {
+    const cfg = validateConfig({
+      ...required,
+      NOTIFICATIONS_RETENTION_DAYS: '7',
+      NOTIFICATIONS_RETENTION_INTERVAL_MS: '3600000',
+    });
+
+    expect(cfg.NOTIFICATIONS_RETENTION_DAYS).toBe(7);
+    expect(cfg.NOTIFICATIONS_RETENTION_INTERVAL_MS).toBe(3_600_000);
+  });
+
+  it('rejects a non-integer notification retention value', () => {
+    expect(() => validateConfig({ ...required, NOTIFICATIONS_RETENTION_DAYS: 'abc' })).toThrow(
+      /Config validation failed/,
+    );
   });
 });

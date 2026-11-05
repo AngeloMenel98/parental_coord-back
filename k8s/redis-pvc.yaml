@@ -1,0 +1,21 @@
+# Redis data volume (dev-only).
+#
+# Static PVC referenced by the Redis StatefulSet's `data` volume at /data.
+# Redis runs with AOF enabled (appendonly yes), so the queue/outbox state
+# survives a pod restart. minikube provides the `standard` StorageClass backed
+# by the hostpath provisioner: the volume is node-local and `minikube delete`
+# wipes it (accepted for dev — see k8s/README.md caveats). Deleting only the
+# StatefulSet keeps this PVC.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: redis-data
+  labels:
+    app: redis
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: standard
+  resources:
+    requests:
+      storage: 1Gi

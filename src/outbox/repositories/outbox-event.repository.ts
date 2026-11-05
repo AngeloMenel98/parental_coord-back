@@ -2,10 +2,15 @@ import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { EntityManager, Repository } from 'typeorm';
 
-import { OutboxEventEntity } from '../entities/outbox-event.entity';
+import { OutboxAggregateType, OutboxEventEntity } from '../entities/outbox-event.entity';
 
 export interface InsertOutboxEventInput {
-  activityId: string;
+  /**
+   * Qué es `aggregateId` — `activity` para el motor de transiciones, `expense`
+   * para T23. Sin este discriminador el `aggregate_id` es un uuid sin dueño.
+   */
+  aggregateType: OutboxAggregateType;
+  aggregateId: string;
   bondId: string;
   eventType: string;
   aggregateVersion: number;
@@ -36,7 +41,8 @@ export class OutboxEventRepository {
     const repo = manager ? manager.getRepository(OutboxEventEntity) : this.outboxRepo;
     return repo.save(
       repo.create({
-        aggregateId: row.activityId,
+        aggregateType: row.aggregateType,
+        aggregateId: row.aggregateId,
         bondId: row.bondId,
         eventType: row.eventType,
         aggregateVersion: row.aggregateVersion,

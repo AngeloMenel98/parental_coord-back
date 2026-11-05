@@ -19,7 +19,10 @@ const reached = (anchor: Date | null | undefined, now: Date): boolean =>
 
 /** Pure: the system transition a due activity needs (design D9). */
 export function dueTargetFor(activity: ActivityEntity, now: Date): ActivityStatus | null {
-  if (activity.status === ActivityStatus.ASSIGNED && reached(activity.deadline, now)) {
+  if (
+    (activity.status === ActivityStatus.CREATED || activity.status === ActivityStatus.ASSIGNED) &&
+    reached(activity.deadline, now)
+  ) {
     return ActivityStatus.OVERDUE;
   }
   if (activity.status === ActivityStatus.ASSISTING && reached(activity.scheduledStart, now)) {
@@ -29,7 +32,10 @@ export function dueTargetFor(activity: ActivityEntity, now: Date): ActivityStatu
     activity.status === ActivityStatus.IN_PROGRESS &&
     reached(activity.scheduledEnd ?? activity.scheduledStart, now)
   ) {
-    return ActivityStatus.DONE;
+    return ActivityStatus.VERIFY;
+  }
+  if (activity.status === ActivityStatus.VERIFY && reached(activity.deadline, now)) {
+    return ActivityStatus.OVERDUE;
   }
   return null;
 }

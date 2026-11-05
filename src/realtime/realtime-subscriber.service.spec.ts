@@ -108,6 +108,39 @@ describe('RealtimeSubscriberService (REQ-3/REQ-4)', () => {
     expect(seen).toEqual([]);
   });
 
+  it('emits a notification.created frame (slice 3)', () => {
+    const service = new RealtimeSubscriberService(config());
+    const seen: unknown[] = [];
+    service.messages$.subscribe((message) => seen.push(message));
+    const frame = {
+      v: 1,
+      type: 'notification.created',
+      notificationId: 'n1',
+      userId: 'u2',
+      notificationType: 'activity_assigned',
+      refEntityType: 'activity',
+      refEntityId: 'a1',
+      occurredAt: '2026-10-26T10:00:00.000Z',
+    };
+
+    redisHandler('message')(REALTIME_CHANNEL, JSON.stringify(frame));
+
+    expect(seen).toEqual([frame]);
+  });
+
+  it('drops an unknown frame type and warns (never forwards it)', () => {
+    const service = new RealtimeSubscriberService(config());
+    const warn = jest.spyOn((service as any).logger, 'warn').mockImplementation(() => undefined);
+    const seen: unknown[] = [];
+    service.messages$.subscribe((message) => seen.push(message));
+
+    redisHandler('message')(REALTIME_CHANNEL, JSON.stringify({ ...FRAME, type: 'bond.deleted' }));
+
+    expect(seen).toEqual([]);
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn.mock.calls[0][0]).toMatch(/unrecognised/i);
+  });
+
   it('disconnects its dedicated client and completes the subject on destroy', () => {
     const service = new RealtimeSubscriberService(config());
     const completed = jest.fn();

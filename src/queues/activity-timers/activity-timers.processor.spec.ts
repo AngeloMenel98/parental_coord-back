@@ -42,23 +42,36 @@ describe('ActivityTimersProcessor', () => {
   });
 
   describe('pure helpers', () => {
-    it('maps each timer kind to its required source state', () => {
-      expect(expectedSourceFor(TimerKind.RESPONSE_TIMEOUT)).toBe(ActivityStatus.ASSIGNED);
+    it('maps each timer kind to its required source state(s)', () => {
+      expect(expectedSourceFor(TimerKind.RESPONSE_TIMEOUT)).toContain(ActivityStatus.CREATED);
+      expect(expectedSourceFor(TimerKind.RESPONSE_TIMEOUT)).toContain(ActivityStatus.ASSIGNED);
       expect(expectedSourceFor(TimerKind.START)).toBe(ActivityStatus.ASSISTING);
       expect(expectedSourceFor(TimerKind.END)).toBe(ActivityStatus.IN_PROGRESS);
+      expect(expectedSourceFor(TimerKind.VERIFY_TIMEOUT)).toBe(ActivityStatus.VERIFY);
       expect(expectedSourceFor(TimerKind.SWEEP)).toBeNull();
     });
 
     it('maps each timer kind to its system target', () => {
       expect(targetStatusFor(TimerKind.RESPONSE_TIMEOUT)).toBe(ActivityStatus.OVERDUE);
       expect(targetStatusFor(TimerKind.START)).toBe(ActivityStatus.IN_PROGRESS);
-      expect(targetStatusFor(TimerKind.END)).toBe(ActivityStatus.DONE);
+      expect(targetStatusFor(TimerKind.END)).toBe(ActivityStatus.VERIFY);
+      expect(targetStatusFor(TimerKind.VERIFY_TIMEOUT)).toBe(ActivityStatus.OVERDUE);
       expect(targetStatusFor(TimerKind.SWEEP)).toBeNull();
     });
   });
 
   it('response-timeout on an assigned row → system transition to overdue (T7)', async () => {
     activitiesRepo.findById.mockResolvedValue(row({ status: ActivityStatus.ASSIGNED, version: 3 }));
+
+    await processor.process(
+      job({ activityId: 'a1', version: 3, kind: TimerKind.RESPONSE_TIMEOUT }),
+    );
+
+    expect(activities.applySystemTransition).toHaveBeenCalledWith('a1', ActivityStatus.OVERDUE);
+  });
+
+  it('response-timeout on a created row → system transition to overdue (T16)', async () => {
+    activitiesRepo.findById.mockResolvedValue(row({ status: ActivityStatus.CREATED, version: 3 }));
 
     await processor.process(
       job({ activityId: 'a1', version: 3, kind: TimerKind.RESPONSE_TIMEOUT }),
@@ -77,14 +90,22 @@ describe('ActivityTimersProcessor', () => {
     expect(activities.applySystemTransition).toHaveBeenCalledWith('a1', ActivityStatus.IN_PROGRESS);
   });
 
-  it('end on an in_progress row → done (T11)', async () => {
+  it('end on an in_progress row → verify (T12)', async () => {
     activitiesRepo.findById.mockResolvedValue(
       row({ status: ActivityStatus.IN_PROGRESS, version: 3 }),
     );
 
     await processor.process(job({ activityId: 'a1', version: 3, kind: TimerKind.END }));
 
-    expect(activities.applySystemTransition).toHaveBeenCalledWith('a1', ActivityStatus.DONE);
+    expect(activities.applySystemTransition).toHaveBeenCalledWith('a1', ActivityStatus.VERIFY);
+  });
+
+  it('verify-timeout on a verify row → overdue (T14)', async () => {
+    activitiesRepo.findById.mockResolvedValue(row({ status: ActivityStatus.VERIFY, version: 3 }));
+
+    await processor.process(job({ activityId: 'a1', version: 3, kind: TimerKind.VERIFY_TIMEOUT }));
+
+    expect(activities.applySystemTransition).toHaveBeenCalledWith('a1', ActivityStatus.OVERDUE);
   });
 
   it('stale version → silent no-op, no transition (REQ-TX-2)', async () => {

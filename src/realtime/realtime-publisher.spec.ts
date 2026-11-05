@@ -47,6 +47,23 @@ function event(): OutboxEventEntity {
   } as unknown as OutboxEventEntity;
 }
 
+function expenseEvent(): OutboxEventEntity {
+  return {
+    id: 'e2',
+    aggregateType: 'expense',
+    aggregateId: 'exp-1',
+    bondId: 'b2',
+    eventType: 'expense.approved',
+    aggregateVersion: 2,
+    payload: {
+      actor: { type: 'user', id: 'u2' },
+      status: 'approved',
+    },
+    createdAt: new Date('2026-10-16T14:22:31.412Z'),
+    dispatchedAt: null,
+  } as unknown as OutboxEventEntity;
+}
+
 /**
  * Worker publisher (REQ-4): exactly one publish per event on the realtime
  * channel, a no-op when the flag is off, and Redis failures are swallowed.
@@ -110,5 +127,108 @@ describe('RealtimePublisher (REQ-4)', () => {
     publisher.onModuleDestroy();
 
     expect(redisClient().disconnect).toHaveBeenCalledTimes(1);
+  });
+
+  describe('expense.changed (S8, T26)', () => {
+    it('publishes one JSON frame per expense event on REALTIME_CHANNEL', async () => {
+      const publisher = new RealtimePublisher(config('true'));
+      const redis = redisClient();
+
+      await publisher.publishExpenseChanged(expenseEvent());
+
+      expect(redis.publish).toHaveBeenCalledTimes(1);
+      const [channel, raw] = redis.publish.mock.calls[0];
+      expect(channel).toBe(REALTIME_CHANNEL);
+      expect(JSON.parse(raw as string)).toEqual({
+        v: 1,
+        type: 'expense.changed',
+        eventId: 'e2',
+        expenseId: 'exp-1',
+        bondId: 'b2',
+        status: 'approved',
+        actor: { type: 'user', id: 'u2' },
+        occurredAt: '2026-10-16T14:22:31.412Z',
+      });
+    });
+
+    it('is a no-op when REALTIME_PUBLISH_ENABLED=false', async () => {
+      const publisher = new RealtimePublisher(config('false'));
+
+      await publisher.publishExpenseChanged(expenseEvent());
+
+      expect(RedisMock).not.toHaveBeenCalled();
+    });
+
+    it('swallows a Redis publish failure for an expense frame (never throws)', async () => {
+      const publisher = new RealtimePublisher(config('true'));
+      redisClient().publish.mockRejectedValueOnce(new Error('redis down'));
+
+      await expect(publisher.publishExpenseChanged(expenseEvent())).resolves.toBeUndefined();
+    });
+  });
+
+  describe('notification.created (slice 3)', () => {
+    const created = {
+      id: 'n1',
+      userId: 'u2',
+      type: 'activity.assigned',
+      refEntityType: 'activity',
+      refEntityId: 'a1',
+    };
+
+    it('publishes one minimal frame per created notification, without title/body', async () => {
+      const publisher = new RealtimePublisher(config('true'));
+      const redis = redisClient();
+
+      await publisher.publishNotificationCreated(created, '2026-10-26T10:00:00.000Z');
+
+      expect(redis.publish).toHaveBeenCalledTimes(1);
+      const [channel, raw] = redis.publish.mock.calls[0];
+      expect(channel).toBe(REALTIME_CHANNEL);
+      expect(JSON.parse(raw as string)).toEqual({
+        v: 1,
+        type: 'notification.created',
+        notificationId: 'n1',
+        userId: 'u2',
+        notificationType: 'activity.assigned',
+        refEntityType: 'activity',
+        refEntityId: 'a1',
+        occurredAt: '2026-10-26T10:00:00.000Z',
+      });
+    });
+
+    it('stamps occurredAt at publish time when the caller does not pass one', async () => {
+      const publisher = new RealtimePublisher(config('true'));
+
+      await publisher.publishNotificationCreated(created);
+
+      const raw = redisClient().publish.mock.calls[0][1] as string;
+      const frame = JSON.parse(raw) as { occurredAt: string };
+      expect(Number.isNaN(Date.parse(frame.occurredAt))).toBe(false);
+    });
+
+    it('keeps a null refEntityId (notification without a target entity)', async () => {
+      const publisher = new RealtimePublisher(config('true'));
+
+      await publisher.publishNotificationCreated({ ...created, refEntityId: null });
+
+      const raw = redisClient().publish.mock.calls[0][1] as string;
+      expect(JSON.parse(raw)).toMatchObject({ refEntityId: null });
+    });
+
+    it('is a no-op when publishing is disabled', async () => {
+      const publisher = new RealtimePublisher(config('false'));
+
+      await publisher.publishNotificationCreated(created);
+
+      expect(RedisMock).not.toHaveBeenCalled();
+    });
+
+    it('swallows a Redis failure for a notification frame (never throws)', async () => {
+      const publisher = new RealtimePublisher(config('true'));
+      redisClient().publish.mockRejectedValueOnce(new Error('redis down'));
+
+      await expect(publisher.publishNotificationCreated(created)).resolves.toBeUndefined();
+    });
   });
 });

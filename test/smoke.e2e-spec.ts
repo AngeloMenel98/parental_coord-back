@@ -4,8 +4,10 @@ import { WsAdapter } from '@nestjs/platform-ws';
 import * as request from 'supertest';
 import { APP_GUARD } from '@nestjs/core';
 import { ThrottlerGuard } from '@nestjs/throttler';
+import { DataSource } from 'typeorm';
 
 import { AppModule } from '../src/app.module';
+import { NotificationRepository } from '../src/notifications/repositories/notification.repository';
 
 /** Fila del read path de notificaciones (`GET /api/notifications`). */
 interface NotificationItem {
@@ -42,6 +44,8 @@ interface NotificationItem {
 describe('Smoke (e2e) — flujo real sobre Postgres', () => {
   let app: INestApplication;
   const run = Date.now();
+  let notificationRepository: NotificationRepository;
+  let dataSource: DataSource;
 
   // ── Datos únicos por corrida ────────────────────────────────────────────
   const userA = {
@@ -83,6 +87,8 @@ describe('Smoke (e2e) — flujo real sobre Postgres', () => {
       new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true, transform: true }),
     );
     await app.init();
+    notificationRepository = app.get(NotificationRepository);
+    dataSource = app.get(DataSource);
   }, 30000);
 
   afterAll(async () => {
@@ -158,8 +164,37 @@ describe('Smoke (e2e) — flujo real sobre Postgres', () => {
     expect(categoryId).toBeTruthy();
   });
 
+  // Helper available for worker-enabled smoke runs (SMOKE_WORKER=1) per T7.2
+  const _waitForNotification = async (
+    token: string,
+    predicate: (item: NotificationItem) => boolean,
+    timeoutMs = 15000,
+    intervalMs = 250,
+  ): Promise<NotificationItem | undefined> => {
+    if (process.env.SMOKE_WORKER !== '1') {
+      return undefined;
+    }
+    const start = Date.now();
+    while (Date.now() - start < timeoutMs) {
+      const res = await server()
+        .get('/api/notifications?limit=100')
+        .set('Authorization', `Bearer ${token}`)
+        .expect(200);
+      const items = (res.body.items as NotificationItem[]) ?? [];
+      const found = items.find(predicate);
+      if (found) {
+        return found;
+      }
+      await new Promise((resolve) => setTimeout(resolve, intervalMs));
+    }
+    return undefined;
+  };
+  void _waitForNotification;
+
   it('B.5 — crea la actividad con categoryId y assignedTo (caza la FK category_id)', async () => {
     const start = new Date(Date.now() + 86_400_000).toISOString();
+    // Actor C (userA) creates and assigns to A (self-assign) - under matrix this yields zero notifications
+    // but we keep the fixture meaningful for the read-path assertions
     const created = await server()
       .post(`/api/activities/${bondId}/create`)
       .set('Authorization', `Bearer ${tokenA}`)
@@ -203,7 +238,18 @@ describe('Smoke (e2e) — flujo real sobre Postgres', () => {
   });
 
   it('B.8 — read path de notificaciones: lista, marca leída, cuenta, scoping y 400/401', async () => {
-    // B.5 creó la notificación `activity_assigned` para el ASSIGNEE (idA).
+    // Seed a deterministic notification via repository for read-path coverage
+    const seeded = await notificationRepository.createNotification({
+      userId: idA,
+      bondId,
+      type: 'activity_assigned',
+      title: 'New activity assigned: Smoke actividad',
+      body: 'New activity assigned: Smoke actividad',
+      refEntityType: 'activity',
+      refEntityId: activityId,
+      sourceEventId: null,
+    });
+
     const list = await server()
       .get('/api/notifications')
       .set('Authorization', `Bearer ${tokenA}`)
@@ -222,7 +268,8 @@ describe('Smoke (e2e) — flujo real sobre Postgres', () => {
       expect(items[i - 1].createdAt >= items[i].createdAt).toBe(true);
     }
 
-    const target = items.find((n) => n.type === 'activity_assigned');
+    const target =
+      items.find((n) => n.id === seeded.id) ?? items.find((n) => n.type === 'activity_assigned');
     expect(target).toBeDefined();
     expect(target!.refEntityType).toBe('activity');
     expect(target!.refEntityId).toBe(activityId);
@@ -234,7 +281,7 @@ describe('Smoke (e2e) — flujo real sobre Postgres', () => {
       .expect(200);
     expect(before.body.unreadCount).toBeGreaterThanOrEqual(1);
 
-    // Conteo acotado por bond (la notificación de B.5 pertenece a este bond).
+    // Conteo acotado por bond (la notificación pertenece a este bond).
     const beforeBond = await server()
       .get(`/api/notifications/unread-count?bondId=${bondId}`)
       .set('Authorization', `Bearer ${tokenA}`)
@@ -298,6 +345,47 @@ describe('Smoke (e2e) — flujo real sobre Postgres', () => {
 
     // Sin credencial ⇒ 401.
     await server().get('/api/notifications').expect(401);
+
+    // Dedup probe (real Postgres): fetch real outbox_event id for activityId
+    const outboxRows = await dataSource.query(
+      'SELECT id FROM outbox_event WHERE aggregate_id = $1 LIMIT 1',
+      [activityId],
+    );
+    expect(Array.isArray(outboxRows)).toBe(true);
+    expect(outboxRows.length).toBeGreaterThan(0);
+    const outboxEventId = outboxRows[0].id as string;
+    expect(typeof outboxEventId).toBe('string');
+
+    const first = await notificationRepository.createFromEvent({
+      userId: idA,
+      bondId,
+      type: 'activity_assigned',
+      title: 'Dedup probe',
+      body: 'Dedup probe',
+      refEntityType: 'activity',
+      refEntityId: activityId,
+      sourceEventId: outboxEventId,
+    } as any);
+    expect(first).toBeTruthy();
+    expect(first?.id).toBeTruthy();
+
+    const second = await notificationRepository.createFromEvent({
+      userId: idA,
+      bondId,
+      type: 'activity_assigned',
+      title: 'Dedup probe',
+      body: 'Dedup probe',
+      refEntityType: 'activity',
+      refEntityId: activityId,
+      sourceEventId: outboxEventId,
+    } as any);
+    expect(second).toBeNull();
+
+    const countRows = await dataSource.query(
+      'SELECT COUNT(*)::int as count FROM notification WHERE user_id = $1 AND source_event_id = $2',
+      [idA, outboxEventId],
+    );
+    expect(countRows[0].count).toBe(1);
   });
 
   it('B.9 — GET /health reporta DB ok (sin tolerancia a 503)', async () => {

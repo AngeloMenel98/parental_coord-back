@@ -27,7 +27,11 @@ export class ActivitySummaryDto {
 
   @Expose() canDelete!: boolean;
   @Expose() canCancel!: boolean;
+  @Expose() canAssign!: boolean;
+  @Expose() canReassign!: boolean;
+  @Expose() canConfirm!: boolean;
   @Expose() canDecline!: boolean;
+  @Expose() canComplete!: boolean;
   @Expose() childrenIds: string[] = [];
 }
 
@@ -56,9 +60,15 @@ export class ActivityDetailDto {
 
   @Expose() canDelete!: boolean;
   @Expose() canCancel!: boolean;
+  @Expose() canAssign!: boolean;
+  @Expose() canReassign!: boolean;
+  @Expose() canConfirm!: boolean;
   @Expose() canDecline!: boolean;
+  @Expose() canComplete!: boolean;
 
   @Expose() isPast!: boolean;
 
   @Expose() declinedReason!: string | null;
+
+  @Expose() childrenIds: string[] = [];
 }

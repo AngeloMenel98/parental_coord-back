@@ -32,6 +32,38 @@ services:
       retries: 5
     restart: unless-stopped
 
+  # One-shot schema migrator.
+  #
+  # Runs the TypeORM CLI that is already baked into the image before the API or
+  # the worker boot. Compose had no migration step at all, so both containers
+  # started against whatever schema happened to exist (k8s solved the same
+  # problem with the `migrations` initContainer in app-deployment.yaml).
+  # Release gate W3.
+  #
+  # `restart: 'no'` is intentional: this container must exit 0, not loop.
+  migrate:
+    build: .
+    container_name: parental-coordination-migrate
+    command:
+      [
+        'node',
+        'node_modules/typeorm/cli.js',
+        'migration:run',
+        '-d',
+        'dist/src/database/data-source.js',
+      ]
+    environment:
+      - NODE_ENV=production
+      - DB_HOST=postgres
+      - DB_PORT=5432
+      - DB_USER=parental
+      - DB_PASSWORD=parental_secret
+      - DB_NAME=parental_coordination
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: 'no'
+
   api:
     build: .
     container_name: parental-coordination-api
@@ -48,6 +80,12 @@ services:
       - JWT_SECRET=dev-secret
       - JWT_EXPIRES_IN=7d
       - REALTIME_PUBLISH_ENABLED=true
+      # Cloud storage. Read from the same .env the host uses; empty values keep
+      # StorageService disabled (attachments return "Storage not configured").
+      - SUPABASE_URL=${SUPABASE_URL:-}
+      - SUPABASE_SERVICE_ROLE_KEY=${SUPABASE_SERVICE_ROLE_KEY:-}
+      - SUPABASE_STORAGE_BUCKET_ACTIVITY_ATTACHMENTS=${SUPABASE_STORAGE_BUCKET_ACTIVITY_ATTACHMENTS:-activity-attachments}
+      - ATTACHMENTS_MAX_SIZE_BYTES=${ATTACHMENTS_MAX_SIZE_BYTES:-10485760}
     ports:
       - '3000:3000'
     depends_on:
@@ -55,6 +93,8 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
     healthcheck:
       test:
         [
@@ -85,11 +125,17 @@ services:
       - JWT_SECRET=dev-secret
       - JWT_EXPIRES_IN=7d
       - REALTIME_PUBLISH_ENABLED=true
+      - SUPABASE_URL=${SUPABASE_URL:-}
+      - SUPABASE_SERVICE_ROLE_KEY=${SUPABASE_SERVICE_ROLE_KEY:-}
+      - SUPABASE_STORAGE_BUCKET_ACTIVITY_ATTACHMENTS=${SUPABASE_STORAGE_BUCKET_ACTIVITY_ATTACHMENTS:-activity-attachments}
+      - ATTACHMENTS_MAX_SIZE_BYTES=${ATTACHMENTS_MAX_SIZE_BYTES:-10485760}
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
     healthcheck:
       test: ['CMD', 'kill', '-0', '1']
       interval: 10s

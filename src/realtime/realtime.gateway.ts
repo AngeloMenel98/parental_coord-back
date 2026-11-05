@@ -7,6 +7,9 @@ import { AuthUser } from '../auth/dto/auth-user.dto';
 import { BondsService } from '../bonds/bonds.service';
 import { BondMembersRepository } from '../bonds/repositories/bond-members.repository';
 import { ActivityChangedMessageV1 } from './dto/activity-changed-message';
+import { ExpenseChangedMessageV1 } from './dto/expense-changed-message';
+import { NotificationCreatedMessageV1 } from './dto/notification-created-message';
+import { RealtimeMessageV1 } from './dto/realtime-message';
 import { RealtimeAuthService } from './realtime-auth.service';
 import { RealtimeSubscriberService } from './realtime-subscriber.service';
 import { WS_CLOSE_NO_MEMBERSHIP, WS_CLOSE_UNAUTHORIZED } from './realtime.constants';
@@ -27,10 +30,10 @@ import { WS_CLOSE_NO_MEMBERSHIP, WS_CLOSE_UNAUTHORIZED } from './realtime.consta
  * (`BondsService.findByUserId` empty) → close 4403 (spec REQ-1).
  *
  * Registry: platform-ws offers NO rooms/namespaces, so the "room" is an
- * in-memory `Map<userId, Set<WebSocket>>`. Delivery: each subscriber frame is
- * resolved against `BondMembersRepository.findActiveMemberIds(bondId)` and
- * sent ONLY to the sockets of those users, exactly once per socket (sockets
- * are deduplicated via an intermediate Set).
+ * in-memory `Map<userId, Set<WebSocket>>`. Delivery is per frame TYPE:
+ * `activity.changed` resolves its audience from the bond's active members,
+ * while `notification.created` is already addressed to one user and goes only
+ * to that user's sockets (with the `userId` routing key stripped).
  */
 @WebSocketGateway({ path: process.env.WS_PATH ?? '/realtime' })
 export class RealtimeGateway implements OnGatewayInit {
@@ -92,8 +95,36 @@ export class RealtimeGateway implements OnGatewayInit {
     }
   }
 
-  /** Sends the frame only to active members' sockets, exactly once each (REQ-3). */
-  private async deliver(message: ActivityChangedMessageV1): Promise<void> {
+  /** Routes a frame by type: bond audience for activities, one user for notifications. */
+  private async deliver(message: RealtimeMessageV1): Promise<void> {
+    if (message.type === 'notification.created') {
+      this.deliverToUser(message);
+      return;
+    }
+    await this.deliverToBond(message);
+  }
+
+  /**
+   * Sends a notification frame only to the owner's sockets, in-process (no DB
+   * lookup: the frame already names its recipient).
+   *
+   * The `userId` routing key is stripped before the write — every socket only
+   * ever sees the frame addressed to itself.
+   */
+  private deliverToUser(message: NotificationCreatedMessageV1): void {
+    const { userId, ...frame } = message;
+    const raw = JSON.stringify(frame);
+    for (const socket of this.registry.get(userId) ?? []) {
+      if (socket.readyState === WebSocket.OPEN) {
+        socket.send(raw);
+      }
+    }
+  }
+
+  /** Sends a bond-scoped frame only to active members' sockets, exactly once each (REQ-3). */
+  private async deliverToBond(
+    message: ActivityChangedMessageV1 | ExpenseChangedMessageV1,
+  ): Promise<void> {
     try {
       const memberIds = await this.bondMembersRepo.findActiveMemberIds(message.bondId);
 

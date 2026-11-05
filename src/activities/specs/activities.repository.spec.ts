@@ -5,14 +5,12 @@ import { Repository } from 'typeorm';
 import { ActivitiesRepository } from '../repositories/activities.repository';
 import { ActsAuditRepository } from '../repositories/activities-audit.repository';
 import { ActivityEntity, ActivityStatus } from '../entities/activity.entity';
-import { NotificationRepository } from '../../notifications/repositories/notification.repository';
 import { OutboxEventRepository } from '../../outbox/repositories/outbox-event.repository';
 
 describe('ActivitiesRepository', () => {
   let repo: ActivitiesRepository;
   let activityRepo: jest.Mocked<Repository<ActivityEntity>>;
   let outboxRepo: { insert: jest.Mock };
-  let notiRepo: { createForActivity: jest.Mock };
 
   let qb: any;
   let lockQb: any;
@@ -34,6 +32,7 @@ describe('ActivitiesRepository', () => {
       addSelect: jest.fn().mockReturnThis(),
       limit: jest.fn().mockReturnThis(),
       getMany: jest.fn().mockResolvedValue([]),
+      getOne: jest.fn().mockResolvedValue(null),
       getRawMany: jest.fn().mockResolvedValue([]),
       execute: jest.fn().mockResolvedValue({ affected: 1 }),
     };
@@ -64,14 +63,12 @@ describe('ActivitiesRepository', () => {
     } as any;
 
     outboxRepo = { insert: jest.fn().mockResolvedValue({}) };
-    notiRepo = { createForActivity: jest.fn().mockResolvedValue({}) };
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         ActivitiesRepository,
         { provide: getRepositoryToken(ActivityEntity), useValue: activityRepo },
         { provide: ActsAuditRepository, useValue: { record: jest.fn() } },
-        { provide: NotificationRepository, useValue: notiRepo },
         { provide: OutboxEventRepository, useValue: outboxRepo },
       ],
     }).compile();
@@ -116,6 +113,19 @@ describe('ActivitiesRepository', () => {
       const where = activityRepo.findOne.mock.calls[0][0].where as Record<string, unknown>;
       expect(where.deletedAt).toBeUndefined();
       expect(where.id).toBe('a1');
+    });
+
+    it('findByIdWithChildren filters on deleted_at and selects the childrenIds subquery', async () => {
+      await repo.findByIdWithChildren('a1');
+
+      expect(activityRepo.createQueryBuilder).toHaveBeenCalledWith('a');
+      expect(qb.where).toHaveBeenCalledWith('a.id = :id', { id: 'a1' });
+      expect(qb.andWhere).toHaveBeenCalledWith(softDeleteClause);
+      expect(qb.addSelect).toHaveBeenCalledWith(
+        expect.stringContaining('activity_child'),
+        'childrenIds',
+      );
+      expect(qb.getOne).toHaveBeenCalled();
     });
 
     it('exposes NO purge/GC method — ruling A4 deleted the 30-day retention entirely', () => {
@@ -170,7 +180,8 @@ describe('ActivitiesRepository', () => {
       expect(outboxRepo.insert).toHaveBeenCalledTimes(1);
       expect(outboxRepo.insert).toHaveBeenCalledWith(
         {
-          activityId: 'a1',
+          aggregateType: 'activity',
+          aggregateId: 'a1',
           bondId: 'b1',
           eventType: 'activity.assigned',
           aggregateVersion: 1,
@@ -190,51 +201,26 @@ describe('ActivitiesRepository', () => {
       expect(outboxRepo.insert).not.toHaveBeenCalled();
     });
 
-    it('writes the optional notification with the SAME tx manager (T7 coordinator)', async () => {
-      lockQb.getOne.mockResolvedValue(baseRow());
-
-      await repo.applyTransition({
-        ...baseInput(),
-        notification: {
-          userId: 'coord-1',
-          type: 'activity_overdue',
-          title: 'T',
-          body: 'Activity overdue: T',
-        },
-      });
-
-      expect(notiRepo.createForActivity).toHaveBeenCalledTimes(1);
-      expect(notiRepo.createForActivity).toHaveBeenCalledWith(
-        {
-          userId: 'coord-1',
-          bondId: 'b1',
-          type: 'activity_overdue',
-          title: 'T',
-          body: 'Activity overdue: T',
-          refEntityId: 'a1',
-        },
-        em,
-      );
-    });
-
-    it('writes NO notification when the input omits one', async () => {
+    it('does NOT write notifications — the in-tx writer was removed (P5)', async () => {
       lockQb.getOne.mockResolvedValue(baseRow());
 
       await repo.applyTransition(baseInput());
 
-      expect(notiRepo.createForActivity).not.toHaveBeenCalled();
+      // REQ-FAN-006: notifications are produced by the worker-only fan-out,
+      // never by `applyTransition`. The repository has no notification dependency.
+      expect((repo as any).notiRepo).toBeUndefined();
+      expect(outboxRepo.insert).toHaveBeenCalledTimes(1);
     });
 
-    it('CAS miss → notification is NOT written (all-or-nothing tx)', async () => {
-      lockQb.getOne.mockResolvedValue({ ...baseRow(), version: 5 });
+    it('ignores any legacy `notification` input — only the outbox row is written', async () => {
+      lockQb.getOne.mockResolvedValue(baseRow());
 
-      const result = await repo.applyTransition({
+      await repo.applyTransition({
         ...baseInput(),
         notification: { userId: 'coord-1', type: 'activity_overdue', title: 'T', body: 'B' },
-      });
+      } as any);
 
-      expect(result).toBeNull();
-      expect(notiRepo.createForActivity).not.toHaveBeenCalled();
+      expect(outboxRepo.insert).toHaveBeenCalledTimes(1);
     });
 
     it('row missing → null, no save, no outbox', async () => {
@@ -282,13 +268,18 @@ describe('ActivitiesRepository', () => {
       const res = await repo.findDueForTransition(now, 50);
 
       expect(res).toEqual([{ id: 'a1' }]);
-      // The due predicate covers assigned/assisting/in_progress and is parameterized by `now`.
+      // The due predicate covers created/assigned/assisting/in_progress/verify and is parameterized by `now`.
       const [clause, params] = qb.andWhere.mock.calls[0];
+      expect(clause).toContain('a.status = :created');
       expect(clause).toContain('a.status = :assigned');
       expect(clause).toContain('a.status = :assisting');
+      expect(clause).toContain('a.status = :inProgress');
+      expect(clause).toContain('a.status = :verify');
       expect(clause).toContain('COALESCE(a.scheduled_end, a.scheduled_start)');
       expect(params.now).toBe(now);
+      expect(params.created).toBe(ActivityStatus.CREATED);
       expect(params.assigned).toBe(ActivityStatus.ASSIGNED);
+      expect(params.verify).toBe(ActivityStatus.VERIFY);
       expect(qb.limit).toHaveBeenCalledWith(50);
     });
 
@@ -315,7 +306,8 @@ describe('ActivitiesRepository', () => {
       expect(outboxRepo.insert).toHaveBeenCalledTimes(1);
       expect(outboxRepo.insert).toHaveBeenCalledWith(
         {
-          activityId: 'new-id',
+          aggregateType: 'activity',
+          aggregateId: 'new-id',
           bondId: 'b1',
           eventType: 'activity.assigned',
           aggregateVersion: 1,

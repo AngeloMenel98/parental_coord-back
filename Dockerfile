@@ -6,15 +6,24 @@
 # build toolchain is needed in the final image.
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Node 22 is a functional requirement, not a preference:
+# `@supabase/supabase-js` builds its Realtime client inside `createClient()` and
+# throws on Node 20, which has no global `WebSocket`. StorageService catches that
+# throw, so the failure is silent and every attachment presign returns
+# "Storage not configured". Keep this in sync with `.nvmrc` and `engines`.
+# Node 20 is also past its EOL (2026-04-30).
+# ---------------------------------------------------------------------------
+
 # ---- Stage 1: install dependencies (with dev deps for build) ----
-FROM node:20-alpine AS deps
+FROM node:22-alpine AS deps
 WORKDIR /app
 RUN corepack enable
 COPY package.json pnpm-lock.yaml ./
 RUN pnpm install --frozen-lockfile
 
 # ---- Stage 2: build (typecheck + compile to dist/) ----
-FROM node:20-alpine AS build
+FROM node:22-alpine AS build
 WORKDIR /app
 RUN corepack enable
 COPY --from=deps /app/node_modules ./node_modules
@@ -23,7 +32,7 @@ COPY . .
 RUN pnpm build && pnpm prune --prod
 
 # ---- Stage 3: runtime (minimal) ----
-FROM node:20-alpine AS runtime
+FROM node:22-alpine AS runtime
 WORKDIR /app
 ENV NODE_ENV=production
 # Run as non-root user.
