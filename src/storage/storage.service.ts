@@ -7,6 +7,8 @@ export class StorageService {
   private readonly logger = new Logger(StorageService.name);
   private readonly supabase: SupabaseClient | null = null;
   private readonly bucket: string;
+  /** B3 · bucket de los PDFs generados; nunca el de adjuntos de actividad. */
+  private readonly reportsBucket: string;
 
   constructor(private readonly config: ConfigService) {
     const url = this.config.get<string>('SUPABASE_URL');
@@ -14,6 +16,7 @@ export class StorageService {
     this.bucket =
       this.config.get<string>('SUPABASE_STORAGE_BUCKET_ACTIVITY_ATTACHMENTS') ||
       'activity-attachments';
+    this.reportsBucket = this.config.get<string>('SUPABASE_STORAGE_BUCKET_REPORTS') || 'reports';
     if (url && key) {
       try {
         this.supabase = createClient(url, key, {
@@ -33,10 +36,7 @@ export class StorageService {
     return !!this.supabase;
   }
 
-  async createSignedUploadUrl(
-    path: string,
-    expiresIn = 300,
-  ): Promise<{ signedUrl: string; path: string } | null> {
+  async createSignedUploadUrl(path: string): Promise<{ signedUrl: string; path: string } | null> {
     if (!this.supabase) return null;
     const { data, error } = await this.supabase.storage
       .from(this.bucket)
@@ -45,7 +45,7 @@ export class StorageService {
       this.logger.warn(`createSignedUploadUrl error: ${error?.message}`);
       return null;
     }
-    // createSignedUploadUrl already returns a signed URL; expiresIn is advisory
+    // createSignedUploadUrl already returns its own signed URL: the expiry is not ours.
     return { signedUrl: data.signedUrl, path };
   }
 
@@ -81,5 +81,36 @@ export class StorageService {
       return false;
     }
     return true;
+  }
+
+  /**
+   * B3 · S11 — sube bytes generados por el servidor al bucket de reportes.
+   *
+   * Devuelve el path guardado (no una URL): `report.file_url` guarda el path y la
+   * URL firmada se emite en cada lectura, igual que en los adjuntos. `upsert:
+   * true` porque un reintento del job debe poder sobrescribir el intento fallido.
+   */
+  async uploadObject(path: string, body: Buffer, contentType: string): Promise<string | null> {
+    if (!this.supabase) return null;
+    const { error } = await this.supabase.storage
+      .from(this.reportsBucket)
+      .upload(path, body, { contentType, upsert: true });
+    if (error) {
+      this.logger.warn(`uploadObject error: ${error.message}`);
+      return null;
+    }
+    return path;
+  }
+
+  async createSignedReportDownloadUrl(path: string, expiresIn = 900): Promise<string | null> {
+    if (!this.supabase) return null;
+    const { data, error } = await this.supabase.storage
+      .from(this.reportsBucket)
+      .createSignedUrl(path, expiresIn);
+    if (error || !data?.signedUrl) {
+      this.logger.warn(`createSignedReportDownloadUrl error: ${error?.message}`);
+      return null;
+    }
+    return data.signedUrl;
   }
 }
