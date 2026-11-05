@@ -248,3 +248,16 @@ element; the date stays optional because an admin may not know it yet.
 the rejection before any transaction is opened, a failing child write never returning a
 bond, and the DTO rejecting a missing/empty `children` and a child without a last name.
 Full suite 93 suites / 1107 tests. `pnpm build` and `eslint` clean.
+
+**L19 — bug encontrado usando la app: la respuesta de `POST /admin/bonds` no era la de la
+lista.** El cliente tipa `AdminBond.members` como `List<BondMemberInfo>` (objetos); la
+creación devolvía `members: string[]` (ids crudos). Una creación **exitosa** (201) hacía que
+kotlinx fallara al decodificar y la app mostrara "illegal input unexpected JSON". Prueba de
+campo: la base tiene un vínculo `Test` con 2 hijos, creado 14:44 local, de un intento que la
+UI reportó como error. Ahora `createBond` devuelve la misma forma que `GET /admin/bonds`
+(vía `findBondEnriched` + `toBondAdminView`), y hay un test que lo pinea.
+
+**L20 — la delegación volvió a fallar.** `gentle-ai-verify` (task mw3lmegq-3-bbgc) terminó con
+error de cuota del proveedor, como los seis intentos anteriores. El diagnóstico se hizo
+inline: contrato backend (`admin.service.ts:154`) vs modelo del cliente
+(`AdminModels.kt:22`) más el registro del vínculo huérfano en la base.

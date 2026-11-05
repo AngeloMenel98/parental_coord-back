@@ -304,7 +304,20 @@ describe('AdminService (B1)', () => {
     });
 
     it('B5 writes the bond, its two members and its children inside one transaction', async () => {
-      const result = await service.createBond(dto());
+      bondsRepo.findBondEnriched.mockResolvedValue({
+        id: 'generated-id',
+        title: 'Paz–Gómez',
+        agreementType: 'formal',
+        isActive: true,
+        createdAt: new Date('2026-07-01T00:00:00.000Z'),
+        members: [
+          { userId: 'user-a', role: 'progenitor', user: { email: 'a@mail.com' } },
+          { userId: 'user-b', role: 'progenitor', user: { email: 'b@mail.com' } },
+        ],
+        children: [{ id: 'c1' }, { id: 'c2' }],
+      });
+
+      await service.createBond(dto());
 
       expect(bondsRepo.transaction).toHaveBeenCalledTimes(1);
       // bond + members + children
@@ -320,14 +333,39 @@ describe('AdminService (B1)', () => {
         expect.objectContaining({ firstName: 'Mateo', dateOfBirth: '2020-05-15' }),
         expect.objectContaining({ firstName: 'Lucía', dateOfBirth: null }),
       ]);
-      expect(result).toEqual(
-        expect.objectContaining({
-          id: 'generated-id',
-          title: 'Paz–Gómez',
-          members: ['user-a', 'user-b'],
-          childrenCount: 2,
-        }),
-      );
+    });
+
+    it('B5 returns the same per-item shape the bond list returns', async () => {
+      // El cliente tipa `members` como objetos. Devolver los ids crudos hacía que
+      // decodificara mal una respuesta 201 exitosa: error visible con el vínculo ya creado.
+      bondsRepo.findBondEnriched.mockResolvedValue({
+        id: 'generated-id',
+        title: 'Paz–Gómez',
+        agreementType: 'formal',
+        isActive: true,
+        createdAt: new Date('2026-07-01T00:00:00.000Z'),
+        members: [
+          { userId: 'user-a', role: 'progenitor', user: { email: 'a@mail.com' } },
+          { userId: 'user-b', role: 'progenitor', user: { email: 'b@mail.com' } },
+        ],
+        children: [{ id: 'c1' }, { id: 'c2' }],
+      });
+
+      const result = await service.createBond(dto());
+
+      expect(result).toEqual({
+        id: 'generated-id',
+        title: 'Paz–Gómez',
+        agreementType: 'formal',
+        isActive: true,
+        members: [
+          { id: 'user-a', email: 'a@mail.com', role: 'progenitor' },
+          { id: 'user-b', email: 'b@mail.com', role: 'progenitor' },
+        ],
+        childrenCount: 2,
+        createdAt: new Date('2026-07-01T00:00:00.000Z'),
+      });
+      expect(bondsRepo.findBondEnriched).toHaveBeenCalledWith('generated-id');
     });
 
     it('B5 rejects a bond without children before opening a transaction', async () => {

@@ -147,15 +147,12 @@ export class AdminService {
       return bond;
     });
 
-    return {
-      id: savedBond.id,
-      title: savedBond.title,
-      agreementType: savedBond.agreementType,
-      isActive: savedBond.isActive,
-      members: dto.userIds,
-      childrenCount: dto.children.length,
-      createdAt: savedBond.createdAt,
-    };
+    // S12 · la creación devuelve EXACTAMENTE la forma de `GET /admin/bonds`.
+    // Antes devolvía `members: string[]` (los ids crudos) mientras la lista devolvía
+    // objetos: el cliente, que tipa `members` como objetos, fallaba al decodificar una
+    // respuesta 201 exitosa y mostraba un error con el vínculo YA creado en la base.
+    const enriched = await this.bondsRepo.findBondEnriched(savedBond.id);
+    return this.toBondAdminView(enriched ?? savedBond);
   }
 
   async listBonds() {
