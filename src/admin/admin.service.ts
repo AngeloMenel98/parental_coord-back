@@ -8,6 +8,7 @@ import * as bcrypt from 'bcryptjs';
 
 import { SystemRole } from '../users/entities/user.entity';
 import { BondMemberRole } from '../bonds/entities/bond-member.entity';
+import { BondMemberEntity } from '../bonds/entities/bond-member.entity';
 import { BondEntity } from '../bonds/entities/bond.entity';
 import { ChildEntity } from '../children/entities/child.entity';
 import { UsersRepository } from '../users/repositories/users.repository';
@@ -89,9 +90,21 @@ export class AdminService {
 
   // ── Bonds ────────────────────────────────────────────────────────
 
+  /**
+   * B5 · crea el vínculo completo en una sola transacción.
+   *
+   * Antes eran tres escrituras sueltas: si fallaba la segunda quedaba un vínculo
+   * sin progenitores, y si fallaba la tercera, uno sin hijos — un estado que el
+   * producto considera inválido y que ninguna pantalla muestra. Ahora o entra
+   * todo, o no entra nada.
+   */
   async createBond(dto: CreateBondDto) {
     if (dto.userIds.length !== 2) {
       throw new BadRequestException('A bond must have exactly 2 members');
+    }
+
+    if (!dto.children || dto.children.length === 0) {
+      throw new BadRequestException('A bond must have at least one child');
     }
 
     // Validate all users exist
@@ -100,20 +113,39 @@ export class AdminService {
       throw new BadRequestException('One or more user IDs are invalid');
     }
 
-    const savedBond = await this.bondsRepo.createAndSave({
-      title: dto.title,
-      agreementType: dto.agreementType,
-      isActive: true,
-    });
+    const savedBond = await this.bondsRepo.transaction(async (manager) => {
+      const bond = await manager.save(
+        manager.create(BondEntity, {
+          title: dto.title,
+          agreementType: dto.agreementType,
+          isActive: true,
+        }),
+      );
 
-    // Add both users as progenitors
-    const members = dto.userIds.map((userId) => ({
-      bondId: savedBond.id,
-      userId,
-      role: BondMemberRole.PROGENITOR,
-      joinedAt: new Date(),
-    }));
-    await this.bondMembersRepo.createAndSaveMany(members);
+      await manager.save(
+        dto.userIds.map((userId) =>
+          manager.create(BondMemberEntity, {
+            bondId: bond.id,
+            userId,
+            role: BondMemberRole.PROGENITOR,
+            joinedAt: new Date(),
+          }),
+        ),
+      );
+
+      await manager.save(
+        dto.children.map((child) =>
+          manager.create(ChildEntity, {
+            bondId: bond.id,
+            firstName: child.firstName,
+            lastName: child.lastName,
+            dateOfBirth: child.dateOfBirth ?? null,
+          }),
+        ),
+      );
+
+      return bond;
+    });
 
     return {
       id: savedBond.id,
@@ -121,6 +153,7 @@ export class AdminService {
       agreementType: savedBond.agreementType,
       isActive: savedBond.isActive,
       members: dto.userIds,
+      childrenCount: dto.children.length,
       createdAt: savedBond.createdAt,
     };
   }

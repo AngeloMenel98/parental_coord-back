@@ -6,6 +6,7 @@ import { SystemRole } from '../users/entities/user.entity';
 
 import { AdminController } from './admin.controller';
 import { AdminService } from './admin.service';
+import { CreateBondDto } from './dto/create-bond.dto';
 import { CreateChildDto as AdminCreateChildDto } from './dto/create-child.dto';
 import { UpdateChildDto } from './dto/update-child.dto';
 
@@ -36,7 +37,9 @@ describe('AdminService (B1)', () => {
     createAndSave: jest.Mock;
     save: jest.Mock;
     findAllBondsEnriched: jest.Mock;
+    transaction: jest.Mock;
   };
+  let manager: { create: jest.Mock; save: jest.Mock };
   let bondMembersRepo: {
     createAndSaveMany: jest.Mock;
     createAndSave: jest.Mock;
@@ -62,12 +65,21 @@ describe('AdminService (B1)', () => {
       save: jest.fn(),
     };
     personalDataRepo = { createAndSave: jest.fn() };
+    manager = {
+      create: jest.fn((_entity: unknown, data: Record<string, unknown>) => ({
+        id: 'generated-id',
+        createdAt: new Date('2026-07-01T00:00:00.000Z'),
+        ...data,
+      })),
+      save: jest.fn(async (value: unknown) => value),
+    };
     bondsRepo = {
       findById: jest.fn(),
       findBondEnriched: jest.fn(),
       createAndSave: jest.fn(),
       save: jest.fn(),
       findAllBondsEnriched: jest.fn(),
+      transaction: jest.fn(async (fn: (m: unknown) => Promise<unknown>) => fn(manager)),
     };
     bondMembersRepo = {
       createAndSaveMany: jest.fn(),
@@ -140,9 +152,7 @@ describe('AdminService (B1)', () => {
       agreementType: 'formal',
       isActive: true,
       createdAt: new Date('2026-01-01T00:00:00.000Z'),
-      members: [
-        { id: 'm1', userId: USER, role: 'progenitor', user: { email: 'ana@example.com' } },
-      ],
+      members: [{ id: 'm1', userId: USER, role: 'progenitor', user: { email: 'ana@example.com' } }],
       children: [{ id: CHILD }, { id: 'child-2' }],
     });
     bondsRepo.save.mockImplementation(async (b: unknown) => b);
@@ -276,6 +286,87 @@ describe('AdminService (B1)', () => {
     expect(roles).toEqual([SystemRole.ADMIN]);
   });
 
+  // ── B5 · El vínculo nace completo o no nace ─────────────────────
+
+  describe('B5 createBond', () => {
+    const dto = (): CreateBondDto => ({
+      title: 'Paz–Gómez',
+      agreementType: 'formal' as never,
+      userIds: ['user-a', 'user-b'],
+      children: [
+        { firstName: 'Mateo', lastName: 'Paz', dateOfBirth: '2020-05-15' },
+        { firstName: 'Lucía', lastName: 'Paz' },
+      ],
+    });
+
+    beforeEach(() => {
+      usersRepo.findByIds.mockResolvedValue([{ id: 'user-a' }, { id: 'user-b' }]);
+    });
+
+    it('B5 writes the bond, its two members and its children inside one transaction', async () => {
+      const result = await service.createBond(dto());
+
+      expect(bondsRepo.transaction).toHaveBeenCalledTimes(1);
+      // bond + members + children
+      expect(manager.save).toHaveBeenCalledTimes(3);
+      expect(manager.save.mock.calls[0][0]).toEqual(
+        expect.objectContaining({ title: 'Paz–Gómez', isActive: true }),
+      );
+      expect(manager.save.mock.calls[1][0]).toEqual([
+        expect.objectContaining({ userId: 'user-a', role: 'progenitor' }),
+        expect.objectContaining({ userId: 'user-b', role: 'progenitor' }),
+      ]);
+      expect(manager.save.mock.calls[2][0]).toEqual([
+        expect.objectContaining({ firstName: 'Mateo', dateOfBirth: '2020-05-15' }),
+        expect.objectContaining({ firstName: 'Lucía', dateOfBirth: null }),
+      ]);
+      expect(result).toEqual(
+        expect.objectContaining({
+          id: 'generated-id',
+          title: 'Paz–Gómez',
+          members: ['user-a', 'user-b'],
+          childrenCount: 2,
+        }),
+      );
+    });
+
+    it('B5 rejects a bond without children before opening a transaction', async () => {
+      await expect(service.createBond({ ...dto(), children: [] })).rejects.toThrow(
+        'A bond must have at least one child',
+      );
+      expect(bondsRepo.transaction).not.toHaveBeenCalled();
+    });
+
+    it('B5 never returns a bond when a child write fails', async () => {
+      manager.save
+        .mockResolvedValueOnce({ id: 'generated-id' })
+        .mockResolvedValueOnce([])
+        .mockRejectedValueOnce(new Error('child insert failed'));
+
+      await expect(service.createBond(dto())).rejects.toThrow('child insert failed');
+      expect(bondsRepo.createAndSave).not.toHaveBeenCalled();
+    });
+
+    it('B5 validates the payload shape: children is required and needs at least one', async () => {
+      const pipe = new ValidationPipe({ whitelist: true, transform: true });
+      const validate = (value: Record<string, unknown>) =>
+        pipe.transform(value, { type: 'body', metatype: CreateBondDto as never });
+
+      const base = {
+        title: 'Paz–Gómez',
+        agreementType: 'formal',
+        userIds: ['3f2f2f36-4a1f-4b1f-9d1f-0f2f2f2f2f2f', '4f2f2f36-4a1f-4b1f-9d1f-0f2f2f2f2f2f'],
+      };
+
+      await expect(validate(base)).rejects.toThrow();
+      await expect(validate({ ...base, children: [] })).rejects.toThrow();
+      await expect(validate({ ...base, children: [{ firstName: 'Mateo' }] })).rejects.toThrow();
+      await expect(
+        validate({ ...base, children: [{ firstName: 'Mateo', lastName: 'Paz' }] }),
+      ).resolves.toBeDefined();
+    });
+  });
+
   // ── S12 · Lo que ya existía no cambia ───────────────────────────
 
   it('S12 still rejects a bond that does not have exactly two members', async () => {
@@ -284,9 +375,10 @@ describe('AdminService (B1)', () => {
         title: 'X',
         agreementType: 'formal' as never,
         userIds: ['a'],
+        children: [{ firstName: 'A', lastName: 'B' }],
       }),
     ).rejects.toThrow('A bond must have exactly 2 members');
-    expect(bondsRepo.createAndSave).not.toHaveBeenCalled();
+    expect(bondsRepo.transaction).not.toHaveBeenCalled();
   });
 
   it('S12 still returns the created user shape without the password hash', async () => {

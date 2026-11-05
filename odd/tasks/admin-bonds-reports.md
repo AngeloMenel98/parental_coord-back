@@ -93,6 +93,12 @@ commits ahead of main.
   zero-valued entries for months without activities. Unknown bond answers 404 with
   `Bond <id> not found`; `months` outside 1..12 answers 400 with
   `months must be between 1 and 12`.
+- **S15 — Bond creation is atomic and needs a child.** `POST /admin/bonds` also accepts
+  `children: [{ firstName, lastName, dateOfBirth? }]`, requires `@ArrayMinSize(1)` on it,
+  and persists bond + both members + every child inside one transaction. A payload without
+  `children` or with an empty array answers 400. An empty-array call that reaches the
+  service answers 400 with `A bond must have at least one child`. If any write inside the
+  transaction fails, no bond is created.
 - **S12 — Existing behaviour.** Every existing `/admin/*` route and response keeps its
   current shape and status codes.
 
@@ -103,7 +109,8 @@ commits ahead of main.
 | B1 | S1-S5, S12 | inline | done | 68508c9 |
 | B2 | S6-S8 | inline | done | ecd7001 |
 | B3 | S9-S11 | inline | done | 6c3363f |
-| B4 | S13-S14 | inline | done | pending |
+| B4 | S13-S14 | inline | done | cecb82d |
+| B5 | S15 | inline | done | pending |
 
 ## Log
 
@@ -230,3 +237,14 @@ two pure builders, and is part of the same feature.
 **L16 — B4 evidence.** `npx jest src/reports` → 8 suites / 42 tests; full suite 93 suites /
 1103 tests. `pnpm build` and `eslint` clean. The `/admin/bonds/health` route is declared
 before `bonds/:bondId/...` so it cannot be swallowed by the UUID pipe.
+
+**L17 — B5, born from the design comment "no es opcional, por lo menos tiene que haber un
+hijo creado".** `createBond` used to be three independent writes, so a failure after the
+first left a bond with no members or no children — a state the product now calls invalid and
+that no screen renders. It is one transaction. `children` is mandatory with at least one
+element; the date stays optional because an admin may not know it yet.
+
+**L18 — B5 evidence.** `npx jest src/admin` → 18 tests, including the transactional write,
+the rejection before any transaction is opened, a failing child write never returning a
+bond, and the DTO rejecting a missing/empty `children` and a child without a last name.
+Full suite 93 suites / 1107 tests. `pnpm build` and `eslint` clean.
