@@ -90,7 +90,7 @@ commits ahead of main.
 | --- | --- | --- | --- | --- |
 | B1 | S1-S5, S12 | inline | done | 68508c9 |
 | B2 | S6-S8 | inline | done | ecd7001 |
-| B3 | S9-S11 | inline | done | pending |
+| B3 | S9-S11 | inline | done | 6c3363f |
 
 ## Log
 
@@ -185,3 +185,23 @@ base, not this feature.
 `setUserActive`/`setBondActive`/`updateChild`/`removeChild` did not exist). Full suite
 `npx jest` → 85 suites, 1061 tests passed. `pnpm build` clean. `npx eslint src/admin
 src/bonds/repositories/bonds.repository.ts` exit 0.
+
+## Close
+
+Status: **B1, B2, B3 done** on `ft/admin-bonds-reports` (base `ft/supabase-cloud`):
+`68508c9` (admin management), `ecd7001` (JSON report), `6c3363f` (PDF worker),
+`06f63ae` (verification evidence).
+
+Verified inline: full jest suite 91 suites / 1090 tests, `pnpm build`, `eslint` on every
+touched file. The independent verifier was not admitted by the harness for this launch,
+so the per-spec evidence is recorded in L14 instead of a verifier verdict.
+
+Native review: `gentle_review assess` over `baseRef ft/supabase-cloud, committedOnly`
+returned `reviewDue: false` (`under_budget`, risk medium), so no review transaction was
+started. The risk-gated plan is writer self-verification, which is what L14 records.
+
+Not exercised, and why: no Postgres and no Redis are reachable in this environment
+(`5432`/`6379` both closed, no Docker), so the HTTP routes were not hit end to end and no
+job was processed for real. Before deploying: run `pnpm storage:init` so the
+`SUPABASE_STORAGE_BUCKET_REPORTS` bucket exists, and start the worker (`pnpm
+start:worker`) — the API alone will queue PDFs and never render them.
