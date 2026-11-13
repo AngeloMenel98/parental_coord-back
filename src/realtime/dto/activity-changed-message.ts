@@ -27,6 +27,15 @@ export interface ActivityChangedMessageV1 {
   actor: ActivityChangedActor;
   reason?: string | null;
   deleted?: boolean;
+  /**
+   * A quién está asignada la actividad (S9/S12).
+   *
+   * Viaja en el frame para que el gateway pueda decidir si un tercero temporal tiene
+   * derecho a verlo SIN consultar la base en el camino caliente: el dato llega del
+   * outbox como extra. El cliente lo ignora (hace refetch), pero el servidor lo necesita
+   * para filtrar.
+   */
+  assignedTo?: string | null;
   occurredAt: string;
   [extra: string]: unknown;
 }

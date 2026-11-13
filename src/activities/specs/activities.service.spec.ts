@@ -11,6 +11,7 @@ import { ChildrenRepository } from '../../children/repositories/children.reposit
 import { CategoriesRepository } from '../../categories/repositories/categories.repository';
 import { ActivityStatus } from '../entities/activity.entity';
 import { BondsService } from '../../bonds/bonds.service';
+import { BondAccessService } from '../../bonds/bond-access.service';
 import { BondMembersRepository } from '../../bonds/repositories/bond-members.repository';
 import { Clock } from '../../common/clock/clock';
 import { CodedException } from '../../common/errors/coded.exception';
@@ -25,6 +26,7 @@ describe('ActivitiesService', () => {
   let childrenRepo: any;
   let activityChildRepo: any;
   let bondService: any;
+  let bondAccess: any;
   let bondMembersRepo: any;
   let config: any;
   let clock: any;
@@ -62,6 +64,15 @@ describe('ActivitiesService', () => {
     childrenRepo = { findByIdsAndBond: jest.fn() } as any;
     activityChildRepo = { saveChildrenFor: jest.fn() } as any;
     bondService = { isActiveBondForMember: jest.fn().mockResolvedValue(true) } as any;
+    // Doble del chokepoint (T3/S7): por defecto deja pasar; los tests de asignación a
+    // un tercero lo ajustan caso por caso.
+    bondAccess = {
+      assertCanAssignTo: jest.fn().mockResolvedValue(false),
+      // Por defecto el que mira NO es tercero; los tests de la matriz S8 lo cambian.
+      resolveBondAccess: jest
+        .fn()
+        .mockResolvedValue({ role: 'progenitor', isThirdParty: false, grant: undefined }),
+    } as any;
     // `resolveActorRole` vive en BondMembersRepository.
     bondMembersRepo = {
       findActiveMembersWithActStats: jest.fn().mockResolvedValue([]),
@@ -90,12 +101,15 @@ describe('ActivitiesService', () => {
     // so existing getDetail specs keep working without per-test rewrites.
     activityRepo.findByIdWithChildren = jest.fn((id: string) => activityRepo.findById(id));
 
+    bondAccess.assertCanAssignTo.mockResolvedValue(undefined);
+
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         ActivitiesService,
         { provide: ActivitiesRepository, useValue: activityRepo },
         { provide: ActivityChildRepository, useValue: activityChildRepo },
         { provide: BondsService, useValue: bondService },
+        { provide: BondAccessService, useValue: bondAccess },
         { provide: BondMembersRepository, useValue: bondMembersRepo },
         { provide: ChildrenRepository, useValue: childrenRepo },
         { provide: CategoriesRepository, useValue: categoriesRepo },
@@ -779,10 +793,23 @@ describe('ActivitiesService', () => {
   // Retargeted write sites (E5.2–E5.4)
   // ══════════════════════════════════════════════════════════════════════════
   describe('complete → T11 (in_progress → done) / T13 (verify → done)', () => {
+    it('403 when the caller is not the assignee — el POST directo tampoco cierra', async () => {
+      activityRepo.findById.mockResolvedValue(
+        futureActivity({ status: ActivityStatus.IN_PROGRESS }),
+      );
+
+      await expectCode(
+        service.complete('a1', creator),
+        'ACTIVITY_FORBIDDEN',
+        403,
+      );
+      expect(activityRepo.applyTransition).not.toHaveBeenCalled();
+    });
+
     it('routes through transition() and returns done + completedAt', async () => {
       activityRepo.findById.mockResolvedValue(futureActivity({ status: ActivityStatus.VERIFY }));
       transitionEcho();
-      const res = await service.complete('a1', creator);
+      const res = await service.complete('a1', assignee);
 
       expect(res.status).toBe(ActivityStatus.DONE);
       expect(activityRepo.applyTransition).toHaveBeenCalledWith(
@@ -798,7 +825,7 @@ describe('ActivitiesService', () => {
         futureActivity({ status: ActivityStatus.IN_PROGRESS }),
       );
       transitionEcho();
-      const res = await service.complete('a1', creator);
+      const res = await service.complete('a1', assignee);
 
       expect(res.status).toBe(ActivityStatus.DONE);
       expect(activityRepo.applyTransition).toHaveBeenCalledWith(
@@ -811,18 +838,18 @@ describe('ActivitiesService', () => {
 
     it('409 from assigned', async () => {
       activityRepo.findById.mockResolvedValue(futureActivity({ status: ActivityStatus.ASSIGNED }));
-      await expectCode(service.complete('a1', creator), 'ACTIVITY_INVALID_TRANSITION', 409);
+      await expectCode(service.complete('a1', assignee), 'ACTIVITY_INVALID_TRANSITION', 409);
       expect(activityRepo.applyTransition).not.toHaveBeenCalled();
     });
 
     it('409 from a terminal state (done)', async () => {
       activityRepo.findById.mockResolvedValue(futureActivity({ status: ActivityStatus.DONE }));
-      await expectCode(service.complete('a1', creator), 'ACTIVITY_INVALID_TRANSITION', 409);
+      await expectCode(service.complete('a1', assignee), 'ACTIVITY_INVALID_TRANSITION', 409);
     });
 
     it('409 from cancelled', async () => {
       activityRepo.findById.mockResolvedValue(futureActivity({ status: ActivityStatus.CANCELLED }));
-      await expectCode(service.complete('a1', creator), 'ACTIVITY_INVALID_TRANSITION', 409);
+      await expectCode(service.complete('a1', assignee), 'ACTIVITY_INVALID_TRANSITION', 409);
     });
 
     it('404 for a non-member before the transition', async () => {
@@ -1176,13 +1203,16 @@ describe('ActivitiesService', () => {
       });
     });
 
-    it('listByBond exposes canComplete in `in_progress` for any member', async () => {
+    // S13/D5: el flag dejó de ser bond-wide. La prueba vieja afirmaba lo contrario.
+    it('listByBond exposes canComplete ONLY to the assignee', async () => {
       activityRepo.findByBondIdOrdered.mockResolvedValue([
         futureActivity({ id: 'a1', status: ActivityStatus.IN_PROGRESS }),
       ]);
-      const rows = await service.listByBond(bondId, stranger);
-      expect(rows[0].canComplete).toBe(true);
-      expect(rows[0].canConfirm).toBe(false);
+      const mine = await service.listByBond(bondId, assignee);
+      const other = await service.listByBond(bondId, stranger);
+      expect(mine[0].canComplete).toBe(true);
+      expect(other[0].canComplete).toBe(false);
+      expect(other[0].canConfirm).toBe(false);
     });
 
     it('listByBond exposes canDecline but NOT canConfirm for overdue-from-assigned', async () => {
@@ -1202,12 +1232,76 @@ describe('ActivitiesService', () => {
       expect(rows[0].canDecline).toBe(true);
     });
 
-    it('getDetail exposes canComplete in `verify`', async () => {
+    it('S5 · el cumplimiento es 403 para un tercero', async () => {
+      bondAccess.resolveBondAccess.mockResolvedValue({
+        role: 'third_party',
+        isThirdParty: true,
+        grant: { id: 'g1', authorizedBy: 'p1', startDate: '2026-10-01', endDate: '2026-12-12' },
+      });
+
+      await expectCode(
+        service.getComplianceForBond(bondId, 'u-tercero'),
+        'ACTIVITY_FORBIDDEN',
+        403,
+      );
+    });
+
+    it('S6 · la lista de un tercero se filtra por assignee EN LA QUERY', async () => {
+      activityRepo.findByBondIdOrdered.mockResolvedValue([]);
+      bondAccess.resolveBondAccess.mockResolvedValue({
+        role: 'third_party',
+        isThirdParty: true,
+        grant: { id: 'g1', authorizedBy: 'p1', startDate: '2026-10-01', endDate: '2026-12-12' },
+      });
+
+      await service.listByBond(bondId, 'u-tercero');
+
+      expect(activityRepo.findByBondIdOrdered).toHaveBeenCalledWith(bondId, 'u-tercero');
+    });
+
+    it('S6 · la lista de un progenitor NO se filtra', async () => {
+      activityRepo.findByBondIdOrdered.mockResolvedValue([]);
+
+      await service.listByBond(bondId, stranger);
+
+      expect(activityRepo.findByBondIdOrdered).toHaveBeenCalledWith(bondId, undefined);
+    });
+
+    it('S8 · un tercero no recibe NINGUNA acción: sólo finalizar lo suyo', async () => {
+      activityRepo.findById.mockResolvedValue(
+        futureActivity({
+          status: ActivityStatus.IN_PROGRESS,
+          assignedTo: 'u-tercero',
+          createdBy: 'u-tercero',
+        }),
+      );
+      bondAccess.resolveBondAccess.mockResolvedValue({
+        role: 'third_party',
+        isThirdParty: true,
+        grant: { id: 'g1', authorizedBy: 'p1', startDate: '2026-10-01', endDate: '2026-12-12' },
+      });
+
+      const detail = await service.getDetail('a1', 'u-tercero');
+
+      // Creador de la actividad y aun así: nada de borrar, cancelar, asignar,
+      // reasignar, confirmar ni rechazar. Sólo finalizar, y sólo lo suyo.
+      expect(detail.canDelete).toBe(false);
+      expect(detail.canCancel).toBe(false);
+      expect(detail.canAssign).toBe(false);
+      expect(detail.canReassign).toBe(false);
+      expect(detail.canConfirm).toBe(false);
+      expect(detail.canDecline).toBe(false);
+      expect(detail.canComplete).toBe(true);
+    });
+
+    it('getDetail exposes canComplete in `verify` ONLY to the assignee', async () => {
       activityRepo.findById.mockResolvedValue(
         futureActivity({ status: ActivityStatus.VERIFY, verifyAt: NOW }),
       );
-      const detail = await service.getDetail('a1', stranger);
-      expect(detail.canComplete).toBe(true);
+      const mine = await service.getDetail('a1', assignee);
+      const other = await service.getDetail('a1', stranger);
+      expect(mine.canComplete).toBe(true);
+      expect(other.canComplete).toBe(false);
     });
 
     it('T4 removed: canUnassign is never present in DTOs', async () => {
@@ -1668,5 +1762,72 @@ describe('ActivitiesService', () => {
       await expectCode(service.assign('a1', userId, 'u-otro-vinculo'), 'ACTIVITY_NOT_FOUND', 404);
       expect(activityRepo.applyTransition).not.toHaveBeenCalled();
     });
+  });
+});
+
+describe('ActivitiesService · S8 auto-confirmación al asignar a un tercero', () => {
+  // Reutiliza la fábrica y los dobles del bloque principal mediante un módulo nuevo,
+  // mínimo: lo único que importa acá es qué campos viajan al `applyTransition`.
+  it('escribe confirmedAt cuando el destino es un tercero temporal', async () => {
+    const events: any[] = [];
+    const entity = {
+      id: 'a1',
+      bondId: 'b1',
+      status: 'created',
+      createdBy: 'p1',
+      assignedTo: null,
+      version: 1,
+      scheduledStart: new Date(Date.now() + 86400000),
+      scheduledEnd: null,
+    };
+    const repo = {
+      findByIdWithChildren: jest.fn(async () => entity),
+      findById: jest.fn(async () => entity),
+      applyTransition: jest.fn(async (input: any) => {
+        events.push(input);
+        return { id: 'a1', status: 'assigned', assignedTo: 'u-tercero', confirmedAt: new Date() };
+      }),
+    };
+    const access = {
+      resolveBondAccess: jest.fn().mockResolvedValue({
+        role: 'third_party',
+        isThirdParty: true,
+        grant: { id: 'g1', authorizedBy: 'p1', startDate: '2026-10-01', endDate: '2026-12-12' },
+      }),
+      assertCanAssignTo: jest.fn().mockResolvedValue(true),
+    };
+    const bonds = { isActiveBondForMember: jest.fn().mockResolvedValue(true) };
+    const clock = { now: jest.fn(() => new Date('2026-11-05T12:00:00.000Z')) };
+
+    const { ActivitiesService } = await import('../activities.service');
+    const { ActivityPolicyService } = await import('../activity-policy.service');
+    // Stub permisivo: acá sólo importa qué campos viajan al `applyTransition`; el resto
+    // del grafo se sustituye por métodos que devuelven null.
+    const stub = (overrides: Record<string, unknown> = {}) =>
+      new Proxy(overrides, {
+        get: (target, key) =>
+          key in target ? (target as any)[key] : jest.fn(async () => null),
+      });
+    const service = new (ActivitiesService as any)(
+      repo,
+      stub(), // activityChildRepo
+      stub({ isActiveBondForMember: bonds.isActiveBondForMember }),
+      stub({ assertCanAssignTo: access.assertCanAssignTo, resolveBondAccess: access.resolveBondAccess }),
+      stub(), // childrenRepo
+      stub(), // categoriesRepo
+      clock,
+      new ActivityPolicyService(),
+      stub({ findOneByBondAndUser: jest.fn(async () => ({ id: 'm1', role: 'progenitor' })) }),
+      stub(), // config
+      stub(), // producer
+    );
+
+    await (service as any).reassignInternal('a1', 'p1', 'u-tercero');
+
+    const call = events[0];
+    expect(call.nextStatus).toBe('assigned');
+    expect(call.fields).toEqual(
+      expect.objectContaining({ assignedTo: 'u-tercero', confirmedAt: new Date('2026-11-05T12:00:00.000Z') }),
+    );
   });
 });

@@ -128,10 +128,18 @@ export class RealtimeGateway implements OnGatewayInit {
     try {
       const memberIds = await this.bondMembersRepo.findActiveMemberIds(message.bondId);
 
+      // T6/S9 — el tercero temporal NO recibe el stream del vínculo: se lo saca del
+      // broadcast general y sólo se le entrega lo que es suyo. Sin este filtro, un
+      // `expense.changed` o la actividad de otra persona le llegaba igual.
+      const thirdPartyIds = new Set(
+        await this.bondMembersRepo.findActiveThirdPartyIds(message.bondId),
+      );
+
       // Intermediate Set → a socket is sent to exactly once even if the query
       // ever returned duplicate user ids.
       const targets = new Set<WebSocket>();
       for (const userId of memberIds) {
+        if (thirdPartyIds.has(userId) && !isFrameForThirdParty(message, userId)) continue;
         for (const socket of this.registry.get(userId) ?? []) {
           targets.add(socket);
         }
@@ -151,4 +159,21 @@ export class RealtimeGateway implements OnGatewayInit {
       );
     }
   }
+}
+
+/**
+ * ¿Este frame le corresponde a un tercero temporal? (T6/S9/S12)
+ *
+ * Sólo los frames de actividades **asignadas a él**. Un frame sin `assignedTo` no se le
+ * entrega: ante la duda, no filtrar de menos. Los `expense.changed` nunca pasan por acá
+ * positivamente — el saldo del hogar no es suyo (S5).
+ */
+function isFrameForThirdParty(
+  message: ActivityChangedMessageV1 | ExpenseChangedMessageV1,
+  userId: string,
+): boolean {
+  return (
+    message.type === 'activity.changed' &&
+    (message as ActivityChangedMessageV1).assignedTo === userId
+  );
 }
