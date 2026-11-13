@@ -48,6 +48,8 @@ describe('NotificationFanOutService', () => {
     bondMembersRepository = {
       findCoordinator: jest.fn(),
       findActiveMemberIds: jest.fn(),
+      // T6/S12: por defecto no hay terceros; el test de la filtrado los agrega.
+      findActiveThirdPartyIds: jest.fn().mockResolvedValue([]),
     };
     appConfig = { NOTIFICATIONS_FANOUT_ENABLED: 'true' };
     // La rama de gastos (T23) no se ejercita en este archivo; vive en
@@ -348,5 +350,40 @@ describe('NotificationFanOutService', () => {
 
       await expect(service.handleOutboxEvent(event, manager)).rejects.toThrow('members failed');
     });
+  });
+});
+
+describe('NotificationFanOutService · T6/S12 el tercero sólo recibe la asignación', () => {
+  it('saca al tercero de un evento que no es `assigned` y lo deja en `assigned`', async () => {
+    const { NotificationFanOutService } = await import('./notification-fan-out.service');
+    const persisted: string[][] = [];
+    const bondMembersRepository = {
+      findCoordinator: jest.fn().mockResolvedValue(null),
+      findActiveMemberIds: jest.fn().mockResolvedValue(['tercero']),
+      findActiveThirdPartyIds: jest.fn().mockResolvedValue(['tercero']),
+    };
+    // Orden del ctor: notifications, activities, bonds, bondMembers, config, expenses.
+    const service = new (NotificationFanOutService as any)(
+      { createMany: jest.fn(async (rows: any[]) => { persisted.push(rows.map((r: any) => r.userId)); return []; }) },
+      { findByIdWithChildren: jest.fn(async () => ({ id: 'a1', bondId: 'b1', title: 'T', deletedAt: null })) },
+      {}, // bondsRepository
+      bondMembersRepository,
+      { notifications: { activityReminder: { enabled: true } } },
+      {},
+    );
+
+    // Un evento que NO es la asignación: el tercero no debe enterarse.
+    await (service as any).dropThirdPartiesUnlessAssigned('b1', 'activity.in_progress', ['tercero', 'otro']);
+    const filtered = await (service as any).dropThirdPartiesUnlessAssigned('b1', 'activity.in_progress', [
+      'tercero',
+      'otro',
+    ]);
+    expect(filtered).toEqual(['otro']);
+
+    // La asignación sí le llega.
+    const assigned = await (service as any).dropThirdPartiesUnlessAssigned('b1', 'activity.assigned', [
+      'tercero',
+    ]);
+    expect(assigned).toEqual(['tercero']);
   });
 });
