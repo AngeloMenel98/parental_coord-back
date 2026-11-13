@@ -457,10 +457,15 @@ export class ActivitiesService {
   async listByBond(bondId: string, viewerId: string): Promise<ActivitySummaryDto[]> {
     await this.assertBondMember(bondId, viewerId);
 
-    const rows = await this.activitiesRepo.findByBondIdOrdered(bondId);
     const now = this.clock.now();
     // Una sola resolución por request: la lista entera comparte el rol del que mira.
     const viewer = { isThirdParty: await this.isThirdPartyViewer(bondId, viewerId) };
+    // S6: al tercero la query le devuelve SÓLO lo asignado a él. El filtro de cliente
+    // que ya tenía la app es una segunda barrera, no la garantía.
+    const rows = await this.activitiesRepo.findByBondIdOrdered(
+      bondId,
+      viewer.isThirdParty ? viewerId : undefined,
+    );
     return plainToInstance(
       ActivitySummaryDto,
       rows.map((row) => ({ ...row, ...this.policy.evaluate(row, viewerId, now, viewer) })),
