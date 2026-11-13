@@ -7,6 +7,7 @@ import {
   NotFoundException,
   UnprocessableEntityException,
 } from '@nestjs/common';
+import { EntityManager } from 'typeorm';
 
 import { BondsService } from '../bonds/bonds.service';
 import { BondMemberEntity, BondMemberRole } from '../bonds/entities/bond-member.entity';
@@ -69,7 +70,24 @@ export class ThirdPartiesService {
 
     // Una sola consulta de nombres para toda la lista: preguntar por grant sería un N+1.
     const names = await this.members.findMemberNames(bondId);
-    return grants.map((grant) => this.toResponse(grant, names));
+
+    // Barrido perezoso también acá: si el dueño abre la consola, un grant vencido que
+    // todavía figura `active` tiene que leerse como vencido, no como vigente (F1 de la
+    // verificación independiente). Sin vencidos no se abre transacción.
+    const today = this.today();
+    const lapsed = grants.some(
+      (grant) => grant.status === AuthThirdStatus.ACTIVE && grant.endDate < today,
+    );
+    if (!lapsed) return grants.map((grant) => this.toResponse(grant, names));
+
+    const fresh = await this.grants.transaction(async (manager) => {
+      const rows: AuthThirdPartyEntity[] = [];
+      for (const grant of grants) {
+        rows.push(await this.expireIfLapsed(grant, today, ownerId, manager));
+      }
+      return rows;
+    });
+    return fresh.map((grant) => this.toResponse(grant, names));
   }
 
   /**
@@ -108,8 +126,12 @@ export class ThirdPartiesService {
     }
 
     const activeGrant = await this.grants.findActiveForPair(bondId, target.id);
-    if (activeGrant) {
-      throw new ConflictException('Ese usuario ya tiene un acceso temporal vigente en este vínculo');
+    if (activeGrant && activeGrant.endDate >= today) {
+      // Mismo mensaje lo haya otorgado quien lo haya otorgado: si dijera "vigente" o
+      // nombrara al dueño, el otro progenitor aprendería que existe un grant ajeno en
+      // este vínculo (F2 de la verificación independiente, misma regla que el
+      // 404-antes-que-403 del resto del módulo).
+      throw new ConflictException('Ese usuario ya tiene un acceso temporal en este vínculo');
     }
 
     const grant = await this.grants.transaction(async (manager) => {
@@ -125,6 +147,16 @@ export class ThirdPartiesService {
             role: BondMemberRole.THIRD_PARTY,
           }),
         );
+      }
+
+      // Vencido sin barrer = todavía `active` y todavía chocando con el índice único
+      // parcial, que sólo mira el estado. Se vence acá, antes de insertar, para que
+      // volver a otorgar un acceso vencido funcione (F1).
+      const pairRows = await manager.getRepository(AuthThirdPartyEntity).find({
+        where: { bondId, userId: target.id, status: AuthThirdStatus.ACTIVE },
+      });
+      for (const row of pairRows) {
+        await this.expireIfLapsed(row, today, ownerId, manager);
       }
 
       const created = await this.grants.saveWith(
@@ -220,9 +252,11 @@ export class ThirdPartiesService {
   }
 
   /**
-   * Revocación anticipada (D3). Surte efecto de inmediato porque `status` es lo que mira
-   * la autorización; la fila de `bond_member` se deja como está (sigue siendo historia
-   * del vínculo, no permiso).
+   * Revocación anticipada (D3). El grant deja de autorizar en cuanto exista el
+   * chokepoint de T3, que es lo que mira `status`. **Hoy la fila de `bond_member` sigue
+   * autorizando por sí sola** (`isActiveBondForMember` repartido en cada servicio), así
+   * que la revocación surte efecto pleno cuando T3 entre, no antes; el registro de
+   * membresía se deja como historia del vínculo, no como permiso.
    *
    * Idempotente: revocar dos veces no duplica el audit ni mueve `revokedAt`.
    */
@@ -291,28 +325,12 @@ export class ThirdPartiesService {
     }
 
     const today = this.today();
-    let current = grant;
-    if (grant.status === AuthThirdStatus.ACTIVE && grant.endDate < today) {
-      current = await this.grants.transaction(async (manager) => {
-        const repo = manager.getRepository(AuthThirdPartyEntity);
-        const row = await repo.findOneByOrFail({ id: grant.id });
-        row.status = AuthThirdStatus.EXPIRED;
-        const saved = await repo.save(row);
-        await this.audit.record(
-          {
-            bondId: saved.bondId,
-            userId: viewerId,
-            grantId: saved.id,
-            action: THIRD_PARTY_AUDIT_ACTIONS.EXPIRE,
-            oldValue: { status: AuthThirdStatus.ACTIVE },
-            newValue: { status: AuthThirdStatus.EXPIRED },
-            detail: `endDate ${saved.endDate}`,
-          },
-          manager,
-        );
-        return saved;
-      });
-    }
+    const current =
+      grant.status === AuthThirdStatus.ACTIVE && grant.endDate < today
+        ? await this.grants.transaction(async (manager) =>
+            this.expireIfLapsed(grant, today, viewerId, manager),
+          )
+        : grant;
 
     const names = await this.members.findMemberNames(current.bondId);
     return this.toResponse(current, names);
@@ -340,7 +358,44 @@ export class ThirdPartiesService {
     if (!grant || grant.authorizedBy !== ownerId) {
       throw new NotFoundException(NOT_FOUND_MESSAGE);
     }
+    // Cambiar o revocar exige seguir siendo progenitor ACTIVO del vínculo: ser el dueño
+    // del grant no alcanza si esa persona ya dejó el vínculo o cambió de rol (F3 de la
+    // verificación independiente). Es la única guarda el día que exista un flujo de
+    // salida o degradación de miembro.
+    await this.assertProgenitor(grant.bondId, ownerId);
     return grant;
+  }
+
+  /**
+   * Vencimiento perezoso de UNA fila, con el manager que recibe.
+   *
+   * No hace nada si la fila no está `active` o si todavía no venció, así que llamarlo
+   * dos veces es seguro: la segunda no toca la DB ni escribe audit.
+   */
+  private async expireIfLapsed(
+    row: AuthThirdPartyEntity,
+    today: string,
+    actorId: string,
+    manager: EntityManager,
+  ): Promise<AuthThirdPartyEntity> {
+    if (row.status !== AuthThirdStatus.ACTIVE || row.endDate >= today) return row;
+
+    const repo = manager.getRepository(AuthThirdPartyEntity);
+    row.status = AuthThirdStatus.EXPIRED;
+    const saved = await repo.save(row);
+    await this.audit.record(
+      {
+        bondId: saved.bondId,
+        userId: actorId,
+        grantId: saved.id,
+        action: THIRD_PARTY_AUDIT_ACTIONS.EXPIRE,
+        oldValue: { status: AuthThirdStatus.ACTIVE },
+        newValue: { status: AuthThirdStatus.EXPIRED },
+        detail: `endDate ${saved.endDate}`,
+      },
+      manager,
+    );
+    return saved;
   }
 
   /** D3: la fecha de vencimiento es obligatoria y no puede estar en el pasado. */

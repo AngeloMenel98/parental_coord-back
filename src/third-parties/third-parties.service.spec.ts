@@ -44,7 +44,13 @@ describe('ThirdPartiesService', () => {
   const users = { findOneByEmail: jest.fn() };
   const clock = { now: jest.fn(() => new Date(`${TODAY}T12:00:00.000Z`)) };
 
-  const grantRowRepo = { findOneByOrFail: jest.fn(), save: jest.fn() };
+  const grantRowRepo = {
+    findOneByOrFail: jest.fn(),
+    // El alta barre los grants vencidos del par antes de insertar (F1): el manager
+    // también consulta con `find`.
+    find: jest.fn(async (): Promise<AuthThirdPartyEntity[]> => []),
+    save: jest.fn(),
+  };
   const memberRowRepo = { create: jest.fn((data) => data), save: jest.fn(async (data) => data) };
   const manager = {
     getRepository: jest.fn((entity) =>
@@ -292,7 +298,7 @@ describe('ThirdPartiesService', () => {
       await expect(service.getMyGrant(TARGET_ID)).rejects.toBeInstanceOf(ForbiddenException);
     });
 
-    it('vence de forma perezosa: marca expired y audita una sola vez', async () => {
+    it('vence de forma perezosa: marca expired y audita', async () => {
       grants.findLatestForUser.mockResolvedValue(grant({ endDate: '2026-11-01' }));
       grantRowRepo.findOneByOrFail.mockResolvedValue(grant({ endDate: '2026-11-01' }));
 
