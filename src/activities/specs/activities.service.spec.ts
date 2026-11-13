@@ -787,10 +787,23 @@ describe('ActivitiesService', () => {
   // Retargeted write sites (E5.2–E5.4)
   // ══════════════════════════════════════════════════════════════════════════
   describe('complete → T11 (in_progress → done) / T13 (verify → done)', () => {
+    it('403 when the caller is not the assignee — el POST directo tampoco cierra', async () => {
+      activityRepo.findById.mockResolvedValue(
+        futureActivity({ status: ActivityStatus.IN_PROGRESS }),
+      );
+
+      await expectCode(
+        service.complete('a1', creator),
+        'ACTIVITY_FORBIDDEN',
+        403,
+      );
+      expect(activityRepo.applyTransition).not.toHaveBeenCalled();
+    });
+
     it('routes through transition() and returns done + completedAt', async () => {
       activityRepo.findById.mockResolvedValue(futureActivity({ status: ActivityStatus.VERIFY }));
       transitionEcho();
-      const res = await service.complete('a1', creator);
+      const res = await service.complete('a1', assignee);
 
       expect(res.status).toBe(ActivityStatus.DONE);
       expect(activityRepo.applyTransition).toHaveBeenCalledWith(
@@ -806,7 +819,7 @@ describe('ActivitiesService', () => {
         futureActivity({ status: ActivityStatus.IN_PROGRESS }),
       );
       transitionEcho();
-      const res = await service.complete('a1', creator);
+      const res = await service.complete('a1', assignee);
 
       expect(res.status).toBe(ActivityStatus.DONE);
       expect(activityRepo.applyTransition).toHaveBeenCalledWith(
@@ -819,18 +832,18 @@ describe('ActivitiesService', () => {
 
     it('409 from assigned', async () => {
       activityRepo.findById.mockResolvedValue(futureActivity({ status: ActivityStatus.ASSIGNED }));
-      await expectCode(service.complete('a1', creator), 'ACTIVITY_INVALID_TRANSITION', 409);
+      await expectCode(service.complete('a1', assignee), 'ACTIVITY_INVALID_TRANSITION', 409);
       expect(activityRepo.applyTransition).not.toHaveBeenCalled();
     });
 
     it('409 from a terminal state (done)', async () => {
       activityRepo.findById.mockResolvedValue(futureActivity({ status: ActivityStatus.DONE }));
-      await expectCode(service.complete('a1', creator), 'ACTIVITY_INVALID_TRANSITION', 409);
+      await expectCode(service.complete('a1', assignee), 'ACTIVITY_INVALID_TRANSITION', 409);
     });
 
     it('409 from cancelled', async () => {
       activityRepo.findById.mockResolvedValue(futureActivity({ status: ActivityStatus.CANCELLED }));
-      await expectCode(service.complete('a1', creator), 'ACTIVITY_INVALID_TRANSITION', 409);
+      await expectCode(service.complete('a1', assignee), 'ACTIVITY_INVALID_TRANSITION', 409);
     });
 
     it('404 for a non-member before the transition', async () => {
@@ -1184,13 +1197,16 @@ describe('ActivitiesService', () => {
       });
     });
 
-    it('listByBond exposes canComplete in `in_progress` for any member', async () => {
+    // S13/D5: el flag dejó de ser bond-wide. La prueba vieja afirmaba lo contrario.
+    it('listByBond exposes canComplete ONLY to the assignee', async () => {
       activityRepo.findByBondIdOrdered.mockResolvedValue([
         futureActivity({ id: 'a1', status: ActivityStatus.IN_PROGRESS }),
       ]);
-      const rows = await service.listByBond(bondId, stranger);
-      expect(rows[0].canComplete).toBe(true);
-      expect(rows[0].canConfirm).toBe(false);
+      const mine = await service.listByBond(bondId, assignee);
+      const other = await service.listByBond(bondId, stranger);
+      expect(mine[0].canComplete).toBe(true);
+      expect(other[0].canComplete).toBe(false);
+      expect(other[0].canConfirm).toBe(false);
     });
 
     it('listByBond exposes canDecline but NOT canConfirm for overdue-from-assigned', async () => {
@@ -1210,12 +1226,14 @@ describe('ActivitiesService', () => {
       expect(rows[0].canDecline).toBe(true);
     });
 
-    it('getDetail exposes canComplete in `verify`', async () => {
+    it('getDetail exposes canComplete in `verify` ONLY to the assignee', async () => {
       activityRepo.findById.mockResolvedValue(
         futureActivity({ status: ActivityStatus.VERIFY, verifyAt: NOW }),
       );
-      const detail = await service.getDetail('a1', stranger);
-      expect(detail.canComplete).toBe(true);
+      const mine = await service.getDetail('a1', assignee);
+      const other = await service.getDetail('a1', stranger);
+      expect(mine.canComplete).toBe(true);
+      expect(other.canComplete).toBe(false);
     });
 
     it('T4 removed: canUnassign is never present in DTOs', async () => {

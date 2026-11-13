@@ -488,6 +488,17 @@ export class ActivitiesService {
     const activity = await this.findById(id);
     await this.assertActivityMember(activity, userId);
 
+    // S13 / F2 de la propuesta — el cierre pasa por la POLÍTICA, no sólo por membresía.
+    // Sin esto, esconder el botón en la UI no cambia nada: cualquiera con membresía podía
+    // finalizar una actividad ajena con un POST directo.
+    const decision = this.policy.evaluate(activity, userId, this.clock.now());
+    // Un tercero (o el otro progenitor) recibe 403 aunque el estado permita cerrar. Si
+    // ES el asignado y el estado no habilita, se deja pasar al `transition()`, que es
+    // quien sabe responder 409 sin duplicar la máquina de estados acá.
+    if (!decision.canComplete && activity.assignedTo !== userId) {
+      throw activityForbidden('Only the assignee can complete this activity');
+    }
+
     // T11 (cierre temprano desde `in_progress`) y T13 (cierre desde la ventana
     // de verificación). Cualquier otro origen —terminal incluido— es 409.
     const updated = await this.transition({

@@ -238,14 +238,19 @@ describe('ActivityPolicyService', () => {
   });
 
   describe('evaluate — verify-window flags (R3)', () => {
-    it('canComplete is true in `in_progress` for any bond member', () => {
+    // S13 / D5 — el flag dejó de mirar sólo el estado (F1). Estas dos pruebas
+    // afirmaban la regla vieja ("cualquier miembro del vínculo puede finalizar"),
+    // que es justamente el agujero que T4 cierra: se conservan, invertidas.
+    it('canComplete is true in `in_progress` ONLY for the assignee', () => {
       const a = subject({ status: ActivityStatus.IN_PROGRESS });
-      expect(policy.evaluate(a, 'someone-else', NOW).canComplete).toBe(true);
+      expect(policy.evaluate(a, 'assignee', NOW).canComplete).toBe(true);
+      expect(policy.evaluate(a, 'someone-else', NOW).canComplete).toBe(false);
     });
 
-    it('canComplete is true in `verify` for any bond member', () => {
+    it('canComplete is true in `verify` ONLY for the assignee', () => {
       const a = subject({ status: ActivityStatus.VERIFY, verifyAt: NOW });
-      expect(policy.evaluate(a, 'someone-else', NOW).canComplete).toBe(true);
+      expect(policy.evaluate(a, 'assignee', NOW).canComplete).toBe(true);
+      expect(policy.evaluate(a, 'someone-else', NOW).canComplete).toBe(false);
     });
 
     it('canComplete is false in `assigned`', () => {

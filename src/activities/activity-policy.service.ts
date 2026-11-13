@@ -102,8 +102,16 @@ export class ActivityPolicyService {
       // DECLINAR sí lo lleva: decir "no asisto" de una actividad que ya pasó no
       // significa nada, y es la regla que el flag ya tenía.
       canDecline,
+      // S13 / D5 — FINALIZAR ES DEL ASIGNADO, PARA TODOS LOS ROLES.
+      //
+      // Antes esta línea sólo miraba el estado (F1): cualquier miembro del vínculo —
+      // incluido el otro progenitor, o un tercero al que no le asignaron nada— podía
+      // cerrar una actividad ajena. El estado sigue siendo condición necesaria, pero
+      // nunca suficiente: sin `isAssignee` no hay "Finalizar".
       canComplete:
-        activity.status === ActivityStatus.IN_PROGRESS || activity.status === ActivityStatus.VERIFY,
+        isAssignee &&
+        (activity.status === ActivityStatus.IN_PROGRESS ||
+          activity.status === ActivityStatus.VERIFY),
       isPast,
     };
   }
