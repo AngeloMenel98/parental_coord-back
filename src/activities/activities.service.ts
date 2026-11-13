@@ -704,11 +704,24 @@ export class ActivitiesService {
       await this.bondAccess.assertCanAssignTo(activity.bondId, userId, targetId);
     }
 
+    // S8/D6 — al tercero temporal se le asigna YA CONFIRMADO: no hay paso de aceptación,
+    // así que no existe ventana donde pueda rechazar. `assignedConfirmed` no es una
+    // columna: se deriva de `confirmedAt != null` (ver confirmAssignment), y por eso
+    // alcanza con escribir la marca en la MISMA transición del alta.
+    //
+    // No se salta ningún estado: sigue siendo created → assigned → assisting, y el paso
+    // a `assisting` lo sigue dando el reloj/worker como para cualquier asignado.
+    const targetIsThirdParty =
+      assignedTo !== undefined && (await this.isThirdPartyViewer(activity.bondId, targetId));
+
     const updated = await this.transition({
       activityId: id,
       to: ActivityStatus.ASSIGNED,
       actor: { kind: 'user', userId },
-      fields: { assignedTo: targetId },
+      fields: {
+        assignedTo: targetId,
+        ...(targetIsThirdParty ? { confirmedAt: this.clock.now() } : {}),
+      },
     });
     if (!updated) throw activityInvalidTransition(activity.status, ActivityStatus.ASSIGNED);
 

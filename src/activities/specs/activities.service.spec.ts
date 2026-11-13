@@ -1729,3 +1729,70 @@ describe('ActivitiesService', () => {
     });
   });
 });
+
+describe('ActivitiesService · S8 auto-confirmación al asignar a un tercero', () => {
+  // Reutiliza la fábrica y los dobles del bloque principal mediante un módulo nuevo,
+  // mínimo: lo único que importa acá es qué campos viajan al `applyTransition`.
+  it('escribe confirmedAt cuando el destino es un tercero temporal', async () => {
+    const events: any[] = [];
+    const entity = {
+      id: 'a1',
+      bondId: 'b1',
+      status: 'created',
+      createdBy: 'p1',
+      assignedTo: null,
+      version: 1,
+      scheduledStart: new Date(Date.now() + 86400000),
+      scheduledEnd: null,
+    };
+    const repo = {
+      findByIdWithChildren: jest.fn(async () => entity),
+      findById: jest.fn(async () => entity),
+      applyTransition: jest.fn(async (input: any) => {
+        events.push(input);
+        return { id: 'a1', status: 'assigned', assignedTo: 'u-tercero', confirmedAt: new Date() };
+      }),
+    };
+    const access = {
+      resolveBondAccess: jest.fn().mockResolvedValue({
+        role: 'third_party',
+        isThirdParty: true,
+        grant: { id: 'g1', authorizedBy: 'p1', startDate: '2026-10-01', endDate: '2026-12-12' },
+      }),
+      assertCanAssignTo: jest.fn().mockResolvedValue(undefined),
+    };
+    const bonds = { isActiveBondForMember: jest.fn().mockResolvedValue(true) };
+    const clock = { now: jest.fn(() => new Date('2026-11-05T12:00:00.000Z')) };
+
+    const { ActivitiesService } = await import('../activities.service');
+    const { ActivityPolicyService } = await import('../activity-policy.service');
+    // Stub permisivo: acá sólo importa qué campos viajan al `applyTransition`; el resto
+    // del grafo se sustituye por métodos que devuelven null.
+    const stub = (overrides: Record<string, unknown> = {}) =>
+      new Proxy(overrides, {
+        get: (target, key) =>
+          key in target ? (target as any)[key] : jest.fn(async () => null),
+      });
+    const service = new (ActivitiesService as any)(
+      repo,
+      stub(), // activityChildRepo
+      stub({ isActiveBondForMember: bonds.isActiveBondForMember }),
+      stub({ assertCanAssignTo: access.assertCanAssignTo, resolveBondAccess: access.resolveBondAccess }),
+      stub(), // childrenRepo
+      stub(), // categoriesRepo
+      clock,
+      new ActivityPolicyService(),
+      stub({ findOneByBondAndUser: jest.fn(async () => ({ id: 'm1', role: 'progenitor' })) }),
+      stub(), // config
+      stub(), // producer
+    );
+
+    await (service as any).reassignInternal('a1', 'p1', 'u-tercero');
+
+    const call = events[0];
+    expect(call.nextStatus).toBe('assigned');
+    expect(call.fields).toEqual(
+      expect.objectContaining({ assignedTo: 'u-tercero', confirmedAt: new Date('2026-11-05T12:00:00.000Z') }),
+    );
+  });
+});
