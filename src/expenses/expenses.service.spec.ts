@@ -49,7 +49,7 @@ describe('ExpensesService (T24)', () => {
     summaryForBond: jest.Mock;
     transaction: jest.Mock;
   };
-  let bondsService: { isActiveBondForMember: jest.Mock };
+  let bondsService: any;
   let bondMembersRepo: { findActiveMemberIds: jest.Mock; findMemberNames: jest.Mock };
   let categoriesRepo: { findActiveById: jest.Mock };
   let audit: { record: jest.Mock; recordStatusChange: jest.Mock };
@@ -113,7 +113,10 @@ describe('ExpensesService (T24)', () => {
       }),
       transaction: jest.fn(async (fn: (m: unknown) => Promise<unknown>) => fn(manager)),
     };
-    bondsService = { isActiveBondForMember: jest.fn().mockResolvedValue(true) };
+    bondsService = {
+      isActiveBondForMember: jest.fn().mockResolvedValue(true),
+      isThirdPartyIn: jest.fn().mockResolvedValue(false),
+    };
     bondMembersRepo = {
       findActiveMemberIds: jest.fn().mockResolvedValue([REQUESTER, COUNTERPART]),
       // Los NOMBRES para mostrar: el front no puede pintar un UUID.

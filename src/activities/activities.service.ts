@@ -740,6 +740,12 @@ export class ActivitiesService {
   ): Promise<{ period: string; members: ComplianceMemberRow[] }> {
     await this.assertBondMember(bondId, viewerId);
 
+    // S5: el cumplimiento es la foto de los OTROS miembros del vínculo. El tercero no la
+    // ve, y no es 404: el vínculo existe y él pertenece — lo que no puede es mirar.
+    if (await this.isThirdPartyViewer(bondId, viewerId)) {
+      throw activityForbidden('A third party cannot see bond compliance');
+    }
+
     const now = new Date();
     const year = now.getFullYear();
     const month = now.getMonth();

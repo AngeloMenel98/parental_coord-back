@@ -1232,6 +1232,20 @@ describe('ActivitiesService', () => {
       expect(rows[0].canDecline).toBe(true);
     });
 
+    it('S5 · el cumplimiento es 403 para un tercero', async () => {
+      bondAccess.resolveBondAccess.mockResolvedValue({
+        role: 'third_party',
+        isThirdParty: true,
+        grant: { id: 'g1', authorizedBy: 'p1', startDate: '2026-10-01', endDate: '2026-12-12' },
+      });
+
+      await expectCode(
+        service.getComplianceForBond(bondId, 'u-tercero'),
+        'ACTIVITY_FORBIDDEN',
+        403,
+      );
+    });
+
     it('S6 · la lista de un tercero se filtra por assignee EN LA QUERY', async () => {
       activityRepo.findByBondIdOrdered.mockResolvedValue([]);
       bondAccess.resolveBondAccess.mockResolvedValue({

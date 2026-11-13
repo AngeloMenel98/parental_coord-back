@@ -60,3 +60,40 @@ describe('BondsService.isActiveBondForMember', () => {
     await expect(service.isActiveBondForMember(BOND_ID, USER_ID)).resolves.toBe(false);
   });
 });
+
+describe('BondsService.findByUserId · S5 redacción del vínculo', () => {
+  const bond = (id: string) => ({
+    id,
+    title: null,
+    agreementType: null,
+    courtCaseRef: null,
+    startDate: null,
+    endDate: null,
+    isActive: true,
+    members: [{ id: 'm1', role: 'progenitor', user: { id: 'p1', firstName: 'Ana' } }],
+    children: [{ id: 'c1', firstName: 'Emma', lastName: 'P' }],
+  });
+
+  it('al tercero le vacía miembros e hijos; al progenitor no', async () => {
+    const repo = { findBondsByUserId: jest.fn(async () => [bond('b1')]) };
+    const access = {
+      resolveBondAccess: jest
+        .fn()
+        .mockResolvedValueOnce({ role: 'progenitor', isThirdParty: false })
+        .mockResolvedValueOnce({ role: 'third_party', isThirdParty: true }),
+    };
+
+    const { BondsService } = await import('./bonds.service');
+    const service = new (BondsService as any)(repo, access);
+
+    const forProgenitor = await service.findByUserId('p1');
+    const forThirdParty = await service.findByUserId('t1');
+
+    expect((forProgenitor[0] as any).members.length).toBe(1);
+    expect((forProgenitor[0] as any).children.length).toBe(1);
+    expect((forThirdParty[0] as any).members.length).toBe(0);
+    expect((forThirdParty[0] as any).children.length).toBe(0);
+    // El vínculo sigue visible: se redacta el contenido, no la pertenencia.
+    expect((forThirdParty[0] as any).id).toBe('b1');
+  });
+});
