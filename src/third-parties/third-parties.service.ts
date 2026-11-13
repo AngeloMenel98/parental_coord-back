@@ -47,7 +47,8 @@ const NOT_FOUND_MESSAGE = 'Third-party access not found';
  *
  * Esta tarea NO implementa el chokepoint de autorización del vínculo (T3) ni la política
  * de actividades (T4): acá sólo se administra el grant. El día que T3 exista, `assertOwner`
- * se apoyará en él; hoy usa `isActiveBondForMember` + el rol del miembro, que es la
+ * se apoyará en él; hoy delega en `BondAccessService.assertBondAccess`, que resuelve
+ * membresía y grant en una sola consulta.
  * información que ya está en la DB.
  */
 @Injectable()
@@ -123,9 +124,8 @@ export class ThirdPartiesService {
     if (existingMember && existingMember.role !== BondMemberRole.THIRD_PARTY) {
       throw new ConflictException('Ese usuario ya es miembro del vínculo con otro rol');
     }
-    if (existingMember && existingMember.leftAt !== null) {
-      throw new ConflictException('Ese usuario dejó el vínculo; no se le puede otorgar acceso');
-    }
+    // Una membresía cerrada por revocación o vencimiento se REABRE: es el mismo tercero
+    // del mismo vínculo, y bloquearlo dejaría el acceso imposible de re-otorgar.
 
     const activeGrant = await this.grants.findActiveForPair(bondId, target.id);
     if (activeGrant && activeGrant.endDate >= today) {
@@ -137,7 +137,12 @@ export class ThirdPartiesService {
     }
 
     const grant = await this.grants.transaction(async (manager) => {
-      if (!existingMember) {
+      if (existingMember && existingMember.leftAt !== null) {
+        await manager.getRepository(BondMemberEntity).update(
+          { bondId, userId: target.id },
+          { leftAt: null },
+        );
+      } else if (!existingMember) {
         // La membresía se escribe con el manager de la transacción, no por el
         // repositorio de bonds: ese repositorio no acepta `EntityManager` y abriría
         // otra conexión, dejando el alta partida en dos si algo falla después.
@@ -161,19 +166,33 @@ export class ThirdPartiesService {
         await this.expireIfLapsed(row, today, ownerId, manager);
       }
 
-      const created = await this.grants.saveWith(
-        {
-          bondId,
-          userId: target.id,
-          authorizedBy: ownerId,
-          startDate: today,
-          endDate: dto.accessEnd,
-          relationship: dto.relationship,
-          status: AuthThirdStatus.ACTIVE,
-          scopeNote: dto.note ?? null,
-        },
-        manager,
-      );
+      const createGrant = () =>
+        this.grants.saveWith(
+          {
+            bondId,
+            userId: target.id,
+            authorizedBy: ownerId,
+            startDate: today,
+            endDate: dto.accessEnd,
+            relationship: dto.relationship,
+            status: AuthThirdStatus.ACTIVE,
+            scopeNote: dto.note ?? null,
+          },
+          manager,
+        );
+
+      let created: AuthThirdPartyEntity;
+      try {
+        created = await createGrant();
+      } catch (error) {
+        // La comprobación de arriba y el INSERT no son atómicos: dos altas simultáneas
+        // del mismo par pasan las dos y una choca con `UQ_auth_third_party_active_grant`.
+        // Eso es el mismo 409 que el chequeo, no un 500 (R3-004).
+        if (isUniqueViolation(error)) {
+          throw new ConflictException('Ese usuario ya tiene un acceso temporal en este vínculo');
+        }
+        throw error;
+      }
 
       await this.audit.record(
         {
@@ -285,6 +304,17 @@ export class ThirdPartiesService {
       row.revokedReason = 'Revocado por el progenitor';
 
       const saved = await repo.save(row);
+
+      // Sin esto la revocación es cosmética: la autorización vigente de todo el resto
+      // del backend es `isActiveBondForMember`, así que el tercero conserva el vínculo
+      // aunque el `DELETE` responda 200 (R1-001, R3-001, R4-001 — tres lentes de la
+      // review nativa coincidieron). Cerrar la membresía es lo que hace efectiva la baja;
+      // volver a otorgar el acceso la reabre (ver createForOwner).
+      await manager.getRepository(BondMemberEntity).update(
+        { bondId: saved.bondId, userId: saved.userId },
+        { leftAt: now },
+      );
+
       await this.audit.record(
         {
           bondId: saved.bondId,
@@ -386,8 +416,24 @@ export class ThirdPartiesService {
     if (row.status !== AuthThirdStatus.ACTIVE || row.endDate >= today) return row;
 
     const repo = manager.getRepository(AuthThirdPartyEntity);
-    row.status = AuthThirdStatus.EXPIRED;
-    const saved = await repo.save(row);
+    // UPDATE condicional, no `save` de una fila leída antes: si una revocación commiteó
+    // en el medio, pisar `revoked` con `expired` borraría `revokedAt`/`revokedBy` y
+    // cambiaría el resultado de la revocación (R4-004).
+    const updated = await repo.update(
+      { id: row.id, status: AuthThirdStatus.ACTIVE },
+      { status: AuthThirdStatus.EXPIRED },
+    );
+    if (!updated.affected) return row;
+
+    const saved = { ...row, status: AuthThirdStatus.EXPIRED } as AuthThirdPartyEntity;
+
+    // Vencer también cierra el vínculo: si no, el acceso seguiría abierto por
+    // `isActiveBondForMember` (mismo defecto que la revocación).
+    await manager.getRepository(BondMemberEntity).update(
+      { bondId: saved.bondId, userId: saved.userId },
+      { leftAt: this.clock.now() },
+    );
+
     await this.audit.record(
       {
         bondId: saved.bondId,
@@ -405,6 +451,11 @@ export class ThirdPartiesService {
 
   /** D3: la fecha de vencimiento es obligatoria y no puede estar en el pasado. */
   private assertAccessEnd(accessEnd: string, today: string): void {
+    if (!isCalendarDate(accessEnd)) {
+      // `2026-02-30` pasa la regex del DTO y compara bien como string, pero Postgres la
+      // rechaza y el error salía como 500 en vez de 400 (R3-003).
+      throw new BadRequestException('accessEnd must be a real calendar date');
+    }
     if (accessEnd < today) {
       throw new BadRequestException('accessEnd cannot be in the past');
     }
@@ -434,4 +485,22 @@ export class ThirdPartiesService {
       revokedAt: grant.revokedAt ? grant.revokedAt.toISOString() : null,
     };
   }
+}
+
+/** ¿`YYYY-MM-DD` es una fecha que existe? `2026-02-30` no. */
+function isCalendarDate(value: string): boolean {
+  const [year, month, day] = value.split('-').map(Number);
+  if (!year || !month || !day) return false;
+  const date = new Date(Date.UTC(year, month - 1, day));
+  return (
+    date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 && date.getUTCDate() === day
+  );
+}
+
+/** Violación del índice único parcial: dos grants `active` para el mismo par. */
+function isUniqueViolation(error: unknown): boolean {
+  const code =
+    (error as { code?: string })?.code ??
+    (error as { driverError?: { code?: string } })?.driverError?.code;
+  return code === '23505';
 }

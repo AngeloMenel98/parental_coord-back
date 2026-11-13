@@ -56,8 +56,13 @@ describe('ThirdPartiesService · regresiones del ciclo de vida', () => {
     findOneByOrFail: jest.fn(),
     find: jest.fn(async (): Promise<AuthThirdPartyEntity[]> => []),
     save: jest.fn(async (row) => row),
+    update: jest.fn(async (): Promise<{ affected: number }> => ({ affected: 1 })),
   };
-  const memberRowRepo = { create: jest.fn((data) => data), save: jest.fn(async (d) => d) };
+  const memberRowRepo = {
+    create: jest.fn((data) => data),
+    save: jest.fn(async (d) => d),
+    update: jest.fn(async () => ({ affected: 1 })),
+  };
   const manager = {
     getRepository: jest.fn((entity) =>
       entity === BondMemberEntity ? memberRowRepo : grantRowRepo,
@@ -104,6 +109,8 @@ describe('ThirdPartiesService · regresiones del ciclo de vida', () => {
     grants.saveWith.mockImplementation(async (data) => grant({ ...data } as never));
     grantRowRepo.find.mockResolvedValue([]);
     grantRowRepo.save.mockImplementation(async (row) => row);
+    grantRowRepo.update.mockResolvedValue({ affected: 1 });
+    memberRowRepo.update.mockResolvedValue({ affected: 1 });
     grantRowRepo.findOneByOrFail.mockImplementation(async () => grant());
     members.findMemberNames.mockResolvedValue(
       new Map([
@@ -140,8 +147,9 @@ describe('ThirdPartiesService · regresiones del ciclo de vida', () => {
     const created = await service.createForOwner(BOND_ID, OWNER_ID, dto);
 
     expect(created.status).toBe(AuthThirdStatus.ACTIVE);
-    expect(grantRowRepo.save).toHaveBeenCalledWith(
-      expect.objectContaining({ id: GRANT_ID, status: AuthThirdStatus.EXPIRED }),
+    expect(grantRowRepo.update).toHaveBeenCalledWith(
+      expect.objectContaining({ id: GRANT_ID, status: AuthThirdStatus.ACTIVE }),
+      { status: AuthThirdStatus.EXPIRED },
     );
     expect(audit.record).toHaveBeenCalledWith(
       expect.objectContaining({ action: 'third_party_expire', grantId: GRANT_ID }),
@@ -249,6 +257,62 @@ describe('ThirdPartiesService · regresiones del ciclo de vida', () => {
         newValue: expect.objectContaining({ relationship: ThirdPartyRelationship.CAREGIVER }),
       }),
       manager,
+    );
+  });
+
+  it('R1-001 · revocar cierra la membresía: sin eso el tercero conserva el vínculo', async () => {
+    grants.findById.mockResolvedValue(grant());
+    grantRowRepo.findOneByOrFail.mockResolvedValue(grant());
+
+    await service.revokeForOwner(GRANT_ID, OWNER_ID);
+
+    expect(memberRowRepo.update).toHaveBeenCalledWith(
+      { bondId: BOND_ID, userId: TARGET_ID },
+      { leftAt: new Date(`${TODAY}T12:00:00.000Z`) },
+    );
+  });
+
+  it('R4-004 · vencer no pisa una revocación que commiteó en el medio', async () => {
+    grants.findLatestForUser.mockResolvedValue(grant({ endDate: '2026-11-01' }));
+    grantRowRepo.update.mockResolvedValue({ affected: 0 });
+
+    const row = await service.getMyGrant(TARGET_ID);
+
+    expect(row.status).toBe(AuthThirdStatus.ACTIVE);
+    expect(audit.record).not.toHaveBeenCalled();
+  });
+
+  it('R3-004 · dos altas simultáneas: la que choca con el índice único es 409, no 500', async () => {
+    grants.findActiveForPair.mockResolvedValue(null);
+    grants.saveWith.mockRejectedValue({ code: '23505' });
+
+    await expect(service.createForOwner(BOND_ID, OWNER_ID, dto)).rejects.toBeInstanceOf(
+      ConflictException,
+    );
+  });
+
+  it('R3-003 · una fecha que no existe en el calendario es 400', async () => {
+    await expect(
+      service.createForOwner(BOND_ID, OWNER_ID, { ...dto, accessEnd: '2026-02-30' }),
+    ).rejects.toBeInstanceOf(BadRequestException);
+  });
+
+  it('volver a otorgar reabre la membresía que la revocación había cerrado', async () => {
+    users.findOneByEmail.mockResolvedValue({ id: TARGET_ID });
+    members.findOneByBondAndUser.mockResolvedValue({
+      bondId: BOND_ID,
+      userId: TARGET_ID,
+      role: BondMemberRole.THIRD_PARTY,
+      leftAt: new Date(`${TODAY}T10:00:00.000Z`),
+    });
+    grants.findActiveForPair.mockResolvedValue(null);
+
+    const created = await service.createForOwner(BOND_ID, OWNER_ID, dto);
+
+    expect(created.status).toBe(AuthThirdStatus.ACTIVE);
+    expect(memberRowRepo.update).toHaveBeenCalledWith(
+      { bondId: BOND_ID, userId: TARGET_ID },
+      { leftAt: null },
     );
   });
 });

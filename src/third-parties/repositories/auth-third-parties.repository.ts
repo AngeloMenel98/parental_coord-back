@@ -51,8 +51,18 @@ export class AuthThirdPartiesRepository extends BaseRepository<AuthThirdPartyEnt
   /**
    * El grant más reciente del visitante, sea cual sea su estado: `/third-parties/me`
    * necesita poder contar "venció" o "fue revocado" en vez de responder 404 opaco.
+   *
+   * **Prefiere el `active`** (R2-001): con grants en más de un vínculo, "el más reciente
+   * por fecha de creación" podía ser el de OTRO vínculo y `/me` respondía la relación y el
+   * vínculo equivocados. Un grant vivo gana siempre; sólo si no hay ninguno se cae al
+   * último conocido, que es el que sirve para explicar que el acceso terminó.
    */
   async findLatestForUser(userId: string): Promise<AuthThirdPartyEntity | null> {
+    const active = await this.grantRepo.findOne({
+      where: { userId, status: AuthThirdStatus.ACTIVE },
+      order: { createdAt: 'DESC' },
+    });
+    if (active) return active;
     return this.grantRepo.findOne({
       where: { userId },
       order: { createdAt: 'DESC' },

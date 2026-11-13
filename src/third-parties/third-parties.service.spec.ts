@@ -50,8 +50,15 @@ describe('ThirdPartiesService', () => {
     // también consulta con `find`.
     find: jest.fn(async (): Promise<AuthThirdPartyEntity[]> => []),
     save: jest.fn(),
+    // El vencimiento es un UPDATE condicional (R4-004), no un `save`.
+    update: jest.fn(async (): Promise<{ affected: number }> => ({ affected: 1 })),
   };
-  const memberRowRepo = { create: jest.fn((data) => data), save: jest.fn(async (data) => data) };
+  const memberRowRepo = {
+    create: jest.fn((data) => data),
+    save: jest.fn(async (data) => data),
+    // Revocar cierra la membresía (R1-001).
+    update: jest.fn(async () => ({ affected: 1 })),
+  };
   const manager = {
     getRepository: jest.fn((entity) =>
       entity === BondMemberEntity ? memberRowRepo : grantRowRepo,
