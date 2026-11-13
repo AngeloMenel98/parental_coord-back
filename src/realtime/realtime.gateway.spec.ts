@@ -82,14 +82,18 @@ function flushDelivery(): Promise<void> {
 describe('RealtimeGateway (REQ-1/REQ-3)', () => {
   let authService: { authenticate: jest.Mock };
   let bondsService: { findByUserId: jest.Mock };
-  let bondMembersRepo: { findActiveMemberIds: jest.Mock };
+  let bondMembersRepo: { findActiveMemberIds: jest.Mock; findActiveThirdPartyIds: jest.Mock };
   let subscriber: { messages$: Subject<RealtimeMessageV1> };
   let gateway: RealtimeGateway;
 
   beforeEach(() => {
     authService = { authenticate: jest.fn() };
     bondsService = { findByUserId: jest.fn() };
-    bondMembersRepo = { findActiveMemberIds: jest.fn() };
+    bondMembersRepo = {
+      findActiveMemberIds: jest.fn(),
+      // Por defecto no hay terceros: los tests de T6 los agregan.
+      findActiveThirdPartyIds: jest.fn().mockResolvedValue([]),
+    };
     subscriber = { messages$: new Subject<RealtimeMessageV1>() };
     gateway = new RealtimeGateway(
       authService as unknown as RealtimeAuthService,
@@ -379,5 +383,57 @@ describe('RealtimeGateway (REQ-1/REQ-3)', () => {
       expect(u2.send).toHaveBeenCalledTimes(1);
       expect(u2.send).toHaveBeenCalledWith(expected);
     });
+  });
+});
+
+describe('RealtimeGateway · T6 el tercero sólo recibe lo suyo', () => {
+  it('no le entrega un frame de una actividad ajena ni un gasto; sí el suyo', async () => {
+    const { RealtimeGateway } = await import('./realtime.gateway');
+    const socketTercero = { readyState: 1, send: jest.fn(), close: jest.fn() };
+    const bondMembersRepo = {
+      findActiveMemberIds: jest.fn(async () => ['t1']),
+      findActiveThirdPartyIds: jest.fn(async () => ['t1']),
+    };
+    const gateway = new (RealtimeGateway as any)(
+      {}, // authService
+      {}, // bondsService
+      bondMembersRepo,
+      { messages$: { subscribe: jest.fn() } }, // subscriber
+    );
+    // El registro de sockets es un campo privado del gateway: se reemplaza por el del test.
+    (gateway as any).registry = new Map<string, Set<unknown>>([
+      ['t1', new Set([socketTercero])],
+    ]);
+
+    const propio = {
+      v: 1,
+      type: 'activity.changed',
+      eventId: 'e1',
+      activityId: 'a1',
+      bondId: 'b1',
+      from: 'assigned',
+      to: 'assisting',
+      actor: { type: 'user', id: 'p1' },
+      occurredAt: '2026-11-05T12:00:00.000Z',
+      assignedTo: 't1',
+    };
+    const ajeno = { ...propio, eventId: 'e2', activityId: 'a2', assignedTo: 'otro' };
+    const gasto = {
+      v: 1,
+      type: 'expense.changed',
+      eventId: 'e3',
+      expenseId: 'x1',
+      bondId: 'b1',
+      occurredAt: '2026-11-05T12:00:00.000Z',
+    };
+
+    await (gateway as any).deliverToBond(ajeno);
+    expect(socketTercero.send).not.toHaveBeenCalled();
+
+    await (gateway as any).deliverToBond(gasto);
+    expect(socketTercero.send).not.toHaveBeenCalled();
+
+    await (gateway as any).deliverToBond(propio);
+    expect(socketTercero.send).toHaveBeenCalledTimes(1);
   });
 });

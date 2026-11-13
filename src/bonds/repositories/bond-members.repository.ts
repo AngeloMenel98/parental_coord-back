@@ -111,6 +111,30 @@ export class BondMembersRepository extends BaseRepository<BondMemberEntity> {
   }
 
   /**
+   * IDs de los terceros temporales con acceso VIVO en el vínculo (T6).
+   *
+   * El join filtra por grant `active` y `end_date >= CURRENT_DATE`: un grant que venció
+   * y nadie barrió no cuenta como acceso, igual que en el chokepoint. La fecha se resuelve
+   * en SQL para no arrastrar el reloj del servicio hasta el gateway.
+   */
+  async findActiveThirdPartyIds(bondId: string): Promise<string[]> {
+    const rows = await this.bondMemberRepo.manager
+      .createQueryBuilder()
+      .select('bm.user_id', 'userId')
+      .from('bond_member', 'bm')
+      .innerJoin(
+        'auth_third_party',
+        'g',
+        "g.bond_id = bm.bond_id AND g.user_id = bm.user_id AND g.status = 'active'",
+      )
+      .where('bm.bond_id = :bondId', { bondId })
+      .andWhere('bm.left_at IS NULL')
+      .andWhere('g.end_date >= CURRENT_DATE')
+      .getRawMany<{ userId: string }>();
+    return rows.map((row) => row.userId);
+  }
+
+  /**
    * El nombre para mostrar de cada miembro del vínculo (id → nombre).
    *
    * UNA consulta por página: los nombres de "solicitado por", "contraparte" y
