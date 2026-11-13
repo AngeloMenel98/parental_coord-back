@@ -67,7 +67,7 @@ describe('ActivitiesService', () => {
     // Doble del chokepoint (T3/S7): por defecto deja pasar; los tests de asignación a
     // un tercero lo ajustan caso por caso.
     bondAccess = {
-      assertCanAssignTo: jest.fn().mockResolvedValue(undefined),
+      assertCanAssignTo: jest.fn().mockResolvedValue(false),
       // Por defecto el que mira NO es tercero; los tests de la matriz S8 lo cambian.
       resolveBondAccess: jest
         .fn()
@@ -1759,7 +1759,7 @@ describe('ActivitiesService · S8 auto-confirmación al asignar a un tercero', (
         isThirdParty: true,
         grant: { id: 'g1', authorizedBy: 'p1', startDate: '2026-10-01', endDate: '2026-12-12' },
       }),
-      assertCanAssignTo: jest.fn().mockResolvedValue(undefined),
+      assertCanAssignTo: jest.fn().mockResolvedValue(true),
     };
     const bonds = { isActiveBondForMember: jest.fn().mockResolvedValue(true) };
     const clock = { now: jest.fn(() => new Date('2026-11-05T12:00:00.000Z')) };

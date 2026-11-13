@@ -694,25 +694,22 @@ export class ActivitiesService {
     const activity = await this.loadForMember(id, userId);
     const targetId = assignedTo ?? userId;
 
+    let targetIsThirdParty = false;
+
     // A provided target must be an active bond member; 404 without revealing
     // whether that user exists at all (T21).
     if (assignedTo !== undefined) {
       const isMember = await this.bondService.isActiveBondForMember(activity.bondId, targetId);
       if (!isMember) throw activityNotFound();
       // S7: si el destino es un tercero temporal, sólo le asigna quien lo autorizó —
-      // el otro progenitor del vínculo recibe 403 aunque sea miembro.
-      await this.bondAccess.assertCanAssignTo(activity.bondId, userId, targetId);
+      // el otro progenitor del vínculo recibe 403 aunque sea miembro. El mismo paso
+      // dice si el destino ES tercero (S8: auto-confirmación), sin resolver dos veces.
+      targetIsThirdParty = await this.bondAccess.assertCanAssignTo(
+        activity.bondId,
+        userId,
+        targetId,
+      );
     }
-
-    // S8/D6 — al tercero temporal se le asigna YA CONFIRMADO: no hay paso de aceptación,
-    // así que no existe ventana donde pueda rechazar. `assignedConfirmed` no es una
-    // columna: se deriva de `confirmedAt != null` (ver confirmAssignment), y por eso
-    // alcanza con escribir la marca en la MISMA transición del alta.
-    //
-    // No se salta ningún estado: sigue siendo created → assigned → assisting, y el paso
-    // a `assisting` lo sigue dando el reloj/worker como para cualquier asignado.
-    const targetIsThirdParty =
-      assignedTo !== undefined && (await this.isThirdPartyViewer(activity.bondId, targetId));
 
     const updated = await this.transition({
       activityId: id,

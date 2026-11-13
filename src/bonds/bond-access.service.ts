@@ -109,22 +109,26 @@ export class BondAccessService {
    * S7: a un tercero sólo le asigna el progenitor que lo autorizó.
    *
    * El llamante ya tiene que haber pasado por [assertBondAccess]; acá sólo se agrega la
-   * regla de propiedad del grant. Un target que no es tercero (o que no es miembro) no
-   * cambia el resultado: la autorización de esa asignación es otra y no se decide acá.
+   * regla de propiedad del grant. Devuelve `true` cuando el destino **es** un tercero
+   * autorizado por el llamante, que es lo que el alta necesita para auto-confirmar.
    */
   async assertCanAssignTo(
     bondId: string,
     callerId: string,
     targetUserId: string,
     cache?: BondAccessCache,
-  ): Promise<void> {
+  ): Promise<boolean> {
     const target = await this.resolveBondAccess(bondId, targetUserId, cache);
-    if (!target || !target.isThirdParty) return;
+    if (!target || !target.isThirdParty) return false;
     if (!target.grant || target.grant.authorizedBy !== callerId) {
       throw new ForbiddenException(
         'Sólo el progenitor que autorizó a esta persona puede asignarle actividades',
       );
     }
+    // Devuelve el dato en vez de `void`: el llamante necesita saber que el destino es un
+    // tercero para auto-confirmar la asignación (S8), y preguntarlo otra vez sería una
+    // segunda resolución para la misma respuesta.
+    return true;
   }
 
   private async resolveUncached(bondId: string, userId: string): Promise<BondAccess | null> {

@@ -110,9 +110,7 @@ describe('BondAccessService', () => {
   it('S7 · asignarle a un tercero exige ser el progenitor que lo autorizó', async () => {
     members.findAccessRow.mockResolvedValue(thirdPartyRow());
 
-    await expect(
-      service.assertCanAssignTo(BOND_ID, OWNER_ID, USER_ID),
-    ).resolves.toBeUndefined();
+    await expect(service.assertCanAssignTo(BOND_ID, OWNER_ID, USER_ID)).resolves.toBe(true);
     await expect(
       service.assertCanAssignTo(BOND_ID, 'otro-progenitor', USER_ID),
     ).rejects.toBeInstanceOf(ForbiddenException);
@@ -123,7 +121,7 @@ describe('BondAccessService', () => {
 
     await expect(
       service.assertCanAssignTo(BOND_ID, 'cualquier-miembro', USER_ID),
-    ).resolves.toBeUndefined();
+    ).resolves.toBe(false);
   });
 
   it('el memo del request hace una sola consulta', async () => {
