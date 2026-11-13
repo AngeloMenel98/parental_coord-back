@@ -66,7 +66,13 @@ describe('ActivitiesService', () => {
     bondService = { isActiveBondForMember: jest.fn().mockResolvedValue(true) } as any;
     // Doble del chokepoint (T3/S7): por defecto deja pasar; los tests de asignación a
     // un tercero lo ajustan caso por caso.
-    bondAccess = { assertCanAssignTo: jest.fn().mockResolvedValue(undefined) } as any;
+    bondAccess = {
+      assertCanAssignTo: jest.fn().mockResolvedValue(undefined),
+      // Por defecto el que mira NO es tercero; los tests de la matriz S8 lo cambian.
+      resolveBondAccess: jest
+        .fn()
+        .mockResolvedValue({ role: 'progenitor', isThirdParty: false, grant: undefined }),
+    } as any;
     // `resolveActorRole` vive en BondMembersRepository.
     bondMembersRepo = {
       findActiveMembersWithActStats: jest.fn().mockResolvedValue([]),
@@ -1224,6 +1230,33 @@ describe('ActivitiesService', () => {
       const rows = await service.listByBond(bondId, assignee);
       expect(rows[0].canConfirm).toBe(false);
       expect(rows[0].canDecline).toBe(true);
+    });
+
+    it('S8 · un tercero no recibe NINGUNA acción: sólo finalizar lo suyo', async () => {
+      activityRepo.findById.mockResolvedValue(
+        futureActivity({
+          status: ActivityStatus.IN_PROGRESS,
+          assignedTo: 'u-tercero',
+          createdBy: 'u-tercero',
+        }),
+      );
+      bondAccess.resolveBondAccess.mockResolvedValue({
+        role: 'third_party',
+        isThirdParty: true,
+        grant: { id: 'g1', authorizedBy: 'p1', startDate: '2026-10-01', endDate: '2026-12-12' },
+      });
+
+      const detail = await service.getDetail('a1', 'u-tercero');
+
+      // Creador de la actividad y aun así: nada de borrar, cancelar, asignar,
+      // reasignar, confirmar ni rechazar. Sólo finalizar, y sólo lo suyo.
+      expect(detail.canDelete).toBe(false);
+      expect(detail.canCancel).toBe(false);
+      expect(detail.canAssign).toBe(false);
+      expect(detail.canReassign).toBe(false);
+      expect(detail.canConfirm).toBe(false);
+      expect(detail.canDecline).toBe(false);
+      expect(detail.canComplete).toBe(true);
     });
 
     it('getDetail exposes canComplete in `verify` ONLY to the assignee', async () => {

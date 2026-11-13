@@ -58,7 +58,20 @@ export class ActivityPolicyService {
     return anchor != null && now >= anchor;
   }
 
-  evaluate(activity: PolicySubject, viewerId: string, now: Date): ActivityPolicyDecision {
+  /**
+   * `viewer` es el ROL de quien mira, no su identidad: un tercero temporal no puede
+   * asignar, reasignar, confirmar, rechazar, cancelar ni borrar (S8), mire lo que mire.
+   *
+   * Es un parámetro opcional para que los llamantes que todavía no resuelven el rol
+   * sigan compilando con el comportamiento de siempre — pero los seis call-sites de
+   * `ActivitiesService` ya lo pasan, así que en producción no hay default.
+   */
+  evaluate(
+    activity: PolicySubject,
+    viewerId: string,
+    now: Date,
+    viewer: { isThirdParty: boolean } = { isThirdParty: false },
+  ): ActivityPolicyDecision {
     const isPast = this.isPast(activity, now);
     const isCreator = activity.createdBy === viewerId;
     const isAssignee = activity.assignedTo !== null && activity.assignedTo === viewerId;
@@ -89,6 +102,24 @@ export class ActivityPolicyService {
       (activity.status === ActivityStatus.ASSIGNED ||
         (activity.status === ActivityStatus.OVERDUE && origin === 'assigned')) &&
       !isPast;
+
+    if (viewer.isThirdParty) {
+      // El tercero sólo finaliza lo suyo (S8/S11): la matriz completa, en un solo lugar,
+      // para que no dependa de que cada bandera se acuerde del rol.
+      return {
+        canDelete: false,
+        canCancel: false,
+        canAssign: false,
+        canReassign: false,
+        canConfirm: false,
+        canDecline: false,
+        canComplete:
+          isAssignee &&
+          (activity.status === ActivityStatus.IN_PROGRESS ||
+            activity.status === ActivityStatus.VERIFY),
+        isPast,
+      };
+    }
 
     return {
       canDelete: isCreator && !isPast,

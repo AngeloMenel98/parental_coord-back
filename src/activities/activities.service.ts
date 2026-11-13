@@ -459,9 +459,11 @@ export class ActivitiesService {
 
     const rows = await this.activitiesRepo.findByBondIdOrdered(bondId);
     const now = this.clock.now();
+    // Una sola resolución por request: la lista entera comparte el rol del que mira.
+    const viewer = { isThirdParty: await this.isThirdPartyViewer(bondId, viewerId) };
     return plainToInstance(
       ActivitySummaryDto,
-      rows.map((row) => ({ ...row, ...this.policy.evaluate(row, viewerId, now) })),
+      rows.map((row) => ({ ...row, ...this.policy.evaluate(row, viewerId, now, viewer) })),
       { excludeExtraneousValues: true, exposeUnsetFields: false },
     );
   }
@@ -472,7 +474,9 @@ export class ActivitiesService {
 
     await this.assertActivityMember(activity, userId);
 
-    const decision = this.policy.evaluate(activity, userId, this.clock.now());
+    const decision = this.policy.evaluate(activity, userId, this.clock.now(), {
+      isThirdParty: await this.isThirdPartyViewer(activity.bondId, userId),
+    });
     return plainToInstance(
       ActivityDetailDto,
       {
@@ -491,7 +495,9 @@ export class ActivitiesService {
     // S13 / F2 de la propuesta — el cierre pasa por la POLÍTICA, no sólo por membresía.
     // Sin esto, esconder el botón en la UI no cambia nada: cualquiera con membresía podía
     // finalizar una actividad ajena con un POST directo.
-    const decision = this.policy.evaluate(activity, userId, this.clock.now());
+    const decision = this.policy.evaluate(activity, userId, this.clock.now(), {
+      isThirdParty: await this.isThirdPartyViewer(activity.bondId, userId),
+    });
     // Un tercero (o el otro progenitor) recibe 403 aunque el estado permita cerrar. Si
     // ES el asignado y el estado no habilita, se deja pasar al `transition()`, que es
     // quien sabe responder 409 sin duplicar la máquina de estados acá.
@@ -555,11 +561,25 @@ export class ActivitiesService {
     };
   }
 
+  /**
+   * ¿El que mira es un tercero temporal en este vínculo? (S8)
+   *
+   * Lo resuelve el chokepoint, que ya sabe de grants. Se llama una vez por request en la
+   * lista y una vez por operación en el resto: no es un dato que se pueda adivinar desde
+   * `systemRole`.
+   */
+  private async isThirdPartyViewer(bondId: string, viewerId: string): Promise<boolean> {
+    const access = await this.bondAccess.resolveBondAccess(bondId, viewerId);
+    return access?.isThirdParty === true;
+  }
+
   async delete(id: string, userId: string): Promise<{ id: string; deletedAt: string }> {
     const activity = await this.loadForMember(id, userId);
     const now = this.clock.now();
 
-    const { canDelete } = this.policy.evaluate(activity, userId, now);
+    const { canDelete } = this.policy.evaluate(activity, userId, now, {
+      isThirdParty: await this.isThirdPartyViewer(activity.bondId, userId),
+    });
     if (!canDelete) throw activityForbidden(`You are not allowed to delete this activity`);
 
     // REQ-TRANS-4/AC-9: delete moves through T15 and soft-deletes in the SAME tx.
@@ -583,7 +603,9 @@ export class ActivitiesService {
     const activity = await this.loadForMember(id, userId);
     const now = this.clock.now();
 
-    const { canCancel } = this.policy.evaluate(activity, userId, now);
+    const { canCancel } = this.policy.evaluate(activity, userId, now, {
+      isThirdParty: await this.isThirdPartyViewer(activity.bondId, userId),
+    });
     if (!canCancel) throw activityForbidden(`You are not allowed to cancel this activity`);
 
     const reason = parseActivityReason(rawReason);
@@ -612,7 +634,9 @@ export class ActivitiesService {
     const activity = await this.loadForMember(id, userId);
     const now = this.clock.now();
 
-    const { canDecline } = this.policy.evaluate(activity, userId, now);
+    const { canDecline } = this.policy.evaluate(activity, userId, now, {
+      isThirdParty: await this.isThirdPartyViewer(activity.bondId, userId),
+    });
     if (!canDecline) throw activityForbidden(`You are not allowed to decline this activity`);
 
     const reason = parseActivityReason(rawReason);
