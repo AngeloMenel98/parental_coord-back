@@ -1,7 +1,7 @@
 import { ConflictException, ForbiddenException, NotFoundException, UnprocessableEntityException } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 
-import { BondsService } from '../bonds/bonds.service';
+import { BondAccessService } from '../bonds/bond-access.service';
 import { BondMemberEntity, BondMemberRole } from '../bonds/entities/bond-member.entity';
 import { BondMembersRepository } from '../bonds/repositories/bond-members.repository';
 import { Clock } from '../common/clock/clock';
@@ -39,7 +39,7 @@ describe('ThirdPartiesService', () => {
     transaction: jest.fn(),
   };
   const audit = { record: jest.fn() };
-  const bonds = { isActiveBondForMember: jest.fn() };
+  const access = { assertBondAccess: jest.fn() };
   const members = { findOneByBondAndUser: jest.fn(), findMemberNames: jest.fn() };
   const users = { findOneByEmail: jest.fn() };
   const clock = { now: jest.fn(() => new Date(`${TODAY}T12:00:00.000Z`)) };
@@ -95,7 +95,7 @@ describe('ThirdPartiesService', () => {
         [OWNER_ID, 'Ángelo'],
       ]),
     );
-    bonds.isActiveBondForMember.mockResolvedValue(true);
+    access.assertBondAccess.mockResolvedValue({ role: BondMemberRole.PROGENITOR, isThirdParty: false });
     members.findOneByBondAndUser.mockResolvedValue(progenitorMember);
 
     const moduleRef = await Test.createTestingModule({
@@ -103,7 +103,7 @@ describe('ThirdPartiesService', () => {
         ThirdPartiesService,
         { provide: AuthThirdPartiesRepository, useValue: grants },
         { provide: ThirdPartiesAuditRepository, useValue: audit },
-        { provide: BondsService, useValue: bonds },
+        { provide: BondAccessService, useValue: access },
         { provide: BondMembersRepository, useValue: members },
         { provide: UsersRepository, useValue: users },
         { provide: Clock, useValue: clock },
@@ -115,9 +115,9 @@ describe('ThirdPartiesService', () => {
 
   describe('listForOwner', () => {
     it('rechaza a un coordinador: sólo los progenitores otorgan acceso (S3/S7)', async () => {
-      members.findOneByBondAndUser.mockResolvedValue({
-        ...progenitorMember,
+      access.assertBondAccess.mockResolvedValue({
         role: BondMemberRole.COORDINATOR,
+        isThirdParty: false,
       });
 
       await expect(service.listForOwner(BOND_ID, OWNER_ID)).rejects.toBeInstanceOf(

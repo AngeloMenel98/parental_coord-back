@@ -9,7 +9,7 @@ import {
 } from '@nestjs/common';
 import { EntityManager } from 'typeorm';
 
-import { BondsService } from '../bonds/bonds.service';
+import { BondAccessCache, BondAccessService } from '../bonds/bond-access.service';
 import { BondMemberEntity, BondMemberRole } from '../bonds/entities/bond-member.entity';
 import { BondMembersRepository } from '../bonds/repositories/bond-members.repository';
 import { Clock } from '../common/clock/clock';
@@ -55,7 +55,7 @@ export class ThirdPartiesService {
   constructor(
     private readonly grants: AuthThirdPartiesRepository,
     private readonly audit: ThirdPartiesAuditRepository,
-    private readonly bonds: BondsService,
+    private readonly access: BondAccessService,
     private readonly members: BondMembersRepository,
     private readonly users: UsersRepository,
     @Inject(Clock) private readonly clock: Clock,
@@ -63,7 +63,8 @@ export class ThirdPartiesService {
 
   /** Los accesos que otorgó ESTE progenitor. */
   async listForOwner(bondId: string, ownerId: string): Promise<ThirdPartyResponseDto[]> {
-    await this.assertProgenitor(bondId, ownerId);
+    const cache = new BondAccessCache();
+    await this.assertProgenitor(bondId, ownerId, cache);
 
     const grants = await this.grants.findForOwner(bondId, ownerId);
     if (grants.length === 0) return [];
@@ -104,7 +105,8 @@ export class ThirdPartiesService {
     ownerId: string,
     dto: CreateThirdPartyDto,
   ): Promise<ThirdPartyResponseDto> {
-    await this.assertProgenitor(bondId, ownerId);
+    const cache = new BondAccessCache();
+    await this.assertProgenitor(bondId, ownerId, cache);
     const today = this.today();
     this.assertAccessEnd(dto.accessEnd, today);
 
@@ -339,15 +341,17 @@ export class ThirdPartiesService {
   // ── Reglas compartidas ────────────────────────────────────────────────
 
   /** Sólo un progenitor ACTIVO del vínculo administra accesos (S3/S7). */
-  private async assertProgenitor(bondId: string, callerId: string): Promise<BondMemberEntity> {
-    const isMember = await this.bonds.isActiveBondForMember(bondId, callerId);
-    const member = isMember ? await this.members.findOneByBondAndUser(bondId, callerId) : null;
-    if (!member || member.leftAt !== null || member.role !== BondMemberRole.PROGENITOR) {
+  private async assertProgenitor(
+    bondId: string,
+    callerId: string,
+    cache?: BondAccessCache,
+  ): Promise<void> {
+    const access = await this.access.assertBondAccess(bondId, callerId, cache);
+    if (access.role !== BondMemberRole.PROGENITOR) {
       throw new ForbiddenException(
         'Sólo un progenitor del vínculo puede administrar accesos temporales',
       );
     }
-    return member;
   }
 
   private async requireOwnedGrant(
@@ -361,8 +365,9 @@ export class ThirdPartiesService {
     // Cambiar o revocar exige seguir siendo progenitor ACTIVO del vínculo: ser el dueño
     // del grant no alcanza si esa persona ya dejó el vínculo o cambió de rol (F3 de la
     // verificación independiente). Es la única guarda el día que exista un flujo de
-    // salida o degradación de miembro.
-    await this.assertProgenitor(grant.bondId, ownerId);
+    // salida o degradación de miembro. Pasa por el chokepoint de T3, que además sabe de
+    // grants vencidos.
+    await this.assertProgenitor(grant.bondId, ownerId, new BondAccessCache());
     return grant;
   }
 

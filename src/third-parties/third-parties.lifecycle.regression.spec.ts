@@ -6,7 +6,7 @@ import {
 } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 
-import { BondsService } from '../bonds/bonds.service';
+import { BondAccessService } from '../bonds/bond-access.service';
 import { BondMemberEntity, BondMemberRole } from '../bonds/entities/bond-member.entity';
 import { BondMembersRepository } from '../bonds/repositories/bond-members.repository';
 import { Clock } from '../common/clock/clock';
@@ -46,7 +46,7 @@ describe('ThirdPartiesService · regresiones del ciclo de vida', () => {
     transaction: jest.fn(),
   };
   const audit = { record: jest.fn() };
-  const bonds = { isActiveBondForMember: jest.fn() };
+  const access = { assertBondAccess: jest.fn() };
   const members = { findOneByBondAndUser: jest.fn(), findMemberNames: jest.fn() };
   const users = { findOneByEmail: jest.fn() };
   const clock = { now: jest.fn(() => new Date(`${TODAY}T12:00:00.000Z`)) };
@@ -111,7 +111,7 @@ describe('ThirdPartiesService · regresiones del ciclo de vida', () => {
         [OWNER_ID, 'Ángelo'],
       ]),
     );
-    bonds.isActiveBondForMember.mockResolvedValue(true);
+    access.assertBondAccess.mockResolvedValue({ role: BondMemberRole.PROGENITOR, isThirdParty: false });
     members.findOneByBondAndUser.mockImplementation(async (_bondId: string, userId: string) =>
       userId === TARGET_ID ? null : progenitorMember,
     );
@@ -122,7 +122,7 @@ describe('ThirdPartiesService · regresiones del ciclo de vida', () => {
         ThirdPartiesService,
         { provide: AuthThirdPartiesRepository, useValue: grants },
         { provide: ThirdPartiesAuditRepository, useValue: audit },
-        { provide: BondsService, useValue: bonds },
+        { provide: BondAccessService, useValue: access },
         { provide: BondMembersRepository, useValue: members },
         { provide: UsersRepository, useValue: users },
         { provide: Clock, useValue: clock },
@@ -181,8 +181,9 @@ describe('ThirdPartiesService · regresiones del ciclo de vida', () => {
   });
 
   it('F3 · si el dueño dejó de ser progenitor activo no puede extender ni revocar', async () => {
-    bonds.isActiveBondForMember.mockResolvedValue(false);
-    members.findOneByBondAndUser.mockResolvedValue(null);
+    access.assertBondAccess.mockRejectedValue(
+      new ForbiddenException('Bond not found or you are not a member'),
+    );
     grants.findById.mockResolvedValue(grant());
 
     await expect(
