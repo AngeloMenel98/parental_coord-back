@@ -11,6 +11,7 @@ import { ChildrenRepository } from '../../children/repositories/children.reposit
 import { CategoriesRepository } from '../../categories/repositories/categories.repository';
 import { ActivityStatus } from '../entities/activity.entity';
 import { BondsService } from '../../bonds/bonds.service';
+import { BondAccessService } from '../../bonds/bond-access.service';
 import { BondMembersRepository } from '../../bonds/repositories/bond-members.repository';
 import { Clock } from '../../common/clock/clock';
 import { CodedException } from '../../common/errors/coded.exception';
@@ -25,6 +26,7 @@ describe('ActivitiesService', () => {
   let childrenRepo: any;
   let activityChildRepo: any;
   let bondService: any;
+  let bondAccess: any;
   let bondMembersRepo: any;
   let config: any;
   let clock: any;
@@ -62,6 +64,9 @@ describe('ActivitiesService', () => {
     childrenRepo = { findByIdsAndBond: jest.fn() } as any;
     activityChildRepo = { saveChildrenFor: jest.fn() } as any;
     bondService = { isActiveBondForMember: jest.fn().mockResolvedValue(true) } as any;
+    // Doble del chokepoint (T3/S7): por defecto deja pasar; los tests de asignación a
+    // un tercero lo ajustan caso por caso.
+    bondAccess = { assertCanAssignTo: jest.fn().mockResolvedValue(undefined) } as any;
     // `resolveActorRole` vive en BondMembersRepository.
     bondMembersRepo = {
       findActiveMembersWithActStats: jest.fn().mockResolvedValue([]),
@@ -90,12 +95,15 @@ describe('ActivitiesService', () => {
     // so existing getDetail specs keep working without per-test rewrites.
     activityRepo.findByIdWithChildren = jest.fn((id: string) => activityRepo.findById(id));
 
+    bondAccess.assertCanAssignTo.mockResolvedValue(undefined);
+
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         ActivitiesService,
         { provide: ActivitiesRepository, useValue: activityRepo },
         { provide: ActivityChildRepository, useValue: activityChildRepo },
         { provide: BondsService, useValue: bondService },
+        { provide: BondAccessService, useValue: bondAccess },
         { provide: BondMembersRepository, useValue: bondMembersRepo },
         { provide: ChildrenRepository, useValue: childrenRepo },
         { provide: CategoriesRepository, useValue: categoriesRepo },

@@ -39,6 +39,7 @@ import {
   activityNotFound,
 } from '../common/errors/coded.exception';
 import { BondsService } from '../bonds/bonds.service';
+import { BondAccessService } from '../bonds/bond-access.service';
 import { ConfigService } from '@nestjs/config';
 
 /** Who triggers a transition (design D3). */
@@ -68,6 +69,10 @@ export class ActivitiesService {
 
     @Inject(forwardRef(() => BondsService))
     private readonly bondService: BondsService,
+
+    // T3 · el chokepoint, para la regla de S7 que no es de membresía sino de propiedad
+    // del grant: a un tercero temporal le asigna sólo el progenitor que lo autorizó.
+    private readonly bondAccess: BondAccessService,
 
     private readonly childrenRepo: ChildrenRepository,
     private readonly categoriesRepo: CategoriesRepository,
@@ -659,6 +664,9 @@ export class ActivitiesService {
     if (assignedTo !== undefined) {
       const isMember = await this.bondService.isActiveBondForMember(activity.bondId, targetId);
       if (!isMember) throw activityNotFound();
+      // S7: si el destino es un tercero temporal, sólo le asigna quien lo autorizó —
+      // el otro progenitor del vínculo recibe 403 aunque sea miembro.
+      await this.bondAccess.assertCanAssignTo(activity.bondId, userId, targetId);
     }
 
     const updated = await this.transition({
