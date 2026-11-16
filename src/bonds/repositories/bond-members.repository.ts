@@ -135,6 +135,36 @@ export class BondMembersRepository extends BaseRepository<BondMemberEntity> {
   }
 
   /**
+   * Quién autorizó a cada tercero con acceso VIVO del vínculo (T12/S12).
+   *
+   * `userId → authorizedBy`. El join es el mismo del gateway y del fan-out (`T6`):
+   * grant `active`, `end_date >= CURRENT_DATE` y miembro sin `left_at`. Un tercero
+   * revocado o vencido no aparece: no hay autorización vigente que anunciar, y
+   * `BondsService` lo trata como identidad oculta igual.
+   *
+   * La frase "Autorizado por …" se arma en el servicio porque necesita el nombre
+   * del autorizador, que sale de `findMemberNames` (una sola consulta por página).
+   */
+  async findThirdPartyAuthorizers(bondId: string): Promise<Map<string, string>> {
+    const rows = await this.bondMemberRepo.manager
+      .createQueryBuilder()
+      .select('bm.user_id', 'userId')
+      .addSelect('g.authorized_by', 'authorizedBy')
+      .from('bond_member', 'bm')
+      .innerJoin(
+        'auth_third_party',
+        'g',
+        "g.bond_id = bm.bond_id AND g.user_id = bm.user_id AND g.status = 'active'",
+      )
+      .where('bm.bond_id = :bondId', { bondId })
+      .andWhere('bm.left_at IS NULL')
+      .andWhere('g.end_date >= CURRENT_DATE')
+      .getRawMany<{ userId: string; authorizedBy: string }>();
+
+    return new Map(rows.map((row) => [row.userId, row.authorizedBy]));
+  }
+
+  /**
    * El nombre para mostrar de cada miembro del vínculo (id → nombre).
    *
    * UNA consulta por página: los nombres de "solicitado por", "contraparte" y
