@@ -21,6 +21,7 @@ import { AdminModule } from './admin/admin.module';
 import { WebhooksModule } from './webhooks/webhooks.module';
 import { RealtimeModule } from './realtime/realtime.module';
 import { StorageModule } from './storage/storage.module';
+import { ThirdPartiesModule } from './third-parties/third-parties.module';
 import { validateConfig } from './config/app-config';
 import { buildBullConnection } from './queues/redis.config';
 
@@ -81,6 +82,7 @@ import { buildBullConnection } from './queues/redis.config';
     WebhooksModule,
     RealtimeModule,
     StorageModule,
+    ThirdPartiesModule,
   ],
   providers: [
     {

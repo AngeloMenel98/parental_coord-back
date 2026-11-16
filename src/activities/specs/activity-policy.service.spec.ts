@@ -238,14 +238,19 @@ describe('ActivityPolicyService', () => {
   });
 
   describe('evaluate — verify-window flags (R3)', () => {
-    it('canComplete is true in `in_progress` for any bond member', () => {
+    // S13 / D5 — el flag dejó de mirar sólo el estado (F1). Estas dos pruebas
+    // afirmaban la regla vieja ("cualquier miembro del vínculo puede finalizar"),
+    // que es justamente el agujero que T4 cierra: se conservan, invertidas.
+    it('canComplete is true in `in_progress` ONLY for the assignee', () => {
       const a = subject({ status: ActivityStatus.IN_PROGRESS });
-      expect(policy.evaluate(a, 'someone-else', NOW).canComplete).toBe(true);
+      expect(policy.evaluate(a, 'assignee', NOW).canComplete).toBe(true);
+      expect(policy.evaluate(a, 'someone-else', NOW).canComplete).toBe(false);
     });
 
-    it('canComplete is true in `verify` for any bond member', () => {
+    it('canComplete is true in `verify` ONLY for the assignee', () => {
       const a = subject({ status: ActivityStatus.VERIFY, verifyAt: NOW });
-      expect(policy.evaluate(a, 'someone-else', NOW).canComplete).toBe(true);
+      expect(policy.evaluate(a, 'assignee', NOW).canComplete).toBe(true);
+      expect(policy.evaluate(a, 'someone-else', NOW).canComplete).toBe(false);
     });
 
     it('canComplete is false in `assigned`', () => {
@@ -311,5 +316,87 @@ describe('ActivityPolicyService', () => {
       const d = policy.evaluate(subject(), 'creator', NOW);
       expect('canUnassign' in d).toBe(false);
     });
+  });
+});
+
+/**
+ * T11 · matriz de capacidades cruzada por ROL.
+ *
+ * Una sola prueba generativa en vez de una por combinación: recorre los seis estados
+ * contra los dos roles que el sistema distingue hoy en la política, y afirma los
+ * invariantes que el producto fijó (S8/S9/S13). Si alguien agrega una bandera o toca la
+ * matriz del tercero, esto cae con el estado exacto.
+ */
+describe('ActivityPolicyService · T11 matriz por rol', () => {
+  const policy = new ActivityPolicyService();
+  const NOW = new Date('2026-10-01T12:00:00Z');
+  const STATUSES = [
+    ActivityStatus.CREATED,
+    ActivityStatus.ASSIGNED,
+    ActivityStatus.ASSISTING,
+    ActivityStatus.IN_PROGRESS,
+    ActivityStatus.VERIFY,
+    ActivityStatus.DONE,
+  ];
+
+  function subject(overrides: Partial<PolicySubject> = {}): PolicySubject {
+    return {
+      createdBy: 'creator',
+      assignedTo: 'assignee',
+      scheduledStart: new Date('2026-10-01T10:00:00Z'),
+      scheduledEnd: new Date('2026-10-01T14:00:00Z'),
+      status: ActivityStatus.ASSIGNED,
+      verifyAt: null,
+      ...overrides,
+    };
+  }
+
+  it('TERCERO: ninguna acción de gestión, y finalizar sólo si es el asignado', () => {
+    for (const status of STATUSES) {
+      const asAssignee = policy.evaluate(subject({ status }), 'assignee', NOW, {
+        isThirdParty: true,
+      });
+      const asOther = policy.evaluate(subject({ status }), 'otro', NOW, { isThirdParty: true });
+
+      for (const decision of [asAssignee, asOther]) {
+        expect(decision.canDelete).toBe(false);
+        expect(decision.canCancel).toBe(false);
+        expect(decision.canAssign).toBe(false);
+        expect(decision.canReassign).toBe(false);
+        expect(decision.canConfirm).toBe(false);
+        expect(decision.canDecline).toBe(false);
+      }
+
+      const completable =
+        status === ActivityStatus.IN_PROGRESS || status === ActivityStatus.VERIFY;
+      expect(asAssignee.canComplete).toBe(completable);
+      expect(asOther.canComplete).toBe(false);
+    }
+  });
+
+  it('PROGENITOR: finalizar es del asignado, no del creador ni de cualquier miembro', () => {
+    for (const status of STATUSES) {
+      const completable =
+        status === ActivityStatus.IN_PROGRESS || status === ActivityStatus.VERIFY;
+      const asAssignee = policy.evaluate(subject({ status }), 'assignee', NOW);
+      const asCreator = policy.evaluate(subject({ status }), 'creator', NOW);
+      const asStranger = policy.evaluate(subject({ status }), 'otro', NOW);
+
+      expect(asAssignee.canComplete).toBe(completable);
+      expect(asCreator.canComplete).toBe(false);
+      expect(asStranger.canComplete).toBe(false);
+    }
+  });
+
+  it('PROGENITOR: borrar y cancelar siguen siendo del creador y no de una actividad pasada', () => {
+    for (const status of STATUSES) {
+      const asCreator = policy.evaluate(subject({ status }), 'creator', NOW);
+      const asStranger = policy.evaluate(subject({ status }), 'otro', NOW);
+
+      expect(asCreator.canDelete).toBe(true);
+      expect(asCreator.canCancel).toBe(true);
+      expect(asStranger.canDelete).toBe(false);
+      expect(asStranger.canCancel).toBe(false);
+    }
   });
 });

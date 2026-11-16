@@ -60,7 +60,12 @@ describe('Smoke (e2e) — flujo real sobre Postgres', () => {
     firstName: 'Beto',
     lastName: 'Smoke',
   };
-  const admin = { email: 'admin@admin.com', password: 'admin123' };
+  // El admin se autoabastece: `scripts/seed-admin.ts` se eliminó porque creaba
+  // `admin@admin.com` / `admin123` hardcodeados. El smoke registra su propio admin
+  // (email único por corrida) y le promueve el rol por SQL, que es lo único que la
+  // API no expone.
+  const admin = { email: `smoke-admin-${run}@test.dev`, password: 'password123' };
+  const adminRegistration = { ...admin, firstName: 'Root', lastName: 'Smoke' };
 
   let tokenA = '';
   let tokenB = '';
@@ -89,6 +94,16 @@ describe('Smoke (e2e) — flujo real sobre Postgres', () => {
     await app.init();
     notificationRepository = app.get(NotificationRepository);
     dataSource = app.get(DataSource);
+
+    // Alta del admin: por la API, para que se cree también `personal_data`.
+    await request(app.getHttpServer())
+      .post('/api/auth/register')
+      .send(adminRegistration)
+      .expect(201);
+    await dataSource.query('UPDATE "user" SET system_role = $1 WHERE email = $2', [
+      'admin',
+      admin.email,
+    ]);
   }, 30000);
 
   afterAll(async () => {
@@ -130,7 +145,15 @@ describe('Smoke (e2e) — flujo real sobre Postgres', () => {
     const bond = await server()
       .post('/api/admin/bonds')
       .set('Authorization', `Bearer ${adminToken}`)
-      .send({ title: `Smoke Bond ${run}`, agreementType: 'informal', userIds: [idA, idB] })
+      .send({
+        title: `Smoke Bond ${run}`,
+        agreementType: 'informal',
+        userIds: [idA, idB],
+        // `children` es obligatorio desde `CreateBondDto` (B5): el vínculo nace
+        // completo o no nace. El test quedó atrás de ese cambio de contrato y
+        // devolvía 400. B.3 agrega un segundo hijo por su propio endpoint.
+        children: [{ firstName: 'Hijo', lastName: `Smoke ${run}` }],
+      })
       .expect(201);
     bondId = bond.body.id;
     expect(bondId).toBeTruthy();
@@ -192,7 +215,9 @@ describe('Smoke (e2e) — flujo real sobre Postgres', () => {
   void _waitForNotification;
 
   it('B.5 — crea la actividad con categoryId y assignedTo (caza la FK category_id)', async () => {
-    const start = new Date(Date.now() + 86_400_000).toISOString();
+    // Mínimo 48 h de anticipación (MIN_LEAD_TIME_HOURS): con +24 h la API responde
+    // 400 "La actividad debe programarse con al menos 48 horas de anticipación".
+    const start = new Date(Date.now() + 72 * 3_600_000).toISOString();
     // Actor C (userA) creates and assigns to A (self-assign) - under matrix this yields zero notifications
     // but we keep the fixture meaningful for the read-path assertions
     const created = await server()

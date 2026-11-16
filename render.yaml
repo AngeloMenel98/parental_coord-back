@@ -1,0 +1,142 @@
+# ---------------------------------------------------------------------------
+# Render Blueprint — managed container host for the API and the worker.
+# ---------------------------------------------------------------------------
+# Two processes from one image, exactly like docker-compose.yml:
+#   api    -> node dist/src/main.js     (HTTP + WebSocket realtime gateway)
+#   worker -> node dist/src/worker.main.js (BullMQ: outbox, webhooks, fan-out)
+# Redis is Render Key Value; Postgres and object Storage stay on Supabase.
+#
+# Region: frankfurt is the closest Render region to the Supabase project's
+# eu-west-1 (Ireland) pooler, which keeps query latency down.
+#
+# Apply: Render Dashboard -> New -> Blueprint -> pick this repo. The dashboard
+# validates this file before creating anything. Values marked `sync: false` are
+# prompted at apply time; take them from the backend's `.env.prod`.
+#
+# ⚠ The service live today is named `parental-coord-back` and was NOT created
+# from this file: it has no REDIS_HOST injected and no worker, which is why the
+# logs show ioredis ECONNREFUSED. Creating the worker and the Key Value by hand
+# (see README, "Servicio único: qué falta y por qué") is the smaller step. Only
+# apply this blueprint on a clean account — it would add a second web service
+# next to the existing one.
+# ---------------------------------------------------------------------------
+
+services:
+  # -------------------------------------------------------------------------
+  # API: HTTP + WebSocket (`/realtime`). Uses the image's default CMD.
+  # -------------------------------------------------------------------------
+  - type: web
+    name: parental-api
+    runtime: docker
+    plan: starter
+    region: frankfurt
+    healthCheckPath: /api/health
+    # Migrations run against Supabase before the new API instance goes live.
+    preDeployCommand: node node_modules/typeorm/cli.js migration:run -d dist/src/database/data-source.js
+    envVars:
+      - key: DB_HOST
+        sync: false
+      - key: DB_PORT
+        value: 5432
+      - key: DB_USER
+        sync: false
+      - key: DB_PASSWORD
+        sync: false
+      - key: DB_NAME
+        sync: false
+      - key: DB_SSL
+        value: "true"
+      # Supavisor session pooler requires TLS; keep Node's verification off for
+      # the pooled cert chain, matching `DB_SSL=true` behaviour in docker-compose.
+      - key: JWT_SECRET
+        generateValue: true
+      - key: CORS_ORIGINS
+        sync: false
+      - key: REDIS_HOST
+        fromService:
+          type: keyvalue
+          name: parental-redis
+          property: host
+      - key: REDIS_PORT
+        fromService:
+          type: keyvalue
+          name: parental-redis
+          property: port
+      # No REDIS_TLS: connections between Render services in the same region are
+      # plain redis:// on the private network. TLS is only for external access,
+      # and forcing it here fails the handshake against the internal port.
+      - key: REALTIME_PUBLISH_ENABLED
+        value: "true"
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      - key: SUPABASE_STORAGE_BUCKET_ACTIVITY_ATTACHMENTS
+        value: activity-attachments
+      - key: SUPABASE_STORAGE_BUCKET_REPORTS
+        value: reports
+      - key: ATTACHMENTS_MAX_SIZE_BYTES
+        value: "10485760"
+
+  # -------------------------------------------------------------------------
+  # Worker: BullMQ consumer and outbox relay. No port, no health check path.
+  # -------------------------------------------------------------------------
+  - type: worker
+    name: parental-worker
+    runtime: docker
+    plan: starter
+    region: frankfurt
+    dockerCommand: node dist/src/worker.main.js
+    envVars:
+      - key: DB_HOST
+        sync: false
+      - key: DB_PORT
+        value: 5432
+      - key: DB_USER
+        sync: false
+      - key: DB_PASSWORD
+        sync: false
+      - key: DB_NAME
+        sync: false
+      - key: DB_SSL
+        value: "true"
+      - key: JWT_SECRET
+        fromService:
+          type: web
+          name: parental-api
+          envVarKey: JWT_SECRET
+      - key: REDIS_HOST
+        fromService:
+          type: keyvalue
+          name: parental-redis
+          property: host
+      - key: REDIS_PORT
+        fromService:
+          type: keyvalue
+          name: parental-redis
+          property: port
+      - key: REALTIME_PUBLISH_ENABLED
+        value: "true"
+      - key: NOTIFICATIONS_FANOUT_ENABLED
+        value: "true"
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      - key: SUPABASE_STORAGE_BUCKET_ACTIVITY_ATTACHMENTS
+        value: activity-attachments
+      - key: SUPABASE_STORAGE_BUCKET_REPORTS
+        value: reports
+      - key: ATTACHMENTS_MAX_SIZE_BYTES
+        value: "10485760"
+
+  # -------------------------------------------------------------------------
+  # Redis for BullMQ. `noeviction` is mandatory: an evicting policy silently
+  # drops queued jobs. ipAllowList: [] keeps it private-network only.
+  # -------------------------------------------------------------------------
+  - type: keyvalue
+    name: parental-redis
+    plan: free
+    region: frankfurt
+    maxmemoryPolicy: noeviction
+    ipAllowList: []

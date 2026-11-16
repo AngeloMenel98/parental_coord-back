@@ -12,7 +12,7 @@ import { UserEntity } from '../../users/entities/user.entity';
 export enum BondMemberRole {
   PROGENITOR = 'progenitor',
   COORDINATOR = 'coordinador',
-  /** FUTURE: TS-only value, never persisted (the DB enum has no `third_party`). */
+  /** Persistido: la migración `1793664000000` agrega `third_party` a `bond_member_role`. */
   THIRD_PARTY = 'third_party',
 }
 

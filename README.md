@@ -96,7 +96,6 @@ memoria de quien escribe el comando.
 ```bash
 docker compose up -d postgres redis
 pnpm typeorm migration:run     # .env -> localhost
-pnpm seed:admin                # .env -> localhost
 pnpm start:dev
 ```
 
@@ -104,13 +103,29 @@ pnpm start:dev
 
 ```bash
 pnpm typeorm:prod              # ENV_FILE=.env.prod migration:run
-pnpm seed:admin:prod           # ENV_FILE=.env.prod
 pnpm storage:init:prod         # ENV_FILE=.env.prod, ambos buckets
 ```
 
-Las tres son idempotentes: `migration:run` responde "No migrations are pending"
-si no hay nada nuevo, el seed saltea el admin existente y el bootstrap del bucket
-converge al límite declarado.
+Las dos son idempotentes: `migration:run` responde "No migrations are pending"
+si no hay nada nuevo, y el bootstrap del bucket converge al límite declarado.
+
+### Crear el primer admin
+
+No hay script de seed: `scripts/seed-admin.ts` se eliminó porque creaba
+`admin@admin.com` / `admin123` hardcodeados, y ese literal terminó siendo una
+credencial real en producción. El camino es registrar por la API y promover el
+rol, que es lo único que la API no expone:
+
+```bash
+curl -X POST https://<api>/api/auth/register -H 'Content-Type: application/json' \
+  -d '{"email":"vos@mail.com","password":"<fuerte>","firstName":"...","lastName":"..."}'
+
+# con las credenciales de .env.prod
+psql "$DB_URL" -c "UPDATE \"user\" SET system_role = 'admin' WHERE email = 'vos@mail.com';"
+```
+
+El smoke e2e no depende de ese seed: crea su propio admin (`smoke-admin-<ts>@test.dev`)
+en `beforeAll` y le cambia el rol por SQL.
 
 ## Supabase Cloud (Postgres + Storage)
 
@@ -200,6 +215,105 @@ base, y retirar el StatefulSet. Eso no está hecho en este cambio.
 
 > ⚠️ Plan free: el proyecto se pausa tras ~1 semana sin actividad y no tiene
 > backups. Para producción hace falta Pro.
+
+## API en un host administrado (Render)
+
+Supabase guarda los datos (Postgres + Storage), pero no ejecuta la API: no es un
+host de Node y sus Edge Functions no mantienen procesos vivos. Vercel tampoco
+sirve para este backend: `docker-compose.yml` define `api` **y** `worker`
+(BullMQ) más Redis, y el gateway WebSocket de `/realtime` necesita conexiones
+largas. Vercel no tiene workers ni WebSocket persistente.
+
+`render.yaml` describe el despliegue completo: dos procesos de la misma imagen
+más un Key Value privado.
+
+| Servicio | Comando | Rol |
+| -------- | ------- | --- |
+| `parental-api` | CMD de la imagen (`dist/src/main.js`) | HTTP + WebSocket `/realtime` |
+| `parental-worker` | `node dist/src/worker.main.js` | outbox, webhooks, fan-out |
+| `parental-redis` | — | colas BullMQ (`noeviction`) |
+
+### Pasos
+
+1. Render Dashboard → **New** → **Blueprint** → elegir el repo. El dashboard
+   valida `render.yaml` antes de crear nada.
+2. Al aplicar pide los valores marcados `sync: false`. Salen de `.env.prod`:
+   `DB_HOST`, `DB_PORT`, `DB_USER`, `DB_PASSWORD`, `DB_NAME`,
+   `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`. `JWT_SECRET` se genera solo y el
+   worker lo hereda del servicio web.
+3. Las migraciones corren en `preDeployCommand` contra Supabase, antes de que la
+   instancia nueva reciba tráfico.
+4. Verificar `https://<servicio>.onrender.com/api/health` y después el login real.
+
+### Detalles que rompen si se cambian
+
+- **Redis interno es `redis://`, sin TLS.** Solo el acceso externo usa TLS; forzar
+  `REDIS_TLS=true` contra el puerto interno falla el handshake.
+- **`maxmemoryPolicy: noeviction` es obligatorio.** Con una política de evicción
+  BullMQ pierde jobs encolados en silencio.
+- **`REDIS_TLS` y `REDIS_PASSWORD` quedan vacíos**: el Key Value interno de Render
+  no pide auth.
+- **Dos servicios, una imagen.** El worker no escucha puerto; su salud es el
+  proceso vivo, como en `docker-compose.yml`.
+
+### Servicio único: qué falta y por qué
+
+Si `parental-coord-back` se creó a mano (no desde `render.yaml`), la API responde
+pero **Redis y el worker no existen**, y eso se ve en los logs como:
+
+```
+[ioredis] Unhandled error event: AggregateError [ECONNREFUSED]
+```
+
+`src/queues/redis.config.ts` cae en `REDIS_HOST ?? 'localhost'`: dentro del
+contenedor no hay nada escuchando en 6379, e ioredis reintenta para siempre
+(`maxRetriesPerRequest: null`) sin tumbar el proceso. Resultado: HTTP y login
+funcionan, y **outbox, notificaciones y webhooks no se procesan**. Las filas se
+acumulan en `outbox_event` sin consumidor.
+
+Alta manual, en este orden:
+
+1. **Key Value** — Dashboard → New → Key Value. Misma región que el web service
+   (la red privada no cruza regiones), plan free y **Maxmemory policy:
+   `noeviction`** (con evicción, BullMQ pierde jobs en silencio). Copiar la
+   *Internal Redis URL*: `redis://red-xxxx:6379`.
+2. **Web service** — agregar `REDIS_HOST=red-xxxx` y `REDIS_PORT=6379`. **No**
+   definir `REDIS_TLS` (interno es `redis://` pelado). Save, rebuild and deploy.
+3. **Worker** — Dashboard → New → Background Worker, mismo repo y región,
+   runtime Docker con el mismo `./Dockerfile`, y comando:
+   `node dist/src/worker.main.js`. Mismas variables que la API, con el **mismo
+   `JWT_SECRET`** (es obligatorio para `validateConfig`).
+
+Para no duplicar variables entre los dos procesos, cargalas en un **Environment
+Group** (`parental-shared`), enlazado a la API y al worker.
+
+Las migraciones ya están aplicadas contra Supabase (16/16). Si hiciera falta
+correrlas de nuevo: `node node_modules/typeorm/cli.js migration:run -d dist/src/database/data-source.js`
+desde la Shell del servicio.
+
+### Apuntar el APK a la API
+
+La URL no está clavada en el código: `shared/build.gradle.kts` la inyecta como
+`BuildConfig.API_BASE_URL` / `BuildConfig.WS_URL`, con `-PapiBaseUrl` y `-PwsUrl`
+como override. Por defecto apunta al host administrado (`https`/`wss`).
+
+```bash
+# APK contra producción (el default, no hace falta pasar nada)
+./gradlew :androidApp:assembleDebug
+
+# APK contra el backend local de esta máquina
+./gradlew :androidApp:assembleDebug \
+  -PapiBaseUrl=http://192.168.0.17:3000/api \
+  -PwsUrl=ws://192.168.0.17:3000/realtime
+```
+
+Una IP LAN solo sirve en la misma red y no viaja en un APK instalado en otro
+teléfono: por eso dejó de ser el valor por defecto. El cleartext HTTP del
+override local lo sigue habilitando
+`androidApp/src/androidMain/res/xml/network_security_config.xml`.
+
+> ⚠️ El primer admin se crea a mano (ver "Crear el primer admin"): ya no existe
+> script de seed, y `POST /api/auth/register` sólo crea progenitores.
 
 ## Endpoints
 
