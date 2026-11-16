@@ -448,4 +448,37 @@ describe('AdminService (B1)', () => {
     });
     expect(JSON.stringify(result)).not.toContain('secret123');
   });
+
+  /**
+   * S2/D3: la contraseña de un alta del admin la elige el admin, no la persona. La
+   * cuenta entra marcada para que el guard la obligue a cambiarla en su primer login.
+   */
+  it('S2 marks an admin-created user as must-change-password', async () => {
+    usersRepo.findOneByWhere.mockResolvedValue(null);
+    usersRepo.createAndSave.mockResolvedValue({
+      id: USER,
+      email: 'ana@example.com',
+      systemRole: SystemRole.USER,
+      isActive: true,
+      mustChangePassword: true,
+      createdAt: new Date('2026-01-01T00:00:00.000Z'),
+    });
+    personalDataRepo.createAndSave.mockResolvedValue({});
+
+    await service.createUser({
+      email: 'ana@example.com',
+      password: 'secret123',
+      firstName: 'Ana',
+      lastName: 'Paz',
+    });
+
+    expect(usersRepo.createAndSave).toHaveBeenCalledWith(
+      expect.objectContaining({
+        email: 'ana@example.com',
+        systemRole: SystemRole.USER,
+        isActive: true,
+        mustChangePassword: true,
+      }),
+    );
+  });
 });

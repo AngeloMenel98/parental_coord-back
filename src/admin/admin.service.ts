@@ -45,6 +45,8 @@ export class AdminService {
       passwordHash: hashed,
       systemRole: SystemRole.USER,
       isActive: true,
+      // S2/D3: la contraseña la eligió el admin, no la persona: se cambia al entrar.
+      mustChangePassword: true,
     });
 
     await this.personalDataRepo.createAndSave({

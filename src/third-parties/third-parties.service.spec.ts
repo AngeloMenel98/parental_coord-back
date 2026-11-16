@@ -1,5 +1,19 @@
-import { ConflictException, ForbiddenException, NotFoundException, UnprocessableEntityException } from '@nestjs/common';
+import {
+  BadGatewayException,
+  ConflictException,
+  ForbiddenException,
+  Logger,
+  NotFoundException,
+  ServiceUnavailableException,
+} from '@nestjs/common';
 import { Test } from '@nestjs/testing';
+
+jest.mock('bcryptjs', () => ({
+  hash: jest.fn(async (value: string) => `hashed:${value}`),
+  compare: jest.fn(async () => true),
+}));
+
+import * as bcrypt from 'bcryptjs';
 
 import { BondAccessService } from '../bonds/bond-access.service';
 import { BondMemberEntity, BondMemberRole } from '../bonds/entities/bond-member.entity';
@@ -10,6 +24,8 @@ import {
   AuthThirdStatus,
   ThirdPartyRelationship,
 } from '../expenses/entities/auth-third-party.entity';
+import { MailerService } from '../mail/mailer.service';
+import { SystemRole, UserEntity } from '../users/entities/user.entity';
 import { UsersRepository } from '../users/repositories/users.repository';
 import { AuthThirdPartiesRepository } from './repositories/auth-third-parties.repository';
 import { ThirdPartiesAuditRepository } from './repositories/third-parties-audit.repository';
@@ -42,6 +58,7 @@ describe('ThirdPartiesService', () => {
   const access = { assertBondAccess: jest.fn() };
   const members = { findOneByBondAndUser: jest.fn(), findMemberNames: jest.fn() };
   const users = { findOneByEmail: jest.fn() };
+  const mailer = { isConfigured: jest.fn(() => true), sendMail: jest.fn() };
   const clock = { now: jest.fn(() => new Date(`${TODAY}T12:00:00.000Z`)) };
 
   const grantRowRepo = {
@@ -59,10 +76,21 @@ describe('ThirdPartiesService', () => {
     // Revocar cierra la membresía (R1-001).
     update: jest.fn(async () => ({ affected: 1 })),
   };
+  // El alta con email desconocido escribe la cuenta con el manager de la transacción:
+  // la cuenta y el grant se commitean (o se revierten) juntos.
+  const userRowRepo = {
+    create: jest.fn((data) => data),
+    save: jest.fn(async (data: Record<string, unknown>) => ({ id: TARGET_ID, ...data })),
+    // Compensación del alta cuando el mail no sale (R3-001/R4-001): borra el user y
+    // las FK en cascada limpian membresía y grant.
+    delete: jest.fn(async () => ({ affected: 1 })),
+  };
   const manager = {
-    getRepository: jest.fn((entity) =>
-      entity === BondMemberEntity ? memberRowRepo : grantRowRepo,
-    ),
+    getRepository: jest.fn((entity) => {
+      if (entity === BondMemberEntity) return memberRowRepo;
+      if (entity === UserEntity) return userRowRepo;
+      return grantRowRepo;
+    }),
   };
 
   let service: ThirdPartiesService;
@@ -96,6 +124,12 @@ describe('ThirdPartiesService', () => {
     jest.clearAllMocks();
     grants.transaction.mockImplementation(async (fn: (m: unknown) => Promise<unknown>) => fn(manager));
     grantRowRepo.save.mockImplementation(async (row) => row);
+    userRowRepo.save.mockImplementation(async (data: Record<string, unknown>) => ({
+      id: TARGET_ID,
+      ...data,
+    }));
+    memberRowRepo.save.mockImplementation(async (data) => data);
+    mailer.sendMail.mockResolvedValue(undefined);
     members.findMemberNames.mockResolvedValue(
       new Map([
         [TARGET_ID, 'Abuela Ana'],
@@ -113,6 +147,7 @@ describe('ThirdPartiesService', () => {
         { provide: BondAccessService, useValue: access },
         { provide: BondMembersRepository, useValue: members },
         { provide: UsersRepository, useValue: users },
+        { provide: MailerService, useValue: mailer },
         { provide: Clock, useValue: clock },
       ],
     }).compile();
@@ -152,13 +187,199 @@ describe('ThirdPartiesService', () => {
       accessEnd: '2026-12-12',
     };
 
-    it('responde 422 cuando el email todavía no tiene cuenta (D4)', async () => {
+    it('con email desconocido crea la cuenta y manda usuario + contraseña (S1, D2)', async () => {
       users.findOneByEmail.mockResolvedValue(null);
+      grants.saveWith.mockImplementation(async (data) => grant({ ...data } as never));
+
+      const created = await service.createForOwner(BOND_ID, OWNER_ID, dto);
+
+      // Una sola transacción: cuenta, membresía y grant se escriben juntos.
+      expect(grants.transaction).toHaveBeenCalledTimes(1);
+      expect(userRowRepo.save).toHaveBeenCalledTimes(1);
+      expect(userRowRepo.save).toHaveBeenCalledWith(
+        expect.objectContaining({
+          email: 'abuela@example.com',
+          systemRole: SystemRole.USER,
+          isActive: true,
+          // La contraseña la generó el sistema: hay que cambiarla al entrar (S2).
+          mustChangePassword: true,
+        }),
+      );
+      expect(memberRowRepo.save).toHaveBeenCalledWith(
+        expect.objectContaining({ userId: TARGET_ID, role: BondMemberRole.THIRD_PARTY }),
+      );
+      expect(created.userId).toBe(TARGET_ID);
+      expect(created.status).toBe(AuthThirdStatus.ACTIVE);
+    });
+
+    it('la contraseña generada es de 12–16 caracteres y sin caracteres ambiguos', async () => {
+      users.findOneByEmail.mockResolvedValue(null);
+      grants.saveWith.mockImplementation(async (data) => grant({ ...data } as never));
+
+      await service.createForOwner(BOND_ID, OWNER_ID, dto);
+
+      const generated = (bcrypt.hash as jest.Mock).mock.calls[0][0] as string;
+      // Sin `I`, `l`, `O`, `0` ni `1`: se confunden al tipear lo que llega por mail.
+      expect(generated).toMatch(/^[A-HJ-NP-Za-km-z2-9]{12,16}$/);
+      // Mismas 10 rondas que el resto del repo.
+      expect(bcrypt.hash).toHaveBeenCalledWith(generated, 10);
+      expect(userRowRepo.save).toHaveBeenCalledWith(
+        expect.objectContaining({ passwordHash: `hashed:${generated}` }),
+      );
+    });
+
+    it('el correo lleva usuario, contraseña, vencimiento y la instrucción de cambiarla', async () => {
+      users.findOneByEmail.mockResolvedValue(null);
+      grants.saveWith.mockImplementation(async (data) => grant({ ...data } as never));
+
+      await service.createForOwner(BOND_ID, OWNER_ID, dto);
+
+      expect(mailer.sendMail).toHaveBeenCalledTimes(1);
+      const mail = mailer.sendMail.mock.calls[0][0];
+      const generated = (bcrypt.hash as jest.Mock).mock.calls[0][0] as string;
+
+      expect(mail.to).toBe('abuela@example.com');
+      expect(mail.subject).toContain('Parental Coordination');
+      expect(mail.text).toContain('Parental Coordination');
+      expect(mail.text).toContain('Usuario: abuela@example.com');
+      expect(mail.text).toContain(generated);
+      expect(mail.text).toContain('12/12/2026');
+      expect(mail.text).toContain('cambies la contraseña');
+    });
+
+    it('si el correo falla, commitea y después compensa borrando la cuenta (R3-001/R4-001)', async () => {
+      users.findOneByEmail.mockResolvedValue(null);
+      const events: string[] = [];
+      grants.transaction.mockImplementation(async (fn: (m: unknown) => Promise<unknown>) => {
+        events.push('begin');
+        const result = await fn(manager);
+        events.push('commit');
+        return result;
+      });
+      userRowRepo.save.mockImplementation(async (data: Record<string, unknown>) => {
+        events.push('user');
+        return { id: TARGET_ID, ...data };
+      });
+      userRowRepo.delete.mockImplementation(async () => {
+        events.push('cleanup');
+        return { affected: 1 };
+      });
+      memberRowRepo.save.mockImplementation(async (data) => {
+        events.push('member');
+        return data;
+      });
+      grants.saveWith.mockImplementation(async (data) => {
+        events.push('grant');
+        return grant({ ...data } as never);
+      });
+      mailer.sendMail.mockImplementation(async () => {
+        events.push('mail');
+        throw new ServiceUnavailableException('No se pudo enviar el correo');
+      });
 
       await expect(service.createForOwner(BOND_ID, OWNER_ID, dto)).rejects.toBeInstanceOf(
-        UnprocessableEntityException,
+        BadGatewayException,
       );
-      expect(grants.transaction).not.toHaveBeenCalled();
+
+      // El correo sale DESPUÉS del commit: nada de I/O externo con la transacción
+      // abierta, y un commit fallido no entrega credenciales. Si el correo falla, se
+      // compensa borrando la cuenta recién creada.
+      expect(events).toEqual([
+        'begin',
+        'user',
+        'member',
+        'grant',
+        'commit',
+        'mail',
+        // La compensación es su propia transacción.
+        'begin',
+        'cleanup',
+        'commit',
+      ]);
+      expect(userRowRepo.delete).toHaveBeenCalledWith({ id: TARGET_ID });
+    });
+
+    it('si la compensación también falla, el error NO dice que no quedó nada (REG-001)', async () => {
+      users.findOneByEmail.mockResolvedValue(null);
+      grants.transaction.mockImplementation(async (fn: (m: unknown) => Promise<unknown>) =>
+        fn(manager),
+      );
+      memberRowRepo.save.mockImplementation(async (data) => data);
+      grants.saveWith.mockImplementation(async (data) => grant({ ...data } as never));
+      mailer.sendMail.mockRejectedValue(new ServiceUnavailableException('sin SMTP'));
+      // La compensación falla: la cuenta commiteada sigue existiendo.
+      userRowRepo.delete.mockRejectedValue(new Error('db down'));
+
+      const failure = service.createForOwner(BOND_ID, OWNER_ID, dto);
+
+      await expect(failure).rejects.toBeInstanceOf(BadGatewayException);
+      await expect(failure).rejects.toThrow(/quedó creada/);
+      await expect(failure).rejects.not.toThrow(/no quedó creado/);
+    });
+
+    it('si el commit falla, el correo con credenciales NO se envía (R3-001)', async () => {
+      users.findOneByEmail.mockResolvedValue(null);
+      grants.transaction.mockRejectedValue(new Error('commit failed'));
+
+      await expect(service.createForOwner(BOND_ID, OWNER_ID, dto)).rejects.toThrow(
+        'commit failed',
+      );
+      expect(mailer.sendMail).not.toHaveBeenCalled();
+    });
+
+    it('con email existente manda un aviso sin credenciales, después del commit (D2)', async () => {
+      users.findOneByEmail.mockResolvedValue({ id: TARGET_ID });
+      members.findOneByBondAndUser.mockImplementation(async (_bondId: string, userId: string) =>
+        userId === TARGET_ID ? null : progenitorMember,
+      );
+      grants.findActiveForPair.mockResolvedValue(null);
+      const events: string[] = [];
+      grants.transaction.mockImplementation(async (fn: (m: unknown) => Promise<unknown>) => {
+        events.push('begin');
+        const result = await fn(manager);
+        events.push('commit');
+        return result;
+      });
+      grants.saveWith.mockImplementation(async (data) => {
+        events.push('grant');
+        return grant({ ...data } as never);
+      });
+      mailer.sendMail.mockImplementation(async () => {
+        events.push('mail');
+      });
+
+      await service.createForOwner(BOND_ID, OWNER_ID, dto);
+
+      // No se crea cuenta ni se toca la contraseña existente.
+      expect(userRowRepo.save).not.toHaveBeenCalled();
+      expect(bcrypt.hash).not.toHaveBeenCalled();
+      expect(events).toEqual(['begin', 'grant', 'commit', 'mail']);
+
+      const mail = mailer.sendMail.mock.calls[0][0];
+      expect(mail.to).toBe('abuela@example.com');
+      expect(mail.text).toContain('Parental Coordination');
+      expect(mail.text).toContain('12/12/2026');
+      // Aviso, no credenciales.
+      expect(mail.text).not.toMatch(/provisional/i);
+      expect(mail.text).not.toContain('Usuario:');
+    });
+
+    it('si el aviso falla, el acceso queda igual y sólo se loguea (D2)', async () => {
+      users.findOneByEmail.mockResolvedValue({ id: TARGET_ID });
+      members.findOneByBondAndUser.mockImplementation(async (_bondId: string, userId: string) =>
+        userId === TARGET_ID ? null : progenitorMember,
+      );
+      grants.findActiveForPair.mockResolvedValue(null);
+      grants.saveWith.mockImplementation(async (data) => grant({ ...data } as never));
+      mailer.sendMail.mockRejectedValue(new ServiceUnavailableException('sin SMTP'));
+      const warn = jest.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+
+      const created = await service.createForOwner(BOND_ID, OWNER_ID, dto);
+
+      expect(created.status).toBe(AuthThirdStatus.ACTIVE);
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(String(warn.mock.calls[0][0])).toContain('abuela@example.com');
+      warn.mockRestore();
     });
 
     it('no degrada a un progenitor del vínculo a tercero', async () => {

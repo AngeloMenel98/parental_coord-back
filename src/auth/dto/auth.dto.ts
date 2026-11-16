@@ -1,5 +1,5 @@
 import { Transform } from 'class-transformer';
-import { IsEmail, IsNotEmpty, IsString, MinLength } from 'class-validator';
+import { IsEmail, IsNotEmpty, IsString, Matches, MinLength } from 'class-validator';
 
 /**
  * Los emails se buscaban por igualdad exacta contra la base, así que
@@ -46,4 +46,26 @@ export class LoginDto {
   @IsString()
   @IsNotEmpty()
   password!: string;
+}
+
+/**
+ * S2 · cambio de contraseña del usuario autenticado.
+ *
+ * La política vive en el borde, como el resto: 8 caracteres como mínimo, al menos una
+ * letra y un dígito. Que la nueva no sea igual a la actual lo decide el servicio, que es
+ * el único que puede comparar contra el hash guardado.
+ */
+export class ChangePasswordDto {
+  @TrimmedPassword()
+  @IsString()
+  @IsNotEmpty()
+  currentPassword!: string;
+
+  @TrimmedPassword()
+  @IsString()
+  @MinLength(8)
+  @Matches(/(?=.*[A-Za-z])(?=.*[0-9])/, {
+    message: 'newPassword must contain at least one letter and one digit',
+  })
+  newPassword!: string;
 }

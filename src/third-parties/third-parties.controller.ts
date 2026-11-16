@@ -47,7 +47,7 @@ export class ThirdPartiesController {
 
   @Post('bonds/:bondId/third-parties')
   @ApiOperation({
-    summary: 'Otorgar acceso temporal a una cuenta existente (el alta de credenciales está diferida, D4)',
+    summary: 'Otorgar acceso temporal (crea la cuenta y envía las credenciales si el email no existe)',
   })
   create(
     @Param('bondId', ParseUUIDPipe) bondId: string,
