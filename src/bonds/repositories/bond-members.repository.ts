@@ -202,6 +202,18 @@ export class BondMembersRepository extends BaseRepository<BondMemberEntity> {
     return names;
   }
 
+  /**
+   * Cumplimiento por miembro ACTIVO del vínculo (base de `GET /bonds/:bondId/compliance`).
+   *
+   * Excluye a los terceros temporales (`bm.role = 'third_party'`, S5/S12, A2 de L29):
+   * su trabajo es individual y NO suma al porcentaje del vínculo, y el otro progenitor
+   * no tiene por qué verlo listado con su nombre real. El rol se vincula como parámetro
+   * (`:thirdPartyRole`), nunca interpolado en el SQL: un valor de enum interpolado es
+   * una inyección esperando a que alguien lo cambie por texto libre.
+   *
+   * Todo lo demás sigue igual: sólo miembros con `left_at IS NULL`, INNER JOIN a
+   * `personal_data` (sin perfil no hay fila) y el conteo del rango pedido.
+   */
   async findActiveMembersWithActStats(
     bondId: string,
     from: Date,
@@ -224,6 +236,7 @@ export class BondMembersRepository extends BaseRepository<BondMemberEntity> {
       )
       .where('bm.bond_id = :bondId', { bondId })
       .andWhere('bm.left_at IS NULL')
+      .andWhere('bm.role <> :thirdPartyRole', { thirdPartyRole: BondMemberRole.THIRD_PARTY })
       .groupBy('bm.user_id')
       .addGroupBy('pd.first_name')
       .addGroupBy('pd.last_name')

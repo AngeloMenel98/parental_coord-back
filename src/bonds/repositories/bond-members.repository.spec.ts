@@ -1,7 +1,7 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
 
-import { BondMemberEntity } from '../entities/bond-member.entity';
+import { BondMemberEntity, BondMemberRole } from '../entities/bond-member.entity';
 import { BondMembersRepository } from './bond-members.repository';
 
 /**
@@ -131,5 +131,98 @@ describe('BondMembersRepository — findThirdPartyAuthorizers (T12)', () => {
 
   it('devuelve un mapa vacío cuando ningún tercero tiene grant vivo', async () => {
     expect((await repo.findThirdPartyAuthorizers('bond-1')).size).toBe(0);
+  });
+});
+
+/**
+ * `findActiveMembersWithActStats` (S5/S12, advisory A2 de L29): el cumplimiento del
+ * vínculo es de los PROGENITORES. El trabajo del tercero es individual y no suma al
+ * porcentaje, y el otro progenitor no lo ve listado con su nombre real.
+ *
+ * El rol excluido se vincula como parámetro (`:thirdPartyRole`): el literal
+ * `third_party` NO se interpola en el SQL.
+ */
+describe('BondMembersRepository — findActiveMembersWithActStats (S5/S12/A2)', () => {
+  let repo: BondMembersRepository;
+  let qb: any;
+  const FROM = new Date('2026-02-01T00:00:00.000Z');
+  const TO = new Date('2026-03-01T00:00:00.000Z');
+
+  beforeEach(async () => {
+    qb = {
+      select: jest.fn().mockReturnThis(),
+      addSelect: jest.fn().mockReturnThis(),
+      from: jest.fn().mockReturnThis(),
+      innerJoin: jest.fn().mockReturnThis(),
+      leftJoin: jest.fn().mockReturnThis(),
+      where: jest.fn().mockReturnThis(),
+      andWhere: jest.fn().mockReturnThis(),
+      groupBy: jest.fn().mockReturnThis(),
+      addGroupBy: jest.fn().mockReturnThis(),
+      getRawMany: jest.fn().mockResolvedValue([]),
+    };
+
+    const bondMemberRepo = {
+      createQueryBuilder: jest.fn(),
+      target: BondMemberEntity,
+      manager: { createQueryBuilder: jest.fn().mockReturnValue(qb) },
+    };
+
+    const module: TestingModule = await Test.createTestingModule({
+      providers: [
+        BondMembersRepository,
+        { provide: getRepositoryToken(BondMemberEntity), useValue: bondMemberRepo },
+      ],
+    }).compile();
+
+    repo = module.get(BondMembersRepository);
+  });
+
+  /** Todas las condiciones `andWhere` en el orden en que se encadenaron. */
+  const whereClauses = () => qb.andWhere.mock.calls.map((call: any[]) => call[0] as string);
+
+  it('excluye a los terceros temporales del cálculo', async () => {
+    await repo.findActiveMembersWithActStats('bond-1', FROM, TO);
+
+    expect(qb.andWhere).toHaveBeenCalledWith('bm.role <> :thirdPartyRole', {
+      thirdPartyRole: BondMemberRole.THIRD_PARTY,
+    });
+  });
+
+  it('vincula el rol excluido como parámetro: el literal no viaja interpolado en el SQL', async () => {
+    await repo.findActiveMembersWithActStats('bond-1', FROM, TO);
+
+    const sql = whereClauses().join(' AND ');
+    expect(sql).toContain(':thirdPartyRole');
+    expect(sql).not.toMatch(/third_party/i);
+  });
+
+  it('conserva los filtros y agregados previos (bond activo, rango y nombre)', async () => {
+    await repo.findActiveMembersWithActStats('bond-1', FROM, TO);
+
+    expect(qb.select).toHaveBeenCalledWith('bm.user_id', 'userId');
+    expect(qb.from).toHaveBeenCalledWith('bond_member', 'bm');
+    expect(qb.innerJoin).toHaveBeenCalledWith('personal_data', 'pd', 'pd.user_id = bm.user_id');
+    expect(qb.leftJoin).toHaveBeenCalledWith(
+      'activity',
+      'a',
+      expect.stringContaining('a.assigned_to = bm.user_id'),
+      { from: FROM, to: TO },
+    );
+    expect(qb.where).toHaveBeenCalledWith('bm.bond_id = :bondId', { bondId: 'bond-1' });
+    expect(qb.andWhere).toHaveBeenCalledWith('bm.left_at IS NULL');
+    expect(qb.groupBy).toHaveBeenCalledWith('bm.user_id');
+    expect(qb.addGroupBy).toHaveBeenCalledWith('pd.first_name');
+    expect(qb.addGroupBy).toHaveBeenCalledWith('pd.last_name');
+  });
+
+  it('sigue devolviendo las filas crudas de cumplimiento que arma el servicio', async () => {
+    qb.getRawMany.mockResolvedValueOnce([
+      { userId: 'p1', firstName: 'Ana', lastName: 'Pérez', total: 4, completed: 3 },
+    ]);
+
+    await expect(repo.findActiveMembersWithActStats('bond-1', FROM, TO)).resolves.toEqual([
+      { userId: 'p1', firstName: 'Ana', lastName: 'Pérez', total: 4, completed: 3 },
+    ]);
   });
 });
