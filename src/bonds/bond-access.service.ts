@@ -144,12 +144,19 @@ export class BondAccessService {
 
     // El vencimiento se evalúa por fecha, no sólo por estado: un grant que nadie barrió
     // todavía (`active` con `end_date` pasado) NO autoriza.
+    //
+    // `dateOnly` es obligatorio, no cosmético: `findAccessRow` usa `getRawOne`, y el driver
+    // `pg` devuelve las columnas `date` como **Date**. Comparar `Date >= "YYYY-MM-DD"`
+    // coerciona el string a `NaN` y da siempre `false`, así que todo tercero con grant
+    // vigente quedaba fuera de su propio vínculo.
     const today = this.clock.now().toISOString().slice(0, 10);
+    const grantStart = dateOnly(row.grantStart);
+    const grantEnd = dateOnly(row.grantEnd);
     const vigente =
       row.grantId !== null &&
       row.grantStatus === 'active' &&
-      row.grantEnd !== null &&
-      row.grantEnd >= today;
+      grantEnd !== null &&
+      grantEnd >= today;
 
     return {
       role: row.role,
@@ -158,8 +165,8 @@ export class BondAccessService {
         ? {
             id: row.grantId as string,
             authorizedBy: row.grantedBy as string,
-            startDate: row.grantStart,
-            endDate: row.grantEnd as string,
+            startDate: grantStart,
+            endDate: grantEnd as string,
           }
         : undefined,
     };
@@ -168,3 +175,21 @@ export class BondAccessService {
 
 /** El vínculo no existe o el usuario no es miembro activo. */
 export type { BondAccessRow };
+
+/**
+ * `YYYY-MM-DD` a partir de lo que devuelve el driver.
+ *
+ * `findAccessRow` usa `getRawOne`, y `pg` devuelve las columnas `date` como `Date` a
+ * medianoche **local**. Se arman los componentes locales a mano: `toISOString()` sobre esa
+ * medianoche puede caer en el día anterior en husos positivos.
+ */
+function dateOnly(value: Date | string | null): string | null {
+  if (value === null) return null;
+  if (value instanceof Date) {
+    const year = value.getFullYear();
+    const month = String(value.getMonth() + 1).padStart(2, '0');
+    const day = String(value.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+  }
+  return String(value).slice(0, 10);
+}

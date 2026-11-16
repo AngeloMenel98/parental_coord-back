@@ -25,8 +25,8 @@ export interface BondAccessRow {
   leftAt: Date | string | null;
   grantId: string | null;
   grantStatus: string | null;
-  grantStart: string | null;
-  grantEnd: string | null;
+  grantStart: Date | string | null;
+  grantEnd: Date | string | null;
   grantedBy: string | null;
 }
 
