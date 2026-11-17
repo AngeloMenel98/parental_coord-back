@@ -37,6 +37,15 @@ export class UserEntity {
   @Column({ type: 'boolean', default: true, name: 'is_active' })
   isActive!: boolean;
 
+  /**
+   * S2 · la contraseña la generó el sistema (alta de tercero o del admin) y la persona
+   * tiene que cambiarla en su primer ingreso. `JwtAuthGuard` bloquea el resto de las
+   * rutas mientras esté en `true`. Las cuentas viejas quedan en `false` por el DEFAULT
+   * de la migración: nadie se despierta un día bloqueado.
+   */
+  @Column({ type: 'boolean', default: false, name: 'must_change_password' })
+  mustChangePassword!: boolean;
+
   @CreateDateColumn({ type: 'timestamptz', name: 'created_at' })
   createdAt!: Date;
 

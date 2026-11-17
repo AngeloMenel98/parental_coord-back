@@ -5,6 +5,7 @@ import { NotificationRepository } from '../repositories/notification.repository'
 import { ActivitiesRepository } from '../../activities/repositories/activities.repository';
 import { BondsRepository } from '../../bonds/repositories/bonds.repository';
 import { BondMembersRepository } from '../../bonds/repositories/bond-members.repository';
+import { ACTIVITY_EVENT } from '../../activities/activity-transition.map';
 import { AppConfig } from '../../config/app-config';
 import { ActivityEntity } from '../../activities/entities/activity.entity';
 import { CreatedNotificationRef } from '../../realtime/dto/notification-created-message';
@@ -102,7 +103,11 @@ export class NotificationFanOutService {
 
     const actorId = this.actorIdOf(event);
     const context = await this.buildRecipientContext(event.bondId, activity, actorId);
-    const recipientIds = buildRecipientIds(rule, context);
+    const recipientIds = await this.dropThirdPartiesUnlessAssigned(
+      event.bondId,
+      event.eventType,
+      buildRecipientIds(rule, context),
+    );
     if (recipientIds.length === 0) {
       this.logger.debug(
         `No recipients resolved for event=${event.eventType}, activity=${activity.id}`,
@@ -208,6 +213,29 @@ export class NotificationFanOutService {
   }
 
   /** `payload.actor.id` sólo cuando `actor.type === 'user'`; sistema ⇒ `null`. */
+  /**
+   * S12 — al tercero temporal le llega **sólo** la notificación de asignación.
+   *
+   * Su rol no vive en el evento ni en la actividad, así que se resuelve una vez por lote
+   * contra el vínculo (misma consulta que usa el gateway de realtime). Para el resto de
+   * los eventos se lo saca de la lista: no tiene que enterarse de lo que pasa con
+   * actividades que no son suyas ni con las decisiones del vínculo.
+   */
+  private async dropThirdPartiesUnlessAssigned(
+    bondId: string,
+    eventType: string,
+    recipientIds: string[],
+  ): Promise<string[]> {
+    if (recipientIds.length === 0) return recipientIds;
+    if (eventType === ACTIVITY_EVENT.ASSIGNED) return recipientIds;
+
+    const thirdPartyIds = new Set(
+      await this.bondMembersRepository.findActiveThirdPartyIds(bondId),
+    );
+    if (thirdPartyIds.size === 0) return recipientIds;
+    return recipientIds.filter((id) => !thirdPartyIds.has(id));
+  }
+
   private actorIdOf(event: OutboxEventEntity): string | null {
     const payload = (event.payload ?? {}) as Record<string, unknown>;
     const actor = payload.actor as Record<string, unknown> | undefined;

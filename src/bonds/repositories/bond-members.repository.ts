@@ -13,6 +13,23 @@ export interface ComplianceMemberRow {
   completed: number;
 }
 
+/**
+ * Una fila de tenencia: el miembro y, si es tercero, su grant `active` vigente o nulo.
+ *
+ * Es la materia prima de `BondAccessService.resolveBondAccess` (T3): una sola consulta
+ * resuelve membresía y permiso, en vez de un `exists` por servicio.
+ */
+export interface BondAccessRow {
+  userId: string;
+  role: BondMemberRole;
+  leftAt: Date | string | null;
+  grantId: string | null;
+  grantStatus: string | null;
+  grantStart: Date | string | null;
+  grantEnd: Date | string | null;
+  grantedBy: string | null;
+}
+
 @Injectable()
 export class BondMembersRepository extends BaseRepository<BondMemberEntity> {
   constructor(
@@ -25,6 +42,37 @@ export class BondMembersRepository extends BaseRepository<BondMemberEntity> {
   /** Miembro de un bond por usuario o `null` (chequeo de duplicado en admin). */
   async findOneByBondAndUser(bondId: string, userId: string): Promise<BondMemberEntity | null> {
     return this.bondMemberRepo.findOneBy({ bondId, userId });
+  }
+
+  /**
+   * Miembro + su grant vivo, en UNA consulta (T3).
+   *
+   * El `LEFT JOIN` con `auth_third_party` filtra por `status = 'active'` en la condición,
+   * no en el `WHERE`: así un tercero sin grant sigue devolviendo su fila (con `grantId`
+   * nulo) en vez de desaparecer y confundirse con "no es miembro". El vencimiento por
+   * fecha lo decide el servicio, que es quien tiene el reloj.
+   */
+  async findAccessRow(bondId: string, userId: string): Promise<BondAccessRow | null> {
+    const row = await this.bondMemberRepo.manager
+      .createQueryBuilder()
+      .select('bm.user_id', 'userId')
+      .addSelect('bm.role', 'role')
+      .addSelect('bm.left_at', 'leftAt')
+      .addSelect('g.id', 'grantId')
+      .addSelect('g.status', 'grantStatus')
+      .addSelect('g.start_date', 'grantStart')
+      .addSelect('g.end_date', 'grantEnd')
+      .addSelect('g.authorized_by', 'grantedBy')
+      .from('bond_member', 'bm')
+      .leftJoin(
+        'auth_third_party',
+        'g',
+        "g.bond_id = bm.bond_id AND g.user_id = bm.user_id AND g.status = 'active'",
+      )
+      .where('bm.bond_id = :bondId', { bondId })
+      .andWhere('bm.user_id = :userId', { userId })
+      .getRawOne<BondAccessRow>();
+    return row ?? null;
   }
 
   /**
@@ -60,6 +108,60 @@ export class BondMembersRepository extends BaseRepository<BondMemberEntity> {
       .andWhere('bm.left_at IS NULL')
       .getRawMany<{ userId: string }>();
     return rows.map((row) => row.userId);
+  }
+
+  /**
+   * IDs de los terceros temporales con acceso VIVO en el vínculo (T6).
+   *
+   * El join filtra por grant `active` y `end_date >= CURRENT_DATE`: un grant que venció
+   * y nadie barrió no cuenta como acceso, igual que en el chokepoint. La fecha se resuelve
+   * en SQL para no arrastrar el reloj del servicio hasta el gateway.
+   */
+  async findActiveThirdPartyIds(bondId: string): Promise<string[]> {
+    const rows = await this.bondMemberRepo.manager
+      .createQueryBuilder()
+      .select('bm.user_id', 'userId')
+      .from('bond_member', 'bm')
+      .innerJoin(
+        'auth_third_party',
+        'g',
+        "g.bond_id = bm.bond_id AND g.user_id = bm.user_id AND g.status = 'active'",
+      )
+      .where('bm.bond_id = :bondId', { bondId })
+      .andWhere('bm.left_at IS NULL')
+      .andWhere('g.end_date >= CURRENT_DATE')
+      .getRawMany<{ userId: string }>();
+    return rows.map((row) => row.userId);
+  }
+
+  /**
+   * Quién autorizó a cada tercero con acceso VIVO del vínculo (T12/S12).
+   *
+   * `userId → authorizedBy`. El join es el mismo del gateway y del fan-out (`T6`):
+   * grant `active`, `end_date >= CURRENT_DATE` y miembro sin `left_at`. Un tercero
+   * revocado o vencido no aparece: no hay autorización vigente que anunciar, y
+   * `BondsService` lo trata como identidad oculta igual.
+   *
+   * La frase "Autorizado por …" se arma en el servicio porque necesita el nombre
+   * del autorizador, que sale de `findMemberNames` (una sola consulta por página).
+   */
+  async findThirdPartyAuthorizers(bondId: string): Promise<Map<string, string>> {
+    const rows = await this.bondMemberRepo.manager
+      .createQueryBuilder()
+      .select('bm.user_id', 'userId')
+      .addSelect('g.authorized_by', 'authorizedBy')
+      .from('bond_member', 'bm')
+      .innerJoin(
+        'auth_third_party',
+        'g',
+        "g.bond_id = bm.bond_id AND g.user_id = bm.user_id AND g.status = 'active'",
+      )
+      .where('bm.bond_id = :bondId', { bondId })
+      .andWhere('bm.left_at IS NULL')
+      .andWhere('g.end_date >= CURRENT_DATE')
+      .getRawMany<{ userId: string; authorizedBy: string }>();
+
+    return new Map(rows.map((row) => [row.userId, row.authorizedBy]));
   }
 
   /**
@@ -100,6 +202,18 @@ export class BondMembersRepository extends BaseRepository<BondMemberEntity> {
     return names;
   }
 
+  /**
+   * Cumplimiento por miembro ACTIVO del vínculo (base de `GET /bonds/:bondId/compliance`).
+   *
+   * Excluye a los terceros temporales (`bm.role = 'third_party'`, S5/S12, A2 de L29):
+   * su trabajo es individual y NO suma al porcentaje del vínculo, y el otro progenitor
+   * no tiene por qué verlo listado con su nombre real. El rol se vincula como parámetro
+   * (`:thirdPartyRole`), nunca interpolado en el SQL: un valor de enum interpolado es
+   * una inyección esperando a que alguien lo cambie por texto libre.
+   *
+   * Todo lo demás sigue igual: sólo miembros con `left_at IS NULL`, INNER JOIN a
+   * `personal_data` (sin perfil no hay fila) y el conteo del rango pedido.
+   */
   async findActiveMembersWithActStats(
     bondId: string,
     from: Date,
@@ -122,6 +236,7 @@ export class BondMembersRepository extends BaseRepository<BondMemberEntity> {
       )
       .where('bm.bond_id = :bondId', { bondId })
       .andWhere('bm.left_at IS NULL')
+      .andWhere('bm.role <> :thirdPartyRole', { thirdPartyRole: BondMemberRole.THIRD_PARTY })
       .groupBy('bm.user_id')
       .addGroupBy('pd.first_name')
       .addGroupBy('pd.last_name')

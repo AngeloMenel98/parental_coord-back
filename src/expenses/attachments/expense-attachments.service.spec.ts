@@ -30,7 +30,7 @@ describe('ExpenseAttachmentsService (T30)', () => {
     createAttachment: jest.Mock;
     findActivityAttachment: jest.Mock;
   };
-  let bondsService: { isActiveBondForMember: jest.Mock };
+  let bondsService: any;
   let storage: {
     createSignedUploadUrl: jest.Mock;
     objectExists: jest.Mock;
@@ -92,7 +92,10 @@ describe('ExpenseAttachmentsService (T30)', () => {
         activity: { id: ACTIVITY, bondId: BOND },
       } as ActAttachmentEntity),
     };
-    bondsService = { isActiveBondForMember: jest.fn().mockResolvedValue(true) };
+    bondsService = {
+      isActiveBondForMember: jest.fn().mockResolvedValue(true),
+      isThirdPartyIn: jest.fn().mockResolvedValue(false),
+    };
     storage = {
       createSignedUploadUrl: jest.fn().mockResolvedValue({
         signedUrl: 'https://upload',

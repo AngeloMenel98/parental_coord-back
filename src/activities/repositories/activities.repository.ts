@@ -99,11 +99,22 @@ export class ActivitiesRepository extends BaseRepository<ActivityEntity> {
    * Returns all activities of a bond ordered by scheduled_start (nulls last)
    * asc → deadline (nulls last) asc → created_at asc.
    */
-  async findByBondIdOrdered(bondId: string): Promise<ActivityEntity[]> {
-    return this.activityRepo
+  /**
+   * Actividades del vínculo. `assigneeId` es el filtro de S6: cuando el que mira es un
+   * tercero temporal, la lista se acota EN LA QUERY a lo asignado a él, no en el cliente.
+   */
+  async findByBondIdOrdered(
+    bondId: string,
+    assigneeId?: string,
+  ): Promise<ActivityEntity[]> {
+    const qb = this.activityRepo
       .createQueryBuilder('a')
       .where('a.bond_id = :bondId', { bondId })
-      .andWhere('a.deleted_at IS NULL')
+      .andWhere('a.deleted_at IS NULL');
+    if (assigneeId !== undefined) {
+      qb.andWhere('a.assigned_to = :assigneeId', { assigneeId });
+    }
+    return qb
       .addSelect(
         "(SELECT COALESCE(array_agg(ac.child_id ORDER BY ac.created_at), '{}'::uuid[]) FROM activity_child ac WHERE ac.activity_id = a.id)",
         'childrenIds',

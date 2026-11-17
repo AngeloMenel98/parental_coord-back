@@ -445,6 +445,11 @@ export class ExpensesService {
 
     const isMember = await this.bondsService.isActiveBondForMember(expense.bondId, viewerId);
     if (!isMember) throw new NotFoundException('Expense not found');
+    // S5: el saldo del hogar no es dato del tercero temporal. 403 y no 404: sabe que el
+    // vínculo existe, lo que no puede es ver los gastos.
+    if (await this.bondsService.isThirdPartyIn(expense.bondId, viewerId)) {
+      throw new ForbiddenException('A third party cannot see bond expenses');
+    }
 
     const counterpartId = await this.counterpartOf(expense.bondId, expense.requestedBy);
     const subject: ExpensePolicySubject = {
@@ -463,6 +468,10 @@ export class ExpensesService {
   private async assertBondMember(bondId: string, viewerId: string): Promise<void> {
     const isMember = await this.bondsService.isActiveBondForMember(bondId, viewerId);
     if (!isMember) throw new NotFoundException('Bond not found or you are not a member');
+    // S5: ninguna superficie de gastos es del tercero temporal.
+    if (await this.bondsService.isThirdPartyIn(bondId, viewerId)) {
+      throw new ForbiddenException('A third party cannot see bond expenses');
+    }
   }
 
   private async counterpartOf(bondId: string, requesterId: string): Promise<string | null> {

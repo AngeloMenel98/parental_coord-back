@@ -39,6 +39,7 @@ import {
   activityNotFound,
 } from '../common/errors/coded.exception';
 import { BondsService } from '../bonds/bonds.service';
+import { BondAccessService } from '../bonds/bond-access.service';
 import { ConfigService } from '@nestjs/config';
 
 /** Who triggers a transition (design D3). */
@@ -68,6 +69,10 @@ export class ActivitiesService {
 
     @Inject(forwardRef(() => BondsService))
     private readonly bondService: BondsService,
+
+    // T3 · el chokepoint, para la regla de S7 que no es de membresía sino de propiedad
+    // del grant: a un tercero temporal le asigna sólo el progenitor que lo autorizó.
+    private readonly bondAccess: BondAccessService,
 
     private readonly childrenRepo: ChildrenRepository,
     private readonly categoriesRepo: CategoriesRepository,
@@ -452,11 +457,18 @@ export class ActivitiesService {
   async listByBond(bondId: string, viewerId: string): Promise<ActivitySummaryDto[]> {
     await this.assertBondMember(bondId, viewerId);
 
-    const rows = await this.activitiesRepo.findByBondIdOrdered(bondId);
     const now = this.clock.now();
+    // Una sola resolución por request: la lista entera comparte el rol del que mira.
+    const viewer = { isThirdParty: await this.isThirdPartyViewer(bondId, viewerId) };
+    // S6: al tercero la query le devuelve SÓLO lo asignado a él. El filtro de cliente
+    // que ya tenía la app es una segunda barrera, no la garantía.
+    const rows = await this.activitiesRepo.findByBondIdOrdered(
+      bondId,
+      viewer.isThirdParty ? viewerId : undefined,
+    );
     return plainToInstance(
       ActivitySummaryDto,
-      rows.map((row) => ({ ...row, ...this.policy.evaluate(row, viewerId, now) })),
+      rows.map((row) => ({ ...row, ...this.policy.evaluate(row, viewerId, now, viewer) })),
       { excludeExtraneousValues: true, exposeUnsetFields: false },
     );
   }
@@ -467,7 +479,9 @@ export class ActivitiesService {
 
     await this.assertActivityMember(activity, userId);
 
-    const decision = this.policy.evaluate(activity, userId, this.clock.now());
+    const decision = this.policy.evaluate(activity, userId, this.clock.now(), {
+      isThirdParty: await this.isThirdPartyViewer(activity.bondId, userId),
+    });
     return plainToInstance(
       ActivityDetailDto,
       {
@@ -482,6 +496,19 @@ export class ActivitiesService {
   async complete(id: string, userId: string): Promise<CompleteActivityResponseDto> {
     const activity = await this.findById(id);
     await this.assertActivityMember(activity, userId);
+
+    // S13 / F2 de la propuesta — el cierre pasa por la POLÍTICA, no sólo por membresía.
+    // Sin esto, esconder el botón en la UI no cambia nada: cualquiera con membresía podía
+    // finalizar una actividad ajena con un POST directo.
+    const decision = this.policy.evaluate(activity, userId, this.clock.now(), {
+      isThirdParty: await this.isThirdPartyViewer(activity.bondId, userId),
+    });
+    // Un tercero (o el otro progenitor) recibe 403 aunque el estado permita cerrar. Si
+    // ES el asignado y el estado no habilita, se deja pasar al `transition()`, que es
+    // quien sabe responder 409 sin duplicar la máquina de estados acá.
+    if (!decision.canComplete && activity.assignedTo !== userId) {
+      throw activityForbidden('Only the assignee can complete this activity');
+    }
 
     // T11 (cierre temprano desde `in_progress`) y T13 (cierre desde la ventana
     // de verificación). Cualquier otro origen —terminal incluido— es 409.
@@ -539,11 +566,25 @@ export class ActivitiesService {
     };
   }
 
+  /**
+   * ¿El que mira es un tercero temporal en este vínculo? (S8)
+   *
+   * Lo resuelve el chokepoint, que ya sabe de grants. Se llama una vez por request en la
+   * lista y una vez por operación en el resto: no es un dato que se pueda adivinar desde
+   * `systemRole`.
+   */
+  private async isThirdPartyViewer(bondId: string, viewerId: string): Promise<boolean> {
+    const access = await this.bondAccess.resolveBondAccess(bondId, viewerId);
+    return access?.isThirdParty === true;
+  }
+
   async delete(id: string, userId: string): Promise<{ id: string; deletedAt: string }> {
     const activity = await this.loadForMember(id, userId);
     const now = this.clock.now();
 
-    const { canDelete } = this.policy.evaluate(activity, userId, now);
+    const { canDelete } = this.policy.evaluate(activity, userId, now, {
+      isThirdParty: await this.isThirdPartyViewer(activity.bondId, userId),
+    });
     if (!canDelete) throw activityForbidden(`You are not allowed to delete this activity`);
 
     // REQ-TRANS-4/AC-9: delete moves through T15 and soft-deletes in the SAME tx.
@@ -567,7 +608,9 @@ export class ActivitiesService {
     const activity = await this.loadForMember(id, userId);
     const now = this.clock.now();
 
-    const { canCancel } = this.policy.evaluate(activity, userId, now);
+    const { canCancel } = this.policy.evaluate(activity, userId, now, {
+      isThirdParty: await this.isThirdPartyViewer(activity.bondId, userId),
+    });
     if (!canCancel) throw activityForbidden(`You are not allowed to cancel this activity`);
 
     const reason = parseActivityReason(rawReason);
@@ -596,7 +639,9 @@ export class ActivitiesService {
     const activity = await this.loadForMember(id, userId);
     const now = this.clock.now();
 
-    const { canDecline } = this.policy.evaluate(activity, userId, now);
+    const { canDecline } = this.policy.evaluate(activity, userId, now, {
+      isThirdParty: await this.isThirdPartyViewer(activity.bondId, userId),
+    });
     if (!canDecline) throw activityForbidden(`You are not allowed to decline this activity`);
 
     const reason = parseActivityReason(rawReason);
@@ -654,18 +699,31 @@ export class ActivitiesService {
     const activity = await this.loadForMember(id, userId);
     const targetId = assignedTo ?? userId;
 
+    let targetIsThirdParty = false;
+
     // A provided target must be an active bond member; 404 without revealing
     // whether that user exists at all (T21).
     if (assignedTo !== undefined) {
       const isMember = await this.bondService.isActiveBondForMember(activity.bondId, targetId);
       if (!isMember) throw activityNotFound();
+      // S7: si el destino es un tercero temporal, sólo le asigna quien lo autorizó —
+      // el otro progenitor del vínculo recibe 403 aunque sea miembro. El mismo paso
+      // dice si el destino ES tercero (S8: auto-confirmación), sin resolver dos veces.
+      targetIsThirdParty = await this.bondAccess.assertCanAssignTo(
+        activity.bondId,
+        userId,
+        targetId,
+      );
     }
 
     const updated = await this.transition({
       activityId: id,
       to: ActivityStatus.ASSIGNED,
       actor: { kind: 'user', userId },
-      fields: { assignedTo: targetId },
+      fields: {
+        assignedTo: targetId,
+        ...(targetIsThirdParty ? { confirmedAt: this.clock.now() } : {}),
+      },
     });
     if (!updated) throw activityInvalidTransition(activity.status, ActivityStatus.ASSIGNED);
 
@@ -681,6 +739,12 @@ export class ActivitiesService {
     viewerId: string,
   ): Promise<{ period: string; members: ComplianceMemberRow[] }> {
     await this.assertBondMember(bondId, viewerId);
+
+    // S5: el cumplimiento es la foto de los OTROS miembros del vínculo. El tercero no la
+    // ve, y no es 404: el vínculo existe y él pertenece — lo que no puede es mirar.
+    if (await this.isThirdPartyViewer(bondId, viewerId)) {
+      throw activityForbidden('A third party cannot see bond compliance');
+    }
 
     const now = new Date();
     const year = now.getFullYear();
