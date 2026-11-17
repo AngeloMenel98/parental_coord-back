@@ -1,4 +1,4 @@
-import { Type, plainToInstance } from 'class-transformer';
+import { Type, Transform, plainToInstance } from 'class-transformer';
 import { IsInt, IsNotEmpty, IsOptional, IsString, Max, Min, validateSync } from 'class-validator';
 
 /**
@@ -79,6 +79,43 @@ export class AppConfig {
   @IsOptional()
   @IsString()
   REDIS_TLS?: string;
+
+  // --- SMTP / correo (S1, D1) — todas OPTIONAL a propósito: la app arranca y su
+  // config valida sin SMTP. El `.env` las lleva; el repo sólo las referencia. ---
+
+  @IsOptional()
+  @IsString()
+  SMTP_HOST?: string;
+
+  /**
+   * Puerto SMTP (587 = STARTTLS por defecto). `undefined`, `''` y `0` cuentan como
+   * ausentes: docker-compose inyecta `${SMTP_PORT:-}` como cadena vacía y sin este
+   * transform se coercionaba a `0`, `@Min(1)` fallaba y la app no arrancaba por tener la
+   * clave presente y vacía.
+   */
+  @IsOptional()
+  @Transform(({ value }) => {
+    if (value === undefined || value === null || value === '' || value === 0) return undefined;
+    const port = Number(value);
+    return Number.isNaN(port) ? value : port;
+  })
+  @IsInt()
+  @Min(1)
+  @Max(65535)
+  SMTP_PORT?: number;
+
+  @IsOptional()
+  @IsString()
+  SMTP_USER?: string;
+
+  @IsOptional()
+  @IsString()
+  SMTP_PASS?: string;
+
+  /** Remitente visible; si falta, `MailerService` usa `SMTP_USER`. */
+  @IsOptional()
+  @IsString()
+  MAIL_FROM?: string;
 
   /** Response window (hours) before an assigned activity becomes overdue. */
   @IsOptional()

@@ -1,12 +1,15 @@
 import {
+  BadGatewayException,
   BadRequestException,
   ConflictException,
   ForbiddenException,
   Inject,
   Injectable,
+  Logger,
   NotFoundException,
-  UnprocessableEntityException,
 } from '@nestjs/common';
+import { randomBytes } from 'crypto';
+import * as bcrypt from 'bcryptjs';
 import { EntityManager } from 'typeorm';
 
 import { BondAccessCache, BondAccessService } from '../bonds/bond-access.service';
@@ -17,6 +20,9 @@ import {
   AuthThirdPartyEntity,
   AuthThirdStatus,
 } from '../expenses/entities/auth-third-party.entity';
+import { thirdPartyInviteMail, thirdPartyNoticeMail } from '../mail/mail-templates';
+import { MailerService } from '../mail/mailer.service';
+import { SystemRole, UserEntity } from '../users/entities/user.entity';
 import { UsersRepository } from '../users/repositories/users.repository';
 import { CreateThirdPartyDto } from './dto/create-third-party.dto';
 import { ThirdPartyResponseDto } from './dto/third-party-response.dto';
@@ -53,12 +59,15 @@ const NOT_FOUND_MESSAGE = 'Third-party access not found';
  */
 @Injectable()
 export class ThirdPartiesService {
+  private readonly logger = new Logger(ThirdPartiesService.name);
+
   constructor(
     private readonly grants: AuthThirdPartiesRepository,
     private readonly audit: ThirdPartiesAuditRepository,
     private readonly access: BondAccessService,
     private readonly members: BondMembersRepository,
     private readonly users: UsersRepository,
+    private readonly mailer: MailerService,
     @Inject(Clock) private readonly clock: Clock,
   ) {}
 
@@ -93,13 +102,19 @@ export class ThirdPartiesService {
   }
 
   /**
-   * Alta del acceso (S2/S3/S7).
+   * Alta del acceso (S2/S3/S7) y de las credenciales del tercero (S1, D2).
    *
-   * La fila de `bond_member` con rol `third_party`, el grant y el audit entran en UNA
-   * transacción: un grant sin membresía no se podría autorizar después, y una membresía
-   * sin grant quedaría con acceso indefinido a nivel de vínculo.
+   * La cuenta, la fila de `bond_member` con rol `third_party`, el grant y el audit entran
+   * en UNA transacción: un grant sin membresía no se podría autorizar después, y una
+   * membresía sin grant quedaría con acceso indefinido a nivel de vínculo.
    *
-   * Credenciales (D4): no se crean acá. Si el email no tiene cuenta, se responde 422.
+   * Email **sin** cuenta (D2): la cuenta se crea en esa misma transacción con una
+   * contraseña generada y el correo con usuario + contraseña se envía ANTES del commit.
+   * Si el envío falla, el callback tira y TypeORM revierte todo: nadie queda con una
+   * cuenta cuyas credenciales nunca llegaron.
+   *
+   * Email **con** cuenta: no se toca su contraseña; el aviso sale después del commit y si
+   * falla sólo se loguea, porque el acceso ya es real.
    */
   async createForOwner(
     bondId: string,
@@ -112,34 +127,42 @@ export class ThirdPartiesService {
     this.assertAccessEnd(dto.accessEnd, today);
 
     const target = await this.users.findOneByEmail(dto.email);
-    if (!target) {
-      throw new UnprocessableEntityException(
-        'Ese email todavía no tiene una cuenta en la app. El alta con credenciales está diferida (D4): el progenitor tiene que crear el usuario antes de otorgarle acceso.',
-      );
-    }
 
-    const existingMember = await this.members.findOneByBondAndUser(bondId, target.id);
-    // Un progenitor o coordinador NO se degrada a tercero por un POST: cambiaría sus
-    // permisos en todo el vínculo sin que nadie lo haya pedido.
-    if (existingMember && existingMember.role !== BondMemberRole.THIRD_PARTY) {
-      throw new ConflictException('Ese usuario ya es miembro del vínculo con otro rol');
+    let existingMember: BondMemberEntity | null = null;
+    if (target) {
+      existingMember = await this.members.findOneByBondAndUser(bondId, target.id);
+      // Un progenitor o coordinador NO se degrada a tercero por un POST: cambiaría sus
+      // permisos en todo el vínculo sin que nadie lo haya pedido.
+      if (existingMember && existingMember.role !== BondMemberRole.THIRD_PARTY) {
+        throw new ConflictException('Ese usuario ya es miembro del vínculo con otro rol');
+      }
+      const activeGrant = await this.grants.findActiveForPair(bondId, target.id);
+      if (activeGrant && activeGrant.endDate >= today) {
+        // Mismo mensaje lo haya otorgado quien lo haya otorgado: si dijera "vigente" o
+        // nombrara al dueño, el otro progenitor aprendería que existe un grant ajeno en
+        // este vínculo (F2 de la verificación independiente, misma regla que el
+        // 404-antes-que-403 del resto del módulo).
+        throw new ConflictException('Ese usuario ya tiene un acceso temporal en este vínculo');
+      }
     }
     // Una membresía cerrada por revocación o vencimiento se REABRE: es el mismo tercero
     // del mismo vínculo, y bloquearlo dejaría el acceso imposible de re-otorgar.
 
-    const activeGrant = await this.grants.findActiveForPair(bondId, target.id);
-    if (activeGrant && activeGrant.endDate >= today) {
-      // Mismo mensaje lo haya otorgado quien lo haya otorgado: si dijera "vigente" o
-      // nombrara al dueño, el otro progenitor aprendería que existe un grant ajeno en
-      // este vínculo (F2 de la verificación independiente, misma regla que el
-      // 404-antes-que-403 del resto del módulo).
-      throw new ConflictException('Ese usuario ya tiene un acceso temporal en este vínculo');
-    }
+    // La contraseña se genera y se hashea FUERA de la transacción: bcrypt tarda, y no hay
+    // razón para tener una conexión abierta esperándolo.
+    const provisional = target ? null : await this.provisionalCredentials();
 
-    const grant = await this.grants.transaction(async (manager) => {
+    const { grant, invitedUserId } = await this.grants.transaction(async (manager) => {
+      // `provisional` existe exactamente cuando `target` no: la cuenta se crea con el
+      // manager de la transacción, no por el repositorio de usuarios, para que una falla
+      // del correo la revierta junto con el grant.
+      const userId = target
+        ? target.id
+        : await this.createAccount(manager, dto.email, provisional!.passwordHash);
+
       if (existingMember && existingMember.leftAt !== null) {
         await manager.getRepository(BondMemberEntity).update(
-          { bondId, userId: target.id },
+          { bondId, userId },
           { leftAt: null },
         );
       } else if (!existingMember) {
@@ -150,7 +173,7 @@ export class ThirdPartiesService {
         await memberRepo.save(
           memberRepo.create({
             bondId,
-            userId: target.id,
+            userId,
             role: BondMemberRole.THIRD_PARTY,
           }),
         );
@@ -160,7 +183,7 @@ export class ThirdPartiesService {
       // parcial, que sólo mira el estado. Se vence acá, antes de insertar, para que
       // volver a otorgar un acceso vencido funcione (F1).
       const pairRows = await manager.getRepository(AuthThirdPartyEntity).find({
-        where: { bondId, userId: target.id, status: AuthThirdStatus.ACTIVE },
+        where: { bondId, userId, status: AuthThirdStatus.ACTIVE },
       });
       for (const row of pairRows) {
         await this.expireIfLapsed(row, today, ownerId, manager);
@@ -170,7 +193,7 @@ export class ThirdPartiesService {
         this.grants.saveWith(
           {
             bondId,
-            userId: target.id,
+            userId,
             authorizedBy: ownerId,
             startDate: today,
             endDate: dto.accessEnd,
@@ -201,7 +224,7 @@ export class ThirdPartiesService {
           grantId: created.id,
           action: THIRD_PARTY_AUDIT_ACTIONS.GRANT,
           newValue: {
-            userId: target.id,
+            userId,
             endDate: created.endDate,
             relationship: created.relationship,
           },
@@ -210,11 +233,76 @@ export class ThirdPartiesService {
         manager,
       );
 
-      return created;
+      return { grant: created, invitedUserId: provisional ? userId : null };
     });
+
+    if (invitedUserId) {
+      try {
+        await this.mailer.sendMail(
+          thirdPartyInviteMail({
+            email: dto.email,
+            password: provisional!.password,
+            accessEnd: dto.accessEnd,
+          }),
+        );
+      } catch (error) {
+        // R3-001/R4-001: el correo sale DESPUÉS del commit. Nada de I/O externo con la
+        // transacción abierta, y si el commit falla no se enviaron credenciales. Si el
+        // envío falla, la cuenta recién creada no sirve sin credenciales: se compensa
+        // borrándola (el DELETE del user cascadea membresía y grant). El audit queda
+        // como registro del intento.
+        const reverted = await this.revertInvitedAccount(invitedUserId);
+        this.logger.error(
+          `No se pudo enviar la invitación a ${dto.email}; cuenta ${reverted ? 'revertida' : 'NO revertida'}: ${describeError(error)}`,
+        );
+        if (!reverted) {
+          // REG-001: la compensación falló, así que la cuenta SÍ existe. El mensaje no
+          // puede decir "no quedó creado" ni invitar a reintentar el alta (chocaría con
+          // el 409 del grant): el estado real necesita intervención.
+          throw new BadGatewayException(
+            'La cuenta quedó creada pero el mail con las credenciales no salió. No reintentes el alta: pedile a un administrador que elimine la cuenta o reintente el envío.',
+          );
+        }
+        throw new BadGatewayException(
+          'No se pudo enviar el mail con las credenciales; el acceso no quedó creado. Reintentá.',
+        );
+      }
+    } else {
+      // Después del commit y best-effort: el acceso ya es real, así que un aviso que no
+      // sale no puede deshacerlo. Se loguea y se sigue.
+      try {
+        await this.mailer.sendMail(
+          thirdPartyNoticeMail({ email: dto.email, accessEnd: grant.endDate }),
+        );
+      } catch (error) {
+        this.logger.warn(
+          `Acceso temporal otorgado a ${dto.email} pero el aviso no salió: ${describeError(error)}`,
+        );
+      }
+    }
 
     const names = await this.members.findMemberNames(bondId);
     return this.toResponse(grant, names);
+  }
+
+  /**
+   * S2/D2 · revierte la cuenta recién invitada cuando el correo no sale.
+   *
+   * El `DELETE` del `user` cascadea `bond_member` y `auth_third_party`, así que no hay
+   * que borrar tres tablas a mano ni arriesgar una compensación a medias. El registro de
+   * audit del intento se conserva: documenta que se intentó, no que el acceso existió.
+   * Devuelve `false` si la compensación también falló, para que el error lo diga.
+   */
+  private async revertInvitedAccount(userId: string): Promise<boolean> {
+    try {
+      await this.grants.transaction(async (manager) => {
+        await manager.getRepository(UserEntity).delete({ id: userId });
+      });
+      return true;
+    } catch (error) {
+      this.logger.error(`No se pudo revertir la cuenta ${userId}: ${describeError(error)}`);
+      return false;
+    }
   }
 
   /** Cambios sobre un acceso vigente: fecha, relación y nota. */
@@ -370,6 +458,43 @@ export class ThirdPartiesService {
 
   // ── Reglas compartidas ────────────────────────────────────────────────
 
+  /**
+   * Contraseña provisional + su hash, con las MISMAS 10 rondas que el resto del repo
+   * (`auth.service`, `admin.service`): bajar el costo acá sería un hash más débil que el
+   * del resto de las cuentas.
+   */
+  private async provisionalCredentials(): Promise<{
+    password: string;
+    passwordHash: string;
+  }> {
+    const password = generateTemporaryPassword();
+    return { password, passwordHash: await bcrypt.hash(password, 10) };
+  }
+
+  /**
+   * Crea la cuenta del tercero con el manager de la transacción (S1, D2).
+   *
+   * `mustChangePassword: true` porque la contraseña la eligió el sistema: al entrar, el
+   * guard la manda a cambiarla (S2).
+   */
+  private async createAccount(
+    manager: EntityManager,
+    email: string,
+    passwordHash: string,
+  ): Promise<string> {
+    const repo = manager.getRepository(UserEntity);
+    const created = await repo.save(
+      repo.create({
+        email,
+        passwordHash,
+        systemRole: SystemRole.USER,
+        isActive: true,
+        mustChangePassword: true,
+      }),
+    );
+    return created.id;
+  }
+
   /** Sólo un progenitor ACTIVO del vínculo administra accesos (S3/S7). */
   private async assertProgenitor(
     bondId: string,
@@ -485,6 +610,40 @@ export class ThirdPartiesService {
       revokedAt: grant.revokedAt ? grant.revokedAt.toISOString() : null,
     };
   }
+}
+
+/**
+ * Alfabeto de la contraseña provisional: sin `I`, `l`, `O`, `0` ni `1`, que se confunden
+ * al tipear un código que llegó por mail. Quedan mayúsculas, minúsculas y dígitos.
+ */
+const PROVISIONAL_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789';
+
+/** Largo de la provisional: dentro del rango 12–16 que pide D2. */
+const PROVISIONAL_PASSWORD_LENGTH = 14;
+
+/**
+ * Contraseña provisional desde `crypto.randomBytes`.
+ *
+ * Los bytes que caen por encima del mayor múltiplo del alfabeto se descartan: con un `%`
+ * directo las primeras entradas del alfabeto saldrían más seguido, porque 256 no es
+ * múltiplo de su largo.
+ */
+function generateTemporaryPassword(): string {
+  const limit = 256 - (256 % PROVISIONAL_ALPHABET.length);
+  let password = '';
+  while (password.length < PROVISIONAL_PASSWORD_LENGTH) {
+    for (const byte of randomBytes(32)) {
+      if (byte >= limit) continue;
+      password += PROVISIONAL_ALPHABET[byte % PROVISIONAL_ALPHABET.length];
+      if (password.length === PROVISIONAL_PASSWORD_LENGTH) break;
+    }
+  }
+  return password;
+}
+
+/** Mensaje de un error para un log, sin arrastrar el objeto entero (ni credenciales). */
+function describeError(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 /** ¿`YYYY-MM-DD` es una fecha que existe? `2026-02-30` no. */

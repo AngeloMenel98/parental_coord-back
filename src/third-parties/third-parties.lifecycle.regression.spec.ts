@@ -15,6 +15,8 @@ import {
   AuthThirdStatus,
   ThirdPartyRelationship,
 } from '../expenses/entities/auth-third-party.entity';
+import { MailerService } from '../mail/mailer.service';
+import { UserEntity } from '../users/entities/user.entity';
 import { UsersRepository } from '../users/repositories/users.repository';
 import { AuthThirdPartiesRepository } from './repositories/auth-third-parties.repository';
 import { ThirdPartiesAuditRepository } from './repositories/third-parties-audit.repository';
@@ -49,6 +51,8 @@ describe('ThirdPartiesService · regresiones del ciclo de vida', () => {
   const access = { assertBondAccess: jest.fn() };
   const members = { findOneByBondAndUser: jest.fn(), findMemberNames: jest.fn() };
   const users = { findOneByEmail: jest.fn() };
+  // El aviso al email existente se manda después del commit; acá sólo se registra.
+  const mailer = { isConfigured: jest.fn(() => true), sendMail: jest.fn() };
   const clock = { now: jest.fn(() => new Date(`${TODAY}T12:00:00.000Z`)) };
   const clockNow = clock.now;
 
@@ -63,10 +67,16 @@ describe('ThirdPartiesService · regresiones del ciclo de vida', () => {
     save: jest.fn(async (d) => d),
     update: jest.fn(async () => ({ affected: 1 })),
   };
+  const userRowRepo = {
+    create: jest.fn((data) => data),
+    save: jest.fn(async (data: Record<string, unknown>) => ({ id: TARGET_ID, ...data })),
+  };
   const manager = {
-    getRepository: jest.fn((entity) =>
-      entity === BondMemberEntity ? memberRowRepo : grantRowRepo,
-    ),
+    getRepository: jest.fn((entity) => {
+      if (entity === BondMemberEntity) return memberRowRepo;
+      if (entity === UserEntity) return userRowRepo;
+      return grantRowRepo;
+    }),
   };
 
   let service: ThirdPartiesService;
@@ -123,6 +133,7 @@ describe('ThirdPartiesService · regresiones del ciclo de vida', () => {
       userId === TARGET_ID ? null : progenitorMember,
     );
     users.findOneByEmail.mockResolvedValue({ id: TARGET_ID });
+    mailer.sendMail.mockResolvedValue(undefined);
 
     const moduleRef = await Test.createTestingModule({
       providers: [
@@ -132,6 +143,7 @@ describe('ThirdPartiesService · regresiones del ciclo de vida', () => {
         { provide: BondAccessService, useValue: access },
         { provide: BondMembersRepository, useValue: members },
         { provide: UsersRepository, useValue: users },
+        { provide: MailerService, useValue: mailer },
         { provide: Clock, useValue: clock },
       ],
     }).compile();

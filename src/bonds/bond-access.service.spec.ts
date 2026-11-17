@@ -91,6 +91,33 @@ describe('BondAccessService', () => {
     );
   });
 
+  it('un grant con end_date como Date (driver pg) sigue vigente y no corre el día', async () => {
+    // `findAccessRow` usa getRawOne: pg devuelve `date` como Date. Comparar Date contra
+    // "YYYY-MM-DD" coerciona el string a NaN y daba siempre false (el 404 del tercero).
+    members.findAccessRow.mockResolvedValue(
+      thirdPartyRow({
+        grantStart: new Date('2026-10-01T00:00:00.000Z'),
+        grantEnd: new Date('2026-12-12T00:00:00.000Z'),
+      }),
+    );
+
+    const access = await service.assertBondAccess(BOND_ID, USER_ID);
+
+    expect(access.grant).toEqual(
+      expect.objectContaining({ startDate: '2026-10-01', endDate: '2026-12-12' }),
+    );
+  });
+
+  it('un grant vencido también se detecta cuando la fecha llega como Date', async () => {
+    members.findAccessRow.mockResolvedValue(
+      thirdPartyRow({ grantEnd: new Date('2026-11-01T00:00:00.000Z') }),
+    );
+
+    await expect(service.assertBondAccess(BOND_ID, USER_ID)).rejects.toThrow(
+      'Tu acceso temporal terminó',
+    );
+  });
+
   it('un tercero con grant vencido por fecha no tiene acceso, aunque siga `active`', async () => {
     members.findAccessRow.mockResolvedValue(thirdPartyRow({ grantEnd: '2026-11-01' }));
 

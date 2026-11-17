@@ -7,15 +7,15 @@ import { ThirdPartyRelationship } from '../../expenses/entities/auth-third-party
 /**
  * Alta de un acceso temporal (S2/S7).
  *
- * **No crea credenciales.** D4 dejó el SMTP/Gmail diferido, así que el alta busca una
- * cuenta existente por email; si no existe, el servicio responde 422 explicando que el
- * alta con credenciales está pendiente. Inventar una contraseña aquí sería convertir un
- * pendiente de producto en una decisión de seguridad.
+ * **Crea la cuenta si el email no existe.** Desde S1/D2 el alta genera una contraseña
+ * provisional, crea la cuenta y la envía por mail; si el mail no sale, la transacción
+ * revierte cuenta y acceso. Con una cuenta existente no se toca su contraseña: se manda
+ * sólo un aviso de acceso.
  */
 export class CreateThirdPartyDto {
   @ApiProperty({
     example: 'abuela@example.com',
-    description: 'Email de una cuenta que ya existe en la app',
+    description: 'Email del tercero; si no tiene cuenta, el alta la crea y le manda las credenciales',
   })
   @Transform(({ value }) => (typeof value === 'string' ? value.trim().toLowerCase() : value))
   @IsEmail()
