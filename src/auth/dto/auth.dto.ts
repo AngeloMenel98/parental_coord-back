@@ -1,5 +1,5 @@
 import { Transform } from 'class-transformer';
-import { IsEmail, IsNotEmpty, IsString, MinLength } from 'class-validator';
+import { IsEmail, IsNotEmpty, IsString, Matches, MinLength } from 'class-validator';
 
 /**
  * Los emails se buscaban por igualdad exacta contra la base, así que

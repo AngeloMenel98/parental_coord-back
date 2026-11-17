@@ -68,7 +68,9 @@ async function main() {
       });
     } catch (error) {
       console.error(`Could not create the Supabase client: ${(error as Error).message}`);
-      console.error('This script requires Node 22+ (no global WebSocket on Node 20).');
+      console.error(
+        'This script requires Node 26+ (.nvmrc, engines): Node 20 has no global WebSocket.',
+      );
       process.exit(1);
     }
   })();

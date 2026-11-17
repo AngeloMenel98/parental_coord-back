@@ -11,14 +11,17 @@ Backend API del **Sistema de Coordinación Parental** — una plataforma para la
 
 ## Setup
 
-Requiere **Node 22** (`nvm use` lee el `.nvmrc`). No es opcional: `@supabase/supabase-js`
-construye su cliente de Realtime dentro de `createClient()` y tira en Node 20, que
-no tiene `WebSocket` global. `StorageService` envuelve esa llamada en un `try/catch`,
-así que el síntoma no es un crash sino `400 Storage not configured` en cada presign
-de adjunto.
+Requiere **Node 26** (`.nvmrc`, `engines` y el `Dockerfile` dicen lo mismo; `nvm use`
+lee el `.nvmrc`). No es opcional: `@supabase/supabase-js` construye su cliente de
+Realtime dentro de `createClient()` y tira en Node 20, que no tiene `WebSocket` global.
+`StorageService` envuelve esa llamada en un `try/catch`, así que el síntoma no es un
+crash sino `400 Storage not configured` en cada presign de adjunto.
 
 ```bash
 # 1. Instalar dependencias
+# Node 26 ya no trae Corepack, así que pnpm se instala aparte, en la versión de
+# `packageManager` en package.json.
+npm install -g pnpm@10.34.4
 pnpm install
 
 # 2. Configurar variables de entorno
