@@ -25,6 +25,7 @@
     "test:debug": "node --inspect-brk -r tsconfig-paths/register -r ts-node/register node_modules/.bin/jest --runInBand",
     "test:e2e": "jest --config ./test/jest-e2e.json",
     "test:e2e:smoke": "ENV_FILE=.env.test jest --config ./test/jest-e2e.json smoke.e2e-spec.ts --runInBand",
+    "test:e2e:rls": "ENV_FILE=.env.test RLS_E2E_REQUIRED=1 jest --config ./test/jest-e2e.json rls.e2e-spec.ts --runInBand",
     "smoke:db:setup": "docker exec parental-coordination-postgres createdb -U parental parental_coordination_test 2>/dev/null || true",
     "smoke:db:migrate": "ENV_FILE=.env.test pnpm typeorm migration:run",
     "typeorm": "typeorm-ts-node-commonjs -d src/database/data-source.ts",
