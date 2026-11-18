@@ -203,6 +203,70 @@ Supabase Cloud: este script es el que los crea.
   `adb reverse`.
 - `act_attachment.file_url` sigue guardando el path del objeto, no la URL.
 
+### 5. RLS en `public`
+
+Supabase expone PostgREST sobre `public`. Las tablas que crean las migraciones en
+proyectos viejos nacen con grants para `anon` y `authenticated`, y **sin RLS esos
+grants significan acceso total con la anon key** (que viaja en el cliente). Por eso
+el database linter marca `rls_disabled_in_public`.
+
+La migración `1793836800000-EnableRlsOnPublicTables` lo cierra:
+
+- `ENABLE ROW LEVEL SECURITY` en toda tabla de `public`, **sin políticas**: deny-all
+  para `anon` y `authenticated`.
+- `REVOKE ALL` de `anon` y `authenticated`, más `ALTER DEFAULT PRIVILEGES` para que
+  las tablas futuras no reciban grants.
+
+La aplicación no se ve afectada: la API y el worker entran por TCP como el rol de
+`DB_USER` (`postgres.<ref>`), que es owner de las tablas y por lo tanto no queda
+sujeto a RLS. PostgREST no se usa para datos; sólo Storage, con la service role key
+desde el servidor.
+
+Verificar en el SQL Editor del proyecto:
+
+```sql
+-- ninguna fila: todas las tablas de public tienen RLS
+select relname from pg_class c join pg_namespace n on n.oid = c.relnamespace
+where n.nspname = 'public' and c.relkind in ('r', 'p') and not c.relrowsecurity;
+
+-- ninguna fila: anon/authenticated sin grants sobre las tablas
+select table_name, grantee from information_schema.role_table_grants
+where table_schema = 'public' and grantee in ('anon', 'authenticated');
+```
+
+Una prueba real desde el cliente: `GET https://<ref>.supabase.co/rest/v1/user` con
+la anon key debe devolver `[]` o error de permisos, nunca filas.
+
+**Regla para migraciones nuevas:** si una migración crea una tabla, tiene que
+incluir su propio `ALTER TABLE ... ENABLE ROW LEVEL SECURITY`. Los loops de esa
+migración corren una sola vez y los *default privileges* que fija aplican a los
+objetos que crea **ese mismo rol migrador**: una tabla creada por otro rol vuelve a
+recibir los grants de Supabase y el linter vuelve a marcar `rls_disabled_in_public`
+hasta que RLS esté habilitado en la tabla. Si alguna vez hay que abrir datos por
+REST, va en una migración nueva con sus políticas (`to authenticated` + predicado de
+ownership, `USING` **y** `WITH CHECK` en update). `migration:revert` sí deshace el
+hardening (RLS afuera y grants de vuelta), porque es el camino de recuperación si un
+consumidor legítimo de PostgREST empieza a recibir 401; ojo que dejarlo revertido
+vuelve a exponer `public` a la anon key.
+
+Lo que esto **no** cierra: `service_role` conserva sus grants y `BYPASSRLS`, porque
+es el rol que usa Storage desde el servidor. Con la service role key, PostgREST
+sigue leyendo todas las filas. Por eso esa key no sale del backend: nunca en el
+cliente, nunca en una variable `NEXT_PUBLIC_`/pública, nunca en el APK.
+
+Test de regresión (corre contra la base de `.env.test` con las migraciones
+aplicadas):
+
+```bash
+pnpm smoke:db:setup && pnpm smoke:db:migrate && pnpm test:e2e:rls
+```
+
+Falla si alguna tabla de `public` queda sin RLS o si `anon`/`authenticated`
+recuperan privilegios. El script exporta `RLS_E2E_REQUIRED=1` y `ENV_FILE=.env.test`:
+no se saltea si faltan las variables y el archivo de entorno manda sobre la shell, así
+que un verde significa que verificó la base pedida y no otra. `pnpm test:e2e` (sin
+`DB_*`) sigue salteándolo para no romper una máquina sin Postgres.
+
 ### Emulador de Android
 
 Las URLs firmadas son absolutas y apuntan a la nube: el
