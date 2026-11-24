@@ -63,6 +63,23 @@ export class AdminReportsController {
     });
   }
 
+  /**
+   * B6 · S16 — drill-down de la tarjeta de Actividades del reporte. La ruta
+   * member-scoped (`GET /activities/bond/:bondId`) devuelve 403 a un admin que
+   * no es miembro, así que el detalle necesita su propia ruta admin.
+   */
+  @Get('bonds/:bondId/activities')
+  @ApiOperation({ summary: 'Activities of one bond inside the report window' })
+  getBondActivities(
+    @Param('bondId', ParseUUIDPipe) bondId: string,
+    @Query() query: BondReportQueryDto,
+  ) {
+    return this.bondReportService.listActivities(bondId, {
+      dateFrom: query.dateFrom,
+      dateTo: query.dateTo,
+    });
+  }
+
   @Post('bonds/:bondId/reports')
   @HttpCode(HttpStatus.ACCEPTED)
   @ApiOperation({ summary: 'Queue the PDF version of a bond report' })
