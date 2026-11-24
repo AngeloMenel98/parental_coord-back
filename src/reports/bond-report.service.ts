@@ -2,6 +2,7 @@ import { BadRequestException, Injectable, NotFoundException } from '@nestjs/comm
 
 import { Clock } from '../common/clock/clock';
 import { BondReportRepository } from './repositories/bond-report.repository';
+import { BondActivitiesReport, buildBondActivities } from './bond-report-activities';
 import { BondReport, buildBondReport } from './build-bond-report';
 
 export interface BondReportPeriod {
@@ -86,6 +87,57 @@ export class BondReportService {
         firstName: member.user?.personalData?.firstName ?? '',
         lastName: member.user?.personalData?.lastName ?? '',
         role: member.role,
+      })),
+    });
+  }
+
+  /**
+   * B6 · S16 — drill-down del reporte: las actividades de la ventana del S6.
+   *
+   * Reutiliza `repo.findActivities`, así que no hay una segunda definición de
+   * "actividad del período": la ventana, el 404 y el 400 son los de S6.
+   */
+  async listActivities(bondId: string, period: BondReportPeriod): Promise<BondActivitiesReport> {
+    if (period.dateTo < period.dateFrom) {
+      throw new BadRequestException('dateTo must be on or after dateFrom');
+    }
+
+    const bond = await this.repo.findBond(bondId);
+    if (!bond) throw new NotFoundException(`Bond ${bondId} not found`);
+
+    const toExclusiveDate = addDaysToIsoDate(period.dateTo, 1);
+    const fromInstant = new Date(`${period.dateFrom}T00:00:00.000Z`);
+    const toInstant = new Date(`${toExclusiveDate}T00:00:00.000Z`);
+
+    const [rows, members] = await Promise.all([
+      this.repo.findActivities(bondId, fromInstant, toInstant),
+      this.repo.findMembers(bondId),
+    ]);
+
+    const categories = await this.repo.findCategoriesByIds([
+      ...new Set(rows.map((row) => row.categoryId).filter((id): id is string => !!id)),
+    ]);
+
+    return buildBondActivities({
+      bondId: bond.id,
+      dateFrom: period.dateFrom,
+      dateTo: period.dateTo,
+      rows: rows.map((row) => ({
+        id: row.id,
+        title: row.title,
+        status: row.status,
+        categoryId: row.categoryId,
+        assignedTo: row.assignedTo,
+        scheduledStart: row.scheduledStart,
+        createdAt: row.createdAt,
+        deadline: row.deadline,
+        completedAt: row.completedAt,
+      })),
+      categories: categories.map((category) => ({ id: category.id, name: category.name })),
+      members: members.map((member) => ({
+        userId: member.userId,
+        firstName: member.user?.personalData?.firstName ?? '',
+        lastName: member.user?.personalData?.lastName ?? '',
       })),
     });
   }

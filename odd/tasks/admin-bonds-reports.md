@@ -99,6 +99,16 @@ commits ahead of main.
   `children` or with an empty array answers 400. An empty-array call that reaches the
   service answers 400 with `A bond must have at least one child`. If any write inside the
   transaction fails, no bond is created.
+- **S16 — Admin activities list (drill-down).** `GET /admin/bonds/:bondId/activities?dateFrom=YYYY-MM-DD&dateTo=YYYY-MM-DD`
+  returns every activity inside the S6 window so the report can be drilled down:
+  `{ bondId, dateFrom, dateTo, total, activities: [ { id, title, status, categoryId, categoryName,
+  assignedTo, assigneeName, scheduledStart, deadline, completedAt } ] }`.
+  The window rules are S6's (inclusive caller dates, exclusive query, reference date
+  `COALESCE(scheduled_start, created_at)`), deleted rows excluded. Rows are ordered by the
+  reference date descending then `id` ascending, and the array is capped at 200 while
+  `total` always counts every row in the window. Unknown bond answers 404 with
+  `Bond <bondId> not found`; a missing or malformed date answers 400; `dateTo` before
+  `dateFrom` answers 400 with `dateTo must be on or after dateFrom`.
 - **S12 — Existing behaviour.** Every existing `/admin/*` route and response keeps its
   current shape and status codes.
 
@@ -111,6 +121,7 @@ commits ahead of main.
 | B3 | S9-S11 | inline | done | 6c3363f |
 | B4 | S13-S14 | inline | done | cecb82d |
 | B5 | S15 | inline | done | pending |
+| B6 | S16 | delegated | done | (uncommitted on branch) |
 
 ## Log
 
@@ -261,3 +272,21 @@ UI reportó como error. Ahora `createBond` devuelve la misma forma que `GET /adm
 error de cuota del proveedor, como los seis intentos anteriores. El diagnóstico se hizo
 inline: contrato backend (`admin.service.ts:154`) vs modelo del cliente
 (`AdminModels.kt:22`) más el registro del vínculo huérfano en la base.
+
+**L21 — B6, nacido del handoff `admin-ui/04-reporte-desplegable.html`.** El artboard nuevo
+pide que tocar la tarjeta de Actividades abra el detalle de qué se cumplió y qué no. El
+reporte (S6) devuelve sólo agregados, y el único listado con estado es
+`GET /activities/bond/:bondId`, que es member-scoped: un admin que no es miembro recibe 403.
+B6 agrega la ruta admin que reutiliza `BondReportRepository.findActivities` — la misma query
+de la ventana del S6, sin una segunda definición de "actividad del período". La UI deja de
+mostrar el campo derivado `overdue` del reporte y compone sus contadores sólo desde
+`byStatus`, que es la única fuente de verdad por estado; `overdue` sigue existiendo para el
+PDF.
+
+**L22 — B6 evidence.** `npx jest src/reports` → 9 suites / 53 tests (RED primero: TS2307 sobre el
+builder y TS2339 sobre `listActivities` no existían). Suite completa tras B6: 106 suites / 1243
+tests, exit 0. `npx tsc --noEmit` y `npx eslint` limpios sobre los cinco archivos tocados.
+`total` cuenta la ventana entera mientras `activities` se acota a 200 filas, ordenadas por fecha
+de referencia descendente e `id` ascendente en el builder puro (la query del S6 no tiene ORDER
+BY). Un miembro con personalData vacío responde `assigneeName: null`, no "". No se ejercitó end
+to end: sin Postgres/Redis en este entorno, la ruta HTTP quedó cubierta por unit + tsc.
