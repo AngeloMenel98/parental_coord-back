@@ -62,10 +62,10 @@ del terciario sólo a quien lo autorizó; los demás miembros ven "Autorizado po
 - T8 (S2, S8) back: `hideThirdPartyIdentity` viewer-aware (autorizante ve nombre
   real en `GET /bonds`); asignación de terciario validada (`assignedTo` acepta su
   user id).
-- T9 (S9) back: `UpdateThirdPartyDto` acepta identidad opcional; PATCH aplica sólo
+- T9 (S9) back DONE `9d4a55a` (back repo) — `UpdateThirdPartyDto` acepta identidad opcional; PATCH aplica sólo
   campos presentes; service test incluido.
-- T10 (S9) front: hoja de edición con los cuatro campos precargados; DTO y
-  `toPatchBody()` extendidos; tests del editor.
+- T10 (S9) front DONE `158f381` — hoja de edición precargada (identidad del grant);
+  toPatchBody parcial; 2 tests nuevos. Suite 76/758.
 
 ## Estado final
 
