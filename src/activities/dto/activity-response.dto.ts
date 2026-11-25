@@ -1,5 +1,21 @@
-import { Exclude, Expose, Transform } from 'class-transformer';
+import { Exclude, Expose, Type, Transform } from 'class-transformer';
 import { ActivityStatus } from '../entities/activity.entity';
+
+/**
+ * S7 — la atribución de autoría la decide el SERVIDOR, mirando QUIÉN pregunta.
+ *
+ * `name` (el nombre real del terciario, declarado en el alta del grant) sólo viaja
+ * cuando el que pregunta es el progenitor que lo autorizó; cualquier otro miembro
+ * recibe `name: null` + `authorizedByName` ("Autorizado por YO"). El front nunca
+ * recibe el nombre real si no lo puede pintar: es una regla de DATOS, no de pintado.
+ */
+@Exclude()
+export class ActivityAttributionDto {
+  @Expose() kind!: 'member' | 'third_party';
+  @Expose() name!: string | null;
+  /** Sólo `third_party`; para `member` el campo queda sin exponer (undefined). */
+  @Expose() authorizedByName?: string | null;
+}
 
 @Exclude()
 export class ActivitySummaryDto {
@@ -33,6 +49,11 @@ export class ActivitySummaryDto {
   @Expose() canDecline!: boolean;
   @Expose() canComplete!: boolean;
   @Expose() childrenIds: string[] = [];
+
+  /** S7 — atribución de autoría según el viewer (ver `ActivityAttributionDto`). */
+  @Expose()
+  @Type(() => ActivityAttributionDto)
+  attribution: ActivityAttributionDto | null = null;
 }
 
 @Exclude()
@@ -71,4 +92,9 @@ export class ActivityDetailDto {
   @Expose() declinedReason!: string | null;
 
   @Expose() childrenIds: string[] = [];
+
+  /** S7 — atribución de autoría según el viewer (ver `ActivityAttributionDto`). */
+  @Expose()
+  @Type(() => ActivityAttributionDto)
+  attribution: ActivityAttributionDto | null = null;
 }

@@ -27,7 +27,7 @@ import {
 import { ChildrenRepository } from '../children/repositories/children.repository';
 import { CategoriesRepository } from '../categories/repositories/categories.repository';
 import { CreateActivityDto } from './dto/create-activity.dto';
-import { ActivitySummaryDto, ActivityDetailDto } from './dto/activity-response.dto';
+import { ActivitySummaryDto, ActivityDetailDto, ActivityAttributionDto } from './dto/activity-response.dto';
 import { CompleteActivityResponseDto } from './dto/complete-activity-response.dto';
 import { parseActivityReason } from './dto/activity-reason.validator';
 import { CategoryEntity } from '../categories/entities/category.entity';
@@ -44,6 +44,19 @@ import { ConfigService } from '@nestjs/config';
 
 /** Who triggers a transition (design D3). */
 export type TransitionActor = { kind: 'user'; userId: string } | { kind: 'system' };
+
+/**
+ * Mapas de atribución de autoría (T7/S7). Se resuelven UNA vez por request — nunca por
+ * fila (regla anti N+1 de este repo).
+ */
+interface AttributionContext {
+  /** id → nombre completo (personal_data) de cada miembro del vínculo. */
+  names: Map<string, string>;
+  /** id → nombre DECLARADO en el alta del grant, para cada tercero con acceso vivo. */
+  displayNames: Map<string, string>;
+  /** id de cada tercero → id de su autorizante (grant vivo). */
+  authorizers: Map<string, string>;
+}
 
 export interface TransitionRequest {
   activityId: string;
@@ -466,9 +479,15 @@ export class ActivitiesService {
       bondId,
       viewer.isThirdParty ? viewerId : undefined,
     );
+    // S7/T7: los mapas de atribución se resuelven UNA vez para la lista entera.
+    const attributionCtx = await this.resolveAttributionContext(bondId);
     return plainToInstance(
       ActivitySummaryDto,
-      rows.map((row) => ({ ...row, ...this.policy.evaluate(row, viewerId, now, viewer) })),
+      rows.map((row) => ({
+        ...row,
+        ...this.policy.evaluate(row, viewerId, now, viewer),
+        attribution: this.buildAttribution(row.createdBy, viewerId, attributionCtx),
+      })),
       { excludeExtraneousValues: true, exposeUnsetFields: false },
     );
   }
@@ -479,6 +498,8 @@ export class ActivitiesService {
 
     await this.assertActivityMember(activity, userId);
 
+    // S7/T7: la atribución del detalle usa los mismos mapas, resueltos una sola vez.
+    const attributionCtx = await this.resolveAttributionContext(activity.bondId);
     const decision = this.policy.evaluate(activity, userId, this.clock.now(), {
       isThirdParty: await this.isThirdPartyViewer(activity.bondId, userId),
     });
@@ -488,6 +509,7 @@ export class ActivitiesService {
         ...activity,
         ...decision,
         declinedReason: activity.declinedReason ?? null,
+        attribution: this.buildAttribution(activity.createdBy, userId, attributionCtx),
       },
       { excludeExtraneousValues: true },
     );
@@ -566,8 +588,7 @@ export class ActivitiesService {
     };
   }
 
-  /**
-   * ¿El que mira es un tercero temporal en este vínculo? (S8)
+  /** ¿El que mira es un tercero temporal en este vínculo? (S8)
    *
    * Lo resuelve el chokepoint, que ya sabe de grants. Se llama una vez por request en la
    * lista y una vez por operación en el resto: no es un dato que se pueda adivinar desde
@@ -576,6 +597,55 @@ export class ActivitiesService {
   private async isThirdPartyViewer(bondId: string, viewerId: string): Promise<boolean> {
     const access = await this.bondAccess.resolveBondAccess(bondId, viewerId);
     return access?.isThirdParty === true;
+  }
+
+  /** Los tres mapas de S7, en una ronda de consultas (una por request, no por fila). */
+  private resolveAttributionContext(bondId: string): Promise<AttributionContext> {
+    return Promise.all([
+      this.bondMembersRepo.findMemberNames(bondId),
+      this.bondMembersRepo.findThirdPartyDisplayNames(bondId),
+      this.bondMembersRepo.findThirdPartyAuthorizers(bondId),
+    ]).then(([names, displayNames, authorizers]) => ({ names, displayNames, authorizers }));
+  }
+
+  /**
+   * S7: la visibilidad del nombre real la decide el SERVIDOR. T7 de
+   * `odd/tasks/thirdparty-identity.md`:
+   *
+   * - miembro regular → `{ kind: "member", name }` (o `null` si no hay nombre):
+   *   el nombre de un progenitor es público dentro del vínculo.
+   * - tercero, visto por su AUTORIZANTE → `{ kind: "third_party", name }`: el nombre
+   *   real sólo viaja a quien lo puede pintar.
+   * - tercero, visto por OTRO miembro o por el propio tercero →
+   *   `{ kind: "third_party", name: null, authorizedByName }` ("Autorizado por YO").
+   */
+  private buildAttribution(
+    createdBy: string,
+    viewerId: string,
+    ctx: AttributionContext,
+  ): ActivityAttributionDto | null {
+    const authorizerId = ctx.authorizers.get(createdBy);
+
+    // Sin grant vivo no hay atribución de tercero que anunciar, y su nombre declarado
+    // queda fuera del payload: hueco honesto en vez de identidad filtrada (S6/S7).
+    if (authorizerId === undefined) {
+      if (ctx.displayNames.has(createdBy)) return null;
+      const name = ctx.names.get(createdBy) ?? null;
+      return name ? { kind: 'member', name } : null;
+    }
+
+    if (viewerId === authorizerId) {
+      return {
+        kind: 'third_party',
+        name: ctx.displayNames.get(createdBy) ?? null,
+        authorizedByName: null,
+      };
+    }
+    return {
+      kind: 'third_party',
+      name: null,
+      authorizedByName: ctx.names.get(authorizerId) ?? null,
+    };
   }
 
   async delete(id: string, userId: string): Promise<{ id: string; deletedAt: string }> {

@@ -160,7 +160,7 @@ describe('BondsService.findByUserId · S12/T12 identidad del tercero', () => {
     grant: { id: 'g-1', authorizedBy: 'p1', startDate: '2026-10-01', endDate: '2026-12-12' },
   };
 
-  it('al progenitor le muestra quién lo autorizó, con nombre y perfil vaciados', async () => {
+  it('al progenitor NO autorizante le muestra quién lo autorizó, con nombre y perfil vaciados', async () => {
     const { service } = buildService(
       bondWithThirdParty(),
       PROGENITOR_VIEWER,
@@ -173,7 +173,9 @@ describe('BondsService.findByUserId · S12/T12 identidad del tercero', () => {
       ]),
     );
 
-    const [dto] = await service.findByUserId('p1');
+    // S8: el viewer es p2, un progenitor distinto del autorizante (p1). El autorizante
+    // ahora ve el nombre real — la máscara es para el RESTO de los miembros.
+    const [dto] = await service.findByUserId('p2');
     const third = dto.members.find((m: any) => m.role === 'third_party');
 
     expect(third.user.firstName).toBe('Autorizado por Ana Paz');
@@ -228,5 +230,85 @@ describe('BondsService.findByUserId · S12/T12 identidad del tercero', () => {
 
     expect(members.findThirdPartyAuthorizers).not.toHaveBeenCalled();
     expect(members.findMemberNames).not.toHaveBeenCalled();
+  });
+});
+
+describe('BondsService.findByUserId · S8 enmascaramiento viewer-aware (T7/T8)', () => {
+  const bondWithThirdParty = () => ({
+    id: 'b1',
+    title: null,
+    agreementType: null,
+    courtCaseRef: null,
+    startDate: null,
+    endDate: null,
+    isActive: true,
+    members: [
+      {
+        id: 'm1',
+        role: 'progenitor',
+        joinedAt: null,
+        user: {
+          id: 'p1',
+          systemRole: 'user',
+          personalData: { firstName: 'Ana', lastName: 'Paz', avatarUrl: 'ana.png' },
+        },
+      },
+      {
+        id: 'm2',
+        role: 'third_party',
+        joinedAt: null,
+        user: {
+          id: 't1',
+          systemRole: 'user',
+          personalData: { firstName: 'Tere', lastName: 'Tercera', avatarUrl: 'tere.png' },
+        },
+      },
+    ],
+    children: [],
+  });
+
+  const buildService = (access: unknown) => {
+    const repo = { findBondsByUserId: jest.fn(async () => [bondWithThirdParty()]) };
+    const members = {
+      findThirdPartyAuthorizers: jest.fn(async () => new Map([['t1', 'p1']])),
+      // El mapa de personal_data trae el nombre real a propósito: si el servicio
+      // prefiriera acá por encima del nombre DECLARADO del grant, caería en 'Tere'.
+      findMemberNames: jest.fn(async () => new Map([['p1', 'Ana Paz'], ['t1', 'Tere Tercera']])),
+      findThirdPartyDisplayNames: jest.fn(async () => new Map([['t1', 'Pablo Charles']])),
+    };
+    const service = new (BondsService as any)(
+      repo,
+      { resolveBondAccess: jest.fn(async () => access) },
+      members,
+    );
+    return { service, members };
+  };
+
+  const PROGENITOR_VIEWER = { role: 'progenitor', isThirdParty: false };
+
+  it('el AUTORIZANTE ve el nombre real del tercero, con su perfil intacto', async () => {
+    const { service } = buildService(PROGENITOR_VIEWER);
+
+    const [dto] = await service.findByUserId('p1'); // p1 autorizó el grant de t1
+    const third = dto.members.find((m: any) => m.role === 'third_party');
+
+    // Nombre REAL (el declarado en el alta), no una máscara.
+    expect(third.user.firstName).toBe('Pablo Charles');
+    expect(third.user.lastName).toBe('Tercera');
+    expect(third.user.avatarUrl).toBe('tere.png');
+    expect(JSON.stringify(dto)).toContain('Pablo Charles');
+  });
+
+  it('OTRO miembro sigue viendo la máscara "Autorizado por X"', async () => {
+    const { service } = buildService(PROGENITOR_VIEWER);
+
+    const [dto] = await service.findByUserId('p2'); // otro progenitor, NO el autorizante
+    const third = dto.members.find((m: any) => m.role === 'third_party');
+
+    expect(third.user.firstName).toBe('Autorizado por Ana Paz');
+    expect(third.user.lastName).toBeNull();
+    expect(third.user.avatarUrl).toBeNull();
+    expect(JSON.stringify(dto)).not.toContain('Tere');
+    expect(JSON.stringify(dto)).not.toContain('Pablo');
   });
 });
