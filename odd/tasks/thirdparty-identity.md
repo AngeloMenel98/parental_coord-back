@@ -8,6 +8,8 @@ del terciario sólo a quien lo autorizó; los demás miembros ven "Autorizado po
 **Ramas**: `feature/thirdparty-identity` en ambos repos, desde `develop`.
 **Delivery**: commits unitarios convencionales en ambas ramas; no push ni PR salvo pedido.
 **Test runner back**: `pnpm test` / jest (spec por servicio). **Front**: `./gradlew :shared:testDebugUnitTest`.
+**Espejo back de este doc**: `odd/tasks/thirdparty-identity.md` en `parental_coordination_back`
+(los writers del back necesitan `Spec: odd/tasks/thirdparty-identity.md, T<n>` en su propio repo).
 
 ## Specs
 
@@ -38,6 +40,10 @@ del terciario sólo a quien lo autorizó; los demás miembros ven "Autorizado po
 - **S8** — el enmascaramiento viewer-aware también aplica al propio `GET /bonds`:
   el autorizante ve el nombre real del terciario en la lista de miembros; otro
   miembro ve la máscara actual.
+- **S9** — "le podes otorgar los datos al third party ya creado": el PATCH de un
+  acceso vigente también acepta identidad (`firstName`, `lastName`, `phone`,
+  `document`); los campos presentes se aplican, los ausentes NO borran lo
+  persistido (mismo PATCH parcial que relationship/accessEnd/note).
 
 ## Tareas
 
@@ -56,8 +62,23 @@ del terciario sólo a quien lo autorizó; los demás miembros ven "Autorizado po
 - T8 (S2, S8) back: `hideThirdPartyIdentity` viewer-aware (autorizante ve nombre
   real en `GET /bonds`); asignación de terciario validada (`assignedTo` acepta su
   user id).
+- T9 (S9) back: `UpdateThirdPartyDto` acepta identidad opcional; PATCH aplica sólo
+  campos presentes; service test incluido.
+- T10 (S9) front: hoja de edición con los cuatro campos precargados; DTO y
+  `toPatchBody()` extendidos; tests del editor.
+
+## Estado final
+
+- Front: rama `feature/thirdparty-identity`, 2 commits (`8643b4c`, `4aa381d`).
+- Back: rama `feature/thirdparty-identity`, 2 commits (`9410292`, `1beb690`).
+- Deuda conocida (del worker del back): `findThirdPartyDisplayNames` sin spec SQL de
+  repositorio; guard de método opcional en `bonds.service` mientras exista el double
+  viejo del T12-verifier; hot path de listByBond +3 queries fijas por request (O(1),
+  no N+1).
 
 ## Log
+
+- L4 (verbatim): "le podes otorgar los datos al third party ya creado? Ahora subi esto a github .. y pasamos a la parte de actividades." — abre S9 (edición de identidad de grants existentes); push autorizado en ambos repos.
 
 - L1 (verbatim): "la idea primero es yo poder crear un terciario y agregarle los nombres
   y algun dato mas ahi .. luego cuando yo creo una actividad y se la puedo asignar a
