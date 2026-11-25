@@ -335,11 +335,18 @@ export class ThirdPartiesService {
         endDate: row.endDate,
         relationship: row.relationship,
         note: row.scopeNote,
+        firstName: row.firstName,
+        lastName: row.lastName,
       };
 
       if (dto.accessEnd !== undefined) row.endDate = dto.accessEnd;
       if (dto.relationship !== undefined) row.relationship = dto.relationship;
       if (dto.note !== undefined) row.scopeNote = dto.note;
+      // S9: identidad en PATCH parcial — presente aplica (trim), ausente no toca.
+      if (dto.firstName !== undefined) row.firstName = dto.firstName.trim();
+      if (dto.lastName !== undefined) row.lastName = dto.lastName.trim();
+      if (dto.phone !== undefined) row.phone = dto.phone.trim() || null;
+      if (dto.document !== undefined) row.document = dto.document.trim() || null;
 
       const saved = await repo.save(row);
       await this.audit.record(
