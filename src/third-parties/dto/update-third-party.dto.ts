@@ -1,4 +1,5 @@
 import { ApiPropertyOptional } from '@nestjs/swagger';
+import { Transform } from 'class-transformer';
 import { IsEnum, IsOptional, IsString, Length, Matches } from 'class-validator';
 
 import { ThirdPartyRelationship } from '../../expenses/entities/auth-third-party.entity';
@@ -35,7 +36,10 @@ export class UpdateThirdPartyDto {
    * ausente NO borra el persistido — distinto de `note`, cuya vaciedad explícita (`""`)
    * sí limpia. Los grants creados antes de la feature quedan editables desde acá.
    */
-  @ApiPropertyOptional({ example: 'Pablo', description: 'Nombre de pila (opcional, PATCH parcial)' })
+  @ApiPropertyOptional({
+    example: 'Pablo',
+    description: 'Nombre de pila (opcional, PATCH parcial)',
+  })
   @IsOptional()
   @Transform(({ value }) => (typeof value === 'string' ? value.trim() : value))
   @IsString()
