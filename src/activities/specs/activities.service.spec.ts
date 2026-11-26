@@ -78,6 +78,10 @@ describe('ActivitiesService', () => {
       findActiveMembersWithActStats: jest.fn().mockResolvedValue([]),
       findOneByBondAndUser: jest.fn().mockResolvedValue({ role: 'progenitor' }),
       findCoordinator: jest.fn().mockResolvedValue(null),
+      // T7: los tres mapas de atribución arrancan vacíos; los tests de S7 los ajustan.
+      findMemberNames: jest.fn().mockResolvedValue(new Map()),
+      findThirdPartyAuthorizers: jest.fn().mockResolvedValue(new Map()),
+      findThirdPartyDisplayNames: jest.fn().mockResolvedValue(new Map()),
     } as any;
 
     // `jest.fn` y no una flecha suelta: el test del reloj inyectado necesita poder
@@ -1761,6 +1765,197 @@ describe('ActivitiesService', () => {
 
       await expectCode(service.assign('a1', userId, 'u-otro-vinculo'), 'ACTIVITY_NOT_FOUND', 404);
       expect(activityRepo.applyTransition).not.toHaveBeenCalled();
+    });
+
+    /**
+     * T8 (S2 de `odd/tasks/thirdparty-identity.md`). El alta NO filtra por rol: lo que
+     * valida `assignedTo` es la tenencia real (`isActiveBondForMember` → chokepoint),
+     * y un tercero con grant vigente ES miembro activo. El test usa un BondsService
+     * REAL sobre el doble del chokepoint para fijar exactamente eso: si algún día se
+     * cambia la validación por un booleano suelto que excluya `third_party`, este test
+     * lo delata.
+     */
+    it('S2/T8 · assignedTo acepta el user id de un tercero temporal activo (validación real de tenencia)', async () => {
+      // Los dobles de categoría/hijos sólo se cargan en el `describe` de create.
+      categoriesRepo.findActiveById.mockResolvedValue({
+        id: categoryId,
+        isActive: true,
+        criticality: 'medium',
+      } as any);
+      childrenRepo.findByIdsAndBond.mockResolvedValue([{ id: childId }] as any);
+      activityRepo.insertWithInitialTransition.mockResolvedValue({
+        id: 'a1',
+        status: ActivityStatus.ASSIGNED,
+        version: 1,
+      } as any);
+
+      const realBondsService = new BondsService(
+        {} as any,
+        bondAccess as unknown as BondAccessService,
+        bondMembersRepo as unknown as BondMembersRepository,
+      );
+      (service as unknown as { bondService: BondsService }).bondService = realBondsService;
+
+      bondAccess.resolveBondAccess.mockImplementation(async (_b: string, u: string) =>
+        u === 'u-tercero'
+          ? {
+              role: 'third_party',
+              isThirdParty: true,
+              grant: {
+                id: 'g1',
+                authorizedBy: userId,
+                startDate: null,
+                endDate: '2026-12-12',
+              },
+            }
+          : { role: 'progenitor', isThirdParty: false },
+      );
+
+      await expect(
+        service.create(
+          bondId,
+          {
+            title: 'Test Activity',
+            categoryId,
+            scheduledStart: '2026-10-05T10:00:00Z',
+            childrenIds: [childId],
+            assignedTo: 'u-tercero',
+          } as any,
+          userId,
+        ),
+      ).resolves.toBeDefined();
+      expect(activityRepo.insertWithInitialTransition).toHaveBeenCalled();
+    });
+  });
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // T7/S7 · atribución de autoría server-side (odd/tasks/thirdparty-identity.md)
+  // ══════════════════════════════════════════════════════════════════════════
+  describe('attribution de autoría (T7/S7)', () => {
+    const AUTHORIZER = creator; // el progenitor que autorizó al tercero
+    const THIRD_PARTY = 'u-tercero';
+    const THIRD_PARTY_NAME = 'Pablo Charles';
+    const AUTHORIZER_NAME = 'Ana Paz';
+
+    /** Mapas de S7: el tercero fue autorizado por AUTHORIZER y su nombre declaro es el real. */
+    beforeEach(() => {
+      bondMembersRepo.findMemberNames.mockResolvedValue(
+        new Map([
+          [AUTHORIZER, AUTHORIZER_NAME],
+          [assignee, 'Beto Ruiz'],
+        ]),
+      );
+      bondMembersRepo.findThirdPartyAuthorizers.mockResolvedValue(
+        new Map([[THIRD_PARTY, AUTHORIZER]]),
+      );
+      bondMembersRepo.findThirdPartyDisplayNames.mockResolvedValue(
+        new Map([[THIRD_PARTY, THIRD_PARTY_NAME]]),
+      );
+    });
+
+    it('actividad creada por un miembro regular → { kind: "member", name }', async () => {
+      activityRepo.findByBondIdOrdered.mockResolvedValue([futureActivity({ id: 'a1' })]);
+
+      const rows = await service.listByBond(bondId, assignee);
+
+      expect(rows[0].attribution).toEqual({ kind: 'member', name: AUTHORIZER_NAME });
+    });
+
+    it('actividad creada por un tercero, vista por su AUTORIZANTE → nombre real, sin authorizedByName', async () => {
+      activityRepo.findByBondIdOrdered.mockResolvedValue([
+        futureActivity({ id: 'a1', createdBy: THIRD_PARTY }),
+      ]);
+
+      const rows = await service.listByBond(bondId, AUTHORIZER);
+
+      expect(rows[0].attribution).toEqual({
+        kind: 'third_party',
+        name: THIRD_PARTY_NAME,
+        authorizedByName: null,
+      });
+    });
+
+    it('actividad creada por un tercero, vista por OTRO miembro → name null + authorizedByName (S3/S7)', async () => {
+      activityRepo.findByBondIdOrdered.mockResolvedValue([
+        futureActivity({ id: 'a1', createdBy: THIRD_PARTY }),
+      ]);
+
+      const rows = await service.listByBond(bondId, stranger);
+
+      expect(rows[0].attribution).toEqual({
+        kind: 'third_party',
+        name: null,
+        authorizedByName: AUTHORIZER_NAME,
+      });
+      // Regla de DATOS (no de pintado): el nombre real nunca sale del servidor
+      // hacia un viewer que no es el autorizante.
+      expect(JSON.stringify(rows)).not.toContain(THIRD_PARTY_NAME);
+    });
+
+    it('el PROPIO tercero no recibe su nombre real: ve "Autorizado por X"', async () => {
+      activityRepo.findByBondIdOrdered.mockResolvedValue([
+        futureActivity({ id: 'a1', createdBy: THIRD_PARTY }),
+      ]);
+      bondAccess.resolveBondAccess.mockResolvedValue({
+        role: 'third_party',
+        isThirdParty: true,
+        grant: { id: 'g1', authorizedBy: AUTHORIZER, startDate: null, endDate: '2026-12-12' },
+      });
+
+      const rows = await service.listByBond(bondId, THIRD_PARTY);
+
+      expect(rows[0].attribution).toEqual({
+        kind: 'third_party',
+        name: null,
+        authorizedByName: AUTHORIZER_NAME,
+      });
+      expect(JSON.stringify(rows)).not.toContain(THIRD_PARTY_NAME);
+    });
+
+    it('getDetail aplica la misma atribución', async () => {
+      activityRepo.findById.mockResolvedValue(
+        futureActivity({ createdBy: THIRD_PARTY }),
+      );
+
+      const detail = await service.getDetail('a1', AUTHORIZER);
+
+      expect(detail.attribution).toEqual({
+        kind: 'third_party',
+        name: THIRD_PARTY_NAME,
+        authorizedByName: null,
+      });
+    });
+
+    it('resuelve los mapas UNA vez por request, nunca por fila (regla anti N+1)', async () => {
+      activityRepo.findByBondIdOrdered.mockResolvedValue([
+        futureActivity({ id: 'a1' }), // creada por AUTHORIZER
+        futureActivity({ id: 'a2', createdBy: THIRD_PARTY }), // creada por el tercero
+      ]);
+
+      await service.listByBond(bondId, stranger);
+
+      expect(bondMembersRepo.findMemberNames).toHaveBeenCalledTimes(1);
+      expect(bondMembersRepo.findThirdPartyAuthorizers).toHaveBeenCalledTimes(1);
+      expect(bondMembersRepo.findThirdPartyDisplayNames).toHaveBeenCalledTimes(1);
+    });
+
+    it('sin autorizante vivo, la creación del tercero NO cae al nombre real (S6 honesto)', async () => {
+      bondMembersRepo.findThirdPartyAuthorizers.mockResolvedValue(new Map());
+      bondMembersRepo.findMemberNames.mockResolvedValue(
+        new Map([
+          [AUTHORIZER, AUTHORIZER_NAME],
+          [THIRD_PARTY, THIRD_PARTY_NAME], // el nombre real del tercero está en el mapa
+        ]),
+      );
+      activityRepo.findByBondIdOrdered.mockResolvedValue([
+        futureActivity({ id: 'a1', createdBy: THIRD_PARTY }),
+      ]);
+
+      const rows = await service.listByBond(bondId, stranger);
+
+      // Sin grant no hay autorización vigente que anunciar: hueco honesto, no filtración.
+      expect(rows[0].attribution).toBeNull();
+      expect(JSON.stringify(rows)).not.toContain(THIRD_PARTY_NAME);
     });
   });
 });

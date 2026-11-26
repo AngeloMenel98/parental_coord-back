@@ -29,4 +29,37 @@ export class UpdateThirdPartyDto {
   @IsString()
   @Length(0, 500)
   note?: string;
+
+  /**
+   * Identidad declarada (S9 de thirdparty-identity). Opcional y PATCH parcial: un campo
+   * ausente NO borra el persistido — distinto de `note`, cuya vaciedad explícita (`""`)
+   * sí limpia. Los grants creados antes de la feature quedan editables desde acá.
+   */
+  @ApiPropertyOptional({ example: 'Pablo', description: 'Nombre de pila (opcional, PATCH parcial)' })
+  @IsOptional()
+  @Transform(({ value }) => (typeof value === 'string' ? value.trim() : value))
+  @IsString()
+  @Length(2, 80)
+  firstName?: string;
+
+  @ApiPropertyOptional({ example: 'Charles', description: 'Apellido (opcional, PATCH parcial)' })
+  @IsOptional()
+  @Transform(({ value }) => (typeof value === 'string' ? value.trim() : value))
+  @IsString()
+  @Length(2, 80)
+  lastName?: string;
+
+  @ApiPropertyOptional({ description: 'Teléfono (opcional, PATCH parcial)' })
+  @IsOptional()
+  @Transform(({ value }) => (typeof value === 'string' ? value.trim() : value))
+  @IsString()
+  @Length(0, 30)
+  phone?: string;
+
+  @ApiPropertyOptional({ description: 'Documento (opcional, PATCH parcial)' })
+  @IsOptional()
+  @Transform(({ value }) => (typeof value === 'string' ? value.trim() : value))
+  @IsString()
+  @Length(0, 30)
+  document?: string;
 }

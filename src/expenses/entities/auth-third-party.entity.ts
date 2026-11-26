@@ -53,6 +53,25 @@ export class AuthThirdPartyEntity {
   @Column({ type: 'uuid', name: 'user_id' })
   userId!: string;
 
+  /**
+   * Identidad declarada por el progenitor en el alta (S1 de
+   * `odd/tasks/thirdparty-identity.md`): es un DATO DEL GRANT, no de la cuenta —
+   * una cuenta puede servir a varios grants de distintos vínculos y el nombre que
+   * cada progenitor declaró puede diferir. Nullable: filas previas a la feature
+   * (S6) y datos legados nacen sin él.
+   */
+  @Column({ type: 'varchar', length: 80, nullable: true, name: 'first_name' })
+  firstName!: string | null;
+
+  @Column({ type: 'varchar', length: 80, nullable: true, name: 'last_name' })
+  lastName!: string | null;
+
+  @Column({ type: 'varchar', length: 30, nullable: true, name: 'phone' })
+  phone!: string | null;
+
+  @Column({ type: 'varchar', length: 30, nullable: true, name: 'document' })
+  document!: string | null;
+
   @ManyToOne(() => UserEntity, { onDelete: 'CASCADE' })
   @JoinColumn({ name: 'user_id' })
   user!: UserEntity;

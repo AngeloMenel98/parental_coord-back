@@ -165,6 +165,41 @@ export class BondMembersRepository extends BaseRepository<BondMemberEntity> {
   }
 
   /**
+   * Nombre DECLARADO en el alta de cada tercero del vínculo (T7/S3 de
+   * `odd/tasks/thirdparty-identity.md`).
+   *
+   * El nombre real es un DATO DEL GRANT (`first_name`/`last_name` de `auth_third_party`),
+   * no de la cuenta: una cuenta puede servir a varios grants y el nombre que declaró cada
+   * progenitor puede diferir. A diferencia de `findThirdPartyAuthorizers`, NO exige grant
+   * vivo (LEFT JOIN): un tercero cuyo grant ya murió sigue siendo un `third_party`, y la
+   * atribución lo usa para saber quién es — y así NO filtrarle el nombre como si fuera un
+   * miembro regular. Sin grant vivo, nada de su identidad sale en ningún payload.
+   */
+  async findThirdPartyDisplayNames(bondId: string): Promise<Map<string, string>> {
+    const rows = await this.bondMemberRepo.manager
+      .createQueryBuilder()
+      .select('bm.user_id', 'userId')
+      .addSelect('g.first_name', 'firstName')
+      .addSelect('g.last_name', 'lastName')
+      .from('bond_member', 'bm')
+      .leftJoin('auth_third_party', 'g', 'g.bond_id = bm.bond_id AND g.user_id = bm.user_id')
+      .where('bm.bond_id = :bondId', { bondId })
+      .andWhere('bm.left_at IS NULL')
+      .andWhere('bm.role = :thirdPartyRole', { thirdPartyRole: BondMemberRole.THIRD_PARTY })
+      .getRawMany<{ userId: string; firstName: string | null; lastName: string | null }>();
+
+    const names = new Map<string, string>();
+    for (const row of rows) {
+      const name = [row.firstName, row.lastName]
+        .filter((part) => !!part && part.trim())
+        .join(' ')
+        .trim();
+      if (name) names.set(row.userId, name);
+    }
+    return names;
+  }
+
+  /**
    * El nombre para mostrar de cada miembro del vínculo (id → nombre).
    *
    * UNA consulta por página: los nombres de "solicitado por", "contraparte" y

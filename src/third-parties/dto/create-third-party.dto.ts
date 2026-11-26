@@ -14,6 +14,38 @@ import { ThirdPartyRelationship } from '../../expenses/entities/auth-third-party
  */
 export class CreateThirdPartyDto {
   @ApiProperty({
+    example: 'Pablo',
+    description: 'Nombre de pila del tercero, para la asignación y la atribución en cards',
+  })
+  @Transform(({ value }) => (typeof value === 'string' ? value.trim() : value))
+  @IsString()
+  @Length(2, 80)
+  firstName!: string;
+
+  @ApiProperty({
+    example: 'Charles',
+    description: 'Apellido del tercero, para la asignación y la atribución en cards',
+  })
+  @Transform(({ value }) => (typeof value === 'string' ? value.trim() : value))
+  @IsString()
+  @Length(2, 80)
+  lastName!: string;
+
+  @ApiPropertyOptional({ description: 'Teléfono de contacto del tercero' })
+  @IsOptional()
+  @Transform(({ value }) => (typeof value === 'string' ? value.trim() : value))
+  @IsString()
+  @Length(0, 30)
+  phone?: string;
+
+  @ApiPropertyOptional({ description: 'Documento de identidad del tercero (DNI/CI)' })
+  @IsOptional()
+  @Transform(({ value }) => (typeof value === 'string' ? value.trim() : value))
+  @IsString()
+  @Length(0, 30)
+  document?: string;
+
+  @ApiProperty({
     example: 'abuela@example.com',
     description: 'Email del tercero; si no tiene cuenta, el alta la crea y le manda las credenciales',
   })
