@@ -185,6 +185,8 @@ describe('ThirdPartiesService', () => {
       email: 'abuela@example.com',
       relationship: ThirdPartyRelationship.FAMILY,
       accessEnd: '2026-12-12',
+      firstName: 'Abuela',
+      lastName: 'Ana',
     };
 
     it('con email desconocido crea la cuenta y manda usuario + contraseña (S1, D2)', async () => {

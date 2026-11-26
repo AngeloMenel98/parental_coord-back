@@ -38,8 +38,9 @@ export class BondsService {
 
     // T12: a un progenitor no se le muestra el nombre del tercero, sino quién lo autorizó.
     // Los vínculos redactados del tercero llegan con `members: []`, así que quedan afuera
-    // sin necesidad de repetir el chequeo de rol.
-    await Promise.all(dtos.map((dto) => this.hideThirdPartyIdentity(dto)));
+    // sin necesidad de repetir el chequeo de rol. S8: el chequeo es VIEWER-AWARE — el
+    // enmascaramiento lo decide el que pregunta, y el viewer es quien pide sus vínculos.
+    await Promise.all(dtos.map((dto) => this.hideThirdPartyIdentity(dto, userId)));
 
     return dtos;
 
@@ -67,9 +68,17 @@ export class BondsService {
   /**
    * S12/T12 — el otro progenitor ve "Autorizado por <progenitor>", no el tercero.
    *
+   * S8 (T7/T8 de `odd/tasks/thirdparty-identity.md`): el enmascaramiento es VIEWER-AWARE.
+   * El único viewer que recibe el nombre REAL del tercero es su AUTORIZANTE (el grant es
+   * suyo, él declaró ese nombre en el alta): para él los datos quedan intactos — el resto
+   * de los miembros (y el propio tercero, que ya sabe quién lo autorizó) siguen viendo
+   * la máscara. Es una regla de DATOS, no de pintado.
+   *
    * Se reemplaza **el nombre y el perfil** del miembro `third_party`, no su `user.id`:
    * el id sigue siendo la llave con la que la app resuelve `bondRole`, la asignación y
    * la revocación del grant. `avatarUrl` se vacía porque una foto también identifica.
+   * El nombre real sale del GRANT (`first_name`/`last_name` de `auth_third_party`, el
+   * declarado en el alta), con el nombre de `personal_data` como respaldo.
    *
    * Cuando no hay grant vivo (revocado o vencido) o el autorizador no tiene nombre, el
    * nombre queda en `null` en vez de caer al del tercero: la regla es *no mostrarlo*, y
@@ -77,21 +86,33 @@ export class BondsService {
    *
    * Sin miembros `third_party` no se consulta nada: el caso común no paga el costo.
    */
-  private async hideThirdPartyIdentity(bond: BondResponseDto): Promise<void> {
+  private async hideThirdPartyIdentity(bond: BondResponseDto, viewerId: string): Promise<void> {
     const thirdParties = bond.members.filter(
       (member) => member.role === BondMemberRole.THIRD_PARTY,
     );
     if (thirdParties.length === 0) return;
 
-    const [authorizers, names] = await Promise.all([
+    const [authorizers, names, displayNames] = await Promise.all([
       this.bondMembers.findThirdPartyAuthorizers(bond.id),
       this.bondMembers.findMemberNames(bond.id),
+      // T7: los dobles de specs previos (t12-verifier) no lo traen; preferir el nombre
+      // declarado del grant cuando existe, sin romper esas pruebas ya vigentes.
+      this.bondMembers.findThirdPartyDisplayNames
+        ? this.bondMembers.findThirdPartyDisplayNames(bond.id)
+        : Promise.resolve(new Map<string, string>()),
     ]);
 
     for (const member of thirdParties) {
       if (!member.user) continue;
       const authorizerId = authorizers.get(member.user.id);
       const authorizerName = authorizerId ? names.get(authorizerId) : undefined;
+
+      // S8: el autorizante del grant ve los datos reales del tercero.
+      if (authorizerId !== undefined && authorizerId === viewerId) {
+        member.user.firstName =
+          displayNames.get(member.user.id) ?? names.get(member.user.id) ?? member.user.firstName;
+        continue;
+      }
 
       member.user.firstName = authorizerName ? `Autorizado por ${authorizerName}` : null;
       member.user.lastName = null;

@@ -110,6 +110,8 @@ describe('ThirdPartiesService · regresiones del ciclo de vida', () => {
     email: 'abuela@example.com',
     relationship: ThirdPartyRelationship.FAMILY,
     accessEnd: '2026-12-12',
+    firstName: 'Abuela',
+    lastName: 'Ana',
   };
 
   beforeEach(async () => {

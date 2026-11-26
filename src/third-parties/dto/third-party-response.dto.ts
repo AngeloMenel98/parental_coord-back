@@ -26,6 +26,19 @@ export class ThirdPartyResponseDto {
   @ApiProperty({ nullable: true, description: 'Nombre del visitante dentro del vínculo' })
   displayName!: string | null;
 
+  /** Identidad declarada en el alta (S1 de thirdparty-identity); nullable para filas previas. */
+  @ApiProperty({ nullable: true })
+  firstName!: string | null;
+
+  @ApiProperty({ nullable: true })
+  lastName!: string | null;
+
+  @ApiProperty({ nullable: true })
+  phone!: string | null;
+
+  @ApiProperty({ nullable: true })
+  document!: string | null;
+
   @ApiProperty({ enum: ThirdPartyRelationship, enumName: 'ThirdPartyRelationship' })
   relationship!: ThirdPartyRelationship;
 

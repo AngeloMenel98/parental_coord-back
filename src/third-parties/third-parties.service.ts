@@ -198,6 +198,10 @@ export class ThirdPartiesService {
             startDate: today,
             endDate: dto.accessEnd,
             relationship: dto.relationship,
+            firstName: dto.firstName.trim(),
+            lastName: dto.lastName.trim(),
+            phone: dto.phone?.trim() || null,
+            document: dto.document?.trim() || null,
             status: AuthThirdStatus.ACTIVE,
             scopeNote: dto.note ?? null,
           },
@@ -331,11 +335,18 @@ export class ThirdPartiesService {
         endDate: row.endDate,
         relationship: row.relationship,
         note: row.scopeNote,
+        firstName: row.firstName,
+        lastName: row.lastName,
       };
 
       if (dto.accessEnd !== undefined) row.endDate = dto.accessEnd;
       if (dto.relationship !== undefined) row.relationship = dto.relationship;
       if (dto.note !== undefined) row.scopeNote = dto.note;
+      // S9: identidad en PATCH parcial — presente aplica (trim), ausente no toca.
+      if (dto.firstName !== undefined) row.firstName = dto.firstName.trim();
+      if (dto.lastName !== undefined) row.lastName = dto.lastName.trim();
+      if (dto.phone !== undefined) row.phone = dto.phone.trim() || null;
+      if (dto.document !== undefined) row.document = dto.document.trim() || null;
 
       const saved = await repo.save(row);
       await this.audit.record(
@@ -600,6 +611,10 @@ export class ThirdPartiesService {
       bondId: grant.bondId,
       userId: grant.userId,
       displayName: names.get(grant.userId) ?? null,
+      firstName: grant.firstName,
+      lastName: grant.lastName,
+      phone: grant.phone,
+      document: grant.document,
       relationship: grant.relationship,
       startDate: grant.startDate,
       endDate: grant.endDate,
